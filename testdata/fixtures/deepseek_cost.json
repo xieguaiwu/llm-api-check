@@ -1,0 +1,1 @@
+{"code":0,"data":{"biz_data":[{"days":[{"date":"2026-08-14","data":[{"model":"deepseek-chat","usage":[{"type":"input","amount":1.5},{"type":"output","amount":2.5}]},{"model":"deepseek-reasoner","usage":[{"type":"input","amount":0.5}]}]},{"date":"2026-08-13","data":[{"model":"deepseek-chat","usage":[{"type":"input","amount":0.3}]}]}]}]}}
