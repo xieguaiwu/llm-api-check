@@ -3,17 +3,18 @@
 ## 项目当前状态
 llm-api-check — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额+消费）与 OpenCode（Go 三窗口 + Zen billing）用量，多账号。**开发完成，已部署 `~/.local/bin/llm-api-check`，待真实凭据冒烟测试。**
 
-## 最后一次完成的工作（2026-08-18 01:20）
+## 最后一次完成的工作（2026-08-18 01:40）
 - CLI 全功能实现：models/parsers/repo/config/app/render 六包 + main.go，零第三方依赖
-- 修复 2 个 main.go 问题：①`--json` 空列表输出 null → 改为 `[]`、零值时间戳 → 0（sliceOrEmpty/unixMillisOrZero）②非 TTY 下 accounts add 可选字段 EOF 报错 → 改为跳过；deepseek/opencode 补 `--no-refresh` flag
-- 测试全绿（6 包 ok，63 个测试断言）；`go vet` 通过
-- 部署：`~/.local/bin/llm-api-check`（6.4MB，`--version` = 1.0.0）
+- **momus 审查修复（61b1e4b）**：P1-1 Cost 月末溢出（AddDate 归一化 → day=1 构造，补 5 回归用例）、P1-2 isTTY ioctl TCGETS（/dev/null 不误判）、P1-3 --json 凭据掩码（首尾4+****）、P2-2 rune 截断、P2-3 warning 快照、P2-4 warnSecurity no-color、P2-5 rawFloat 字符串金额；P3 filter 注释/README 版本/accounts list 警告
+- main_test.go 新增 8 个命令级测试（--json 合法性/退出码/凭据掩码/非 TTY 降级/EOF 跳过/NO_COLOR）
+- 测试全绿（7 包，含 -race）；`go vet` 干净
+- 部署：`~/.local/bin/llm-api-check`（--version = 1.0.0）
 - 文档：README.md（英文）+ README_zh.md（中文）双语互链、CONTEXT 本文档
-- Git：7 个 commit（脚手架→模型→解析器→仓库→配置→编排→CLI+渲染→文档待提交）
+- Git：10 个 commit
 
 ## 遗留问题 / 待办
 - [ ] **真实凭据冒烟测试**：用户需提供 DeepSeek API key / 平台 token / opencode-go 三账号的 Go key + workspace ID + auth cookie（`llm-api-check accounts add` 输入），然后 `llm-api-check` 验证真实 API 响应
-- [ ] 交互提示在非 TTY 下会打印可选字段提示行后直接跳过（行为正确，观感可优化为 TTY 检测前置）
+- [ ] P3 未修（非阻塞）：NewID panic 改返回错误、writeJSON stderr 注入、promptTTY bufio.Reader 复用、`--json --version` 文本输出
 - [ ] Zen billing 解析依赖 opencode.ai 页面结构，改版需更新 `internal/parsers/parsers.go` 的 ParseZenBilling
 - [ ] 图形知识图谱 graphify-out/ 未生成（可选，`graphify update . --no-llm`）
 
