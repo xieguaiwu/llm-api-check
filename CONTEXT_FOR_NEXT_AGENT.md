@@ -1,9 +1,12 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
 ## 项目当前状态
-llm-api-check — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额+消费）与 OpenCode（Go 三窗口 + Zen billing）用量，多账号。**开发完成 + 真实凭据冒烟通过，已部署 `~/.local/bin/llm-api-check`。**
+llm-api-check — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额+消费）与 OpenCode（Go 三窗口 + Zen billing）用量，多账号。**开发完成 + 真实凭据冒烟通过 + 已发布公开 GitHub，已部署 `~/.local/bin/llm-api-check`。**
 
-## 最后一次完成的工作（2026-08-18 01:40）
+**公开 repo：https://github.com/xieguaiwu/llm-api-check（PUBLIC，13 commits，发布前按 System_Fix git 审计：历史零真实 key）**
+
+## 最后一次完成的工作（2026-08-18 01:55）
+- **发布公开 repo（01:55）**：System_Fix → dotfiles-sync-and-audit 流程审计（历史全量扫描真实 key 前缀 sk-uZY/sk-2a37/sk-rGB/sk-vrIY/nvapi- 零命中；Fe26.2 命中均为 README 格式示例；fixture 为 TEST 占位符；config.json/.env 未入库；工作区干净）→ gh repo create llm-api-check --public → push 完成（main 同步 2b55ca2）
 - **真实冒烟完成（01:26）**：从 ~/.config/fish/config.fish 提取 4 个 key 配置 4 个账号并验证真实 API：DeepSeek 主号（余额 ¥62.45）、opencode 主号（M 70% 黄）、xieguaiwu（M 100% 已限流红）、songjieshi（W 77% 黄）。直连无代理成功。
 - 修复总览页已限流嵌套 ANSI 颜色（f2dbf22）
 
