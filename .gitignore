@@ -1,14 +1,18 @@
-# 构建产物
-bin/
-dist/
-*.exe
-llm-api-check
+# Binary
+/llm-api-check
 
-# 系统文件
+# Secrets — API keys/cookies never committed
+config.json
+*.env
+.env*
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
 .DS_Store
 
-# IDE
-.idea/
-
-# graphify 知识图谱输出
-graphify-out/
+# Go
+*.test
+*.out
