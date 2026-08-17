@@ -1,0 +1,14 @@
+# 构建产物
+bin/
+dist/
+*.exe
+llm-api-check
+
+# 系统文件
+.DS_Store
+
+# IDE
+.idea/
+
+# graphify 知识图谱输出
+graphify-out/
