@@ -1,7 +1,11 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
 ## 项目当前状态
-llm-api-check — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额+消费）与 OpenCode（Go 三窗口 + Zen billing）用量，多账号。**开发完成，已部署 `~/.local/bin/llm-api-check`，待真实凭据冒烟测试。**
+llm-api-check — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额+消费）与 OpenCode（Go 三窗口 + Zen billing）用量，多账号。**开发完成 + 真实凭据冒烟通过，已部署 `~/.local/bin/llm-api-check`。**
+
+## 最后一次完成的工作（2026-08-18 01:40）
+- **真实冒烟完成（01:26）**：从 ~/.config/fish/config.fish 提取 4 个 key 配置 4 个账号并验证真实 API：DeepSeek 主号（余额 ¥62.45）、opencode 主号（M 70% 黄）、xieguaiwu（M 100% 已限流红）、songjieshi（W 77% 黄）。直连无代理成功。
+- 修复总览页已限流嵌套 ANSI 颜色（f2dbf22）
 
 ## 最后一次完成的工作（2026-08-18 01:40）
 - CLI 全功能实现：models/parsers/repo/config/app/render 六包 + main.go，零第三方依赖
@@ -13,7 +17,8 @@ llm-api-check — Go CLI，复刻 Android app「API Checkers」（现名 pocket-
 - Git：10 个 commit
 
 ## 遗留问题 / 待办
-- [ ] **真实凭据冒烟测试**：用户需提供 DeepSeek API key / 平台 token / opencode-go 三账号的 Go key + workspace ID + auth cookie（`llm-api-check accounts add` 输入），然后 `llm-api-check` 验证真实 API 响应
+- [ ] **DeepSeek 平台 token / workspace ID + auth cookie 未配置**（config.fish 无）：DeepSeek 消费明细与 Zen billing 不可用。平台 token 需浏览器登录 platform.deepseek.com 后从 DevTools 抓；Zen 需 opencode.ai 的 workspace ID + auth cookie（Fe26.2 开头）
+- [ ] songjieshi/xieguaiwu 的 key 来自 config.fish 注释行（非当前生效），key 可能已过期（xieguaiwu 实测 M 100% 已限流为正常用量而非 key 失效）
 - [ ] P3 未修（非阻塞）：NewID panic 改返回错误、writeJSON stderr 注入、promptTTY bufio.Reader 复用、`--json --version` 文本输出
 - [ ] Zen billing 解析依赖 opencode.ai 页面结构，改版需更新 `internal/parsers/parsers.go` 的 ParseZenBilling
 - [ ] 图形知识图谱 graphify-out/ 未生成（可选，`graphify update . --no-llm`）
