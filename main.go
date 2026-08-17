@@ -361,8 +361,8 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 	}
 	if jsonOut {
 		writeJSON(stdout, map[string]any{
-			"deepseek_accounts": cfg.DeepSeekAccounts,
-			"accounts":          cfg.Accounts,
+			"deepseek_accounts": sliceOrEmpty(cfg.DeepSeekAccounts),
+			"accounts":          sliceOrEmpty(cfg.Accounts),
 		})
 		return 0
 	}
