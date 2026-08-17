@@ -187,8 +187,15 @@ func exitCodeForResults(res app.Result) int {
 // ── deepseek / opencode 详情 ──────────────────────────────────
 
 func cmdDeepSeek(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, noColor bool) int {
-	if len(args) > 1 {
-		fmt.Fprintln(stderr, "用法: llm-api-check deepseek [名称|ID]")
+	fs := flag.NewFlagSet("deepseek", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(stderr, "用法: llm-api-check deepseek [名称|ID] [--no-refresh]")
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "用法: llm-api-check deepseek [名称|ID] [--no-refresh]")
 		return 2
 	}
 	path := config.DefaultPath()
@@ -199,10 +206,10 @@ func cmdDeepSeek(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	}
 	warnSecurity(stderr)
 	accounts := cfg.DeepSeekAccounts
-	if len(args) == 1 {
-		filtered, ok := filterDeepSeek(accounts, args[0])
+	if fs.NArg() == 1 {
+		filtered, ok := filterDeepSeek(accounts, fs.Arg(0))
 		if !ok {
-			fmt.Fprintf(stderr, "账号不存在: %s\n", args[0])
+			fmt.Fprintf(stderr, "账号不存在: %s\n", fs.Arg(0))
 			return 1
 		}
 		accounts = filtered
@@ -210,8 +217,10 @@ func cmdDeepSeek(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	a := app.New(cfg)
 	results := make([]app.DeepSeekResult, 0, len(accounts))
 	for _, acc := range accounts {
-		r, err := a.RefreshDeepSeek(acc.ID)
-		if err != nil {
+		var r app.DeepSeekResult
+		if *noRefresh {
+			r = app.DeepSeekResult{Account: acc}
+		} else if r, err = a.RefreshDeepSeek(acc.ID); err != nil {
 			fmt.Fprintf(stderr, "错误: %v\n", err)
 			return 1
 		}
@@ -239,8 +248,15 @@ func cmdDeepSeek(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 }
 
 func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, noColor bool) int {
-	if len(args) > 1 {
-		fmt.Fprintln(stderr, "用法: llm-api-check opencode [名称|ID]")
+	fs := flag.NewFlagSet("opencode", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(stderr, "用法: llm-api-check opencode [名称|ID] [--no-refresh]")
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "用法: llm-api-check opencode [名称|ID] [--no-refresh]")
 		return 2
 	}
 	path := config.DefaultPath()
@@ -251,10 +267,10 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	}
 	warnSecurity(stderr)
 	accounts := cfg.Accounts
-	if len(args) == 1 {
-		filtered, ok := filterAccounts(accounts, args[0])
+	if fs.NArg() == 1 {
+		filtered, ok := filterAccounts(accounts, fs.Arg(0))
 		if !ok {
-			fmt.Fprintf(stderr, "账号不存在: %s\n", args[0])
+			fmt.Fprintf(stderr, "账号不存在: %s\n", fs.Arg(0))
 			return 1
 		}
 		accounts = filtered
@@ -263,8 +279,10 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	results := make([]app.AccountResult, 0, len(accounts))
 	now := time.Now()
 	for _, acc := range accounts {
-		r, err := a.RefreshAccount(acc.ID)
-		if err != nil {
+		var r app.AccountResult
+		if *noRefresh {
+			r = app.AccountResult{Account: acc}
+		} else if r, err = a.RefreshAccount(acc.ID); err != nil {
 			fmt.Fprintf(stderr, "错误: %v\n", err)
 			return 1
 		}
@@ -387,6 +405,10 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		return 2
 	}
 	if strings.TrimSpace(*name) == "" {
+		if !isTTY(stdin) {
+			fmt.Fprintln(stderr, "错误: 缺少 --name，非交互终端无法提示")
+			return 2
+		}
 		v, err := promptTTY(stdin, stdout, "账号名称: ", false)
 		if err != nil {
 			fmt.Fprintf(stderr, "错误: %v\n", err)
@@ -626,6 +648,10 @@ func resolveSecret(flagVal, flagName, envName, prompt string, required bool, std
 	}
 	v, err := promptTTY(stdin, stdout, prompt, true)
 	if err != nil {
+		// 可选字段在输入流提前关闭（EOF）时跳过，不视为错误
+		if !required {
+			return "", nil
+		}
 		return "", err
 	}
 	if !required && strings.TrimSpace(v) == "" {
