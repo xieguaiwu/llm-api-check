@@ -20,6 +20,15 @@ const UA = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Geck
 // 所有网络超时 15s（全局约束，等价 OkHttp connect/read/write 15s）
 const timeout = 15 * time.Second
 
+// truncate200 错误响应体截断 200 字符（rune 安全，防切断中文多字节，momus P2-2）
+func truncate200(s string) string {
+	r := []rune(s)
+	if len(r) > 200 {
+		return string(r[:200])
+	}
+	return s
+}
+
 // doGet 执行 GET 请求：
 //
 //	401/403 → 中文认证错误（authErrMsg，按凭据区分）；
@@ -48,11 +57,7 @@ func doGet(client *http.Client, url string, headers map[string]string, authErrMs
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return "", errors.New(authErrMsg)
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
-		b := body
-		if len(b) > 200 {
-			b = b[:200]
-		}
-		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate200(string(body)))
 	default:
 		return string(body), nil
 	}
@@ -115,8 +120,9 @@ func (r *DeepSeekRepo) Balance(apiKey string) (models.DeepSeekBalance, error) {
 // 两个月都无数据（含非认证错误）→ 显式失败，不返回误导性的零数据。
 func (r *DeepSeekRepo) Cost(platformToken string) (models.DeepSeekCost, error) {
 	now := r.now()
-	// (year/month 取自同一时间)：上月跨年时 year 必须取 AddDate 之后的 year
-	months := []time.Time{now, now.AddDate(0, -1, 0)}
+	// 上月用 day=1 构造，避免 AddDate 的日溢出归一化（3/31 → 3/03 等）导致请求错月份（momus P1-1）
+	prev := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, now.Location())
+	months := []time.Time{now, prev}
 	dayMap := map[string]float64{}
 	tokenInvalid := false
 	var lastError string

@@ -19,7 +19,7 @@
 go build -trimpath -ldflags="-s -w" -o ~/.local/bin/llm-api-check .
 ```
 
-需要 Go ≥ 1.22。
+需要 Go ≥ 1.25。
 
 ## 快速开始
 

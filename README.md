@@ -19,7 +19,7 @@ A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history) 
 go build -trimpath -ldflags="-s -w" -o ~/.local/bin/llm-api-check .
 ```
 
-Requires Go ≥ 1.22.
+Requires Go ≥ 1.25.
 
 ## Quick start
 

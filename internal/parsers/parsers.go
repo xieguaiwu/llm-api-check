@@ -297,11 +297,18 @@ func rawInt(r json.RawMessage) (int, bool) {
 	return i, true
 }
 
-// rawFloat 宽容解析 JSON 浮点数，失败兜底 0.0（对应 doubleOrNull ?: 0.0）
+// rawFloat 宽容解析 JSON 浮点数，失败兜底 0.0（对应 doubleOrNull ?: 0.0）。
+// Kotlin doubleOrNull 对 JSON 字符串形式的数字（如 "0.5"）同样解析为 0.5，这里对齐该语义。
 func rawFloat(r json.RawMessage) float64 {
 	var f float64
-	if err := json.Unmarshal(r, &f); err != nil {
-		return 0.0
+	if err := json.Unmarshal(r, &f); err == nil {
+		return f
 	}
-	return f
+	var s string
+	if err := json.Unmarshal(r, &s); err == nil {
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return f
+		}
+	}
+	return 0.0
 }

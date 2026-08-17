@@ -12,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/xieguiawu/llm-api-check/internal/app"
 	"github.com/xieguiawu/llm-api-check/internal/config"
@@ -130,7 +132,7 @@ func cmdStatus(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 1
 	}
-	warnSecurity(stderr)
+	warnSecurity(stderr, noColor)
 	a := app.New(cfg)
 	var res app.Result
 	if *noRefresh {
@@ -145,11 +147,13 @@ func cmdStatus(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut
 		}
 	}
 	if jsonOut {
+		// security_warning 在 Save 前快照（Save 会清空警告，momus P2-3）
+		sw := config.SecurityWarning
 		writeJSON(stdout, map[string]any{
-			"deepseek":         sliceOrEmpty(res.DeepSeek),
-			"accounts":         sliceOrEmpty(res.Accounts),
+			"deepseek":         sliceOrEmpty(publicDeepSeekResults(res.DeepSeek)),
+			"accounts":         sliceOrEmpty(publicAccountResults(res.Accounts)),
 			"last_updated":     unixMillisOrZero(res.LastUpdated),
-			"security_warning": config.SecurityWarning,
+			"security_warning": sw,
 		})
 		return exitCodeForResults(res)
 	}
@@ -204,7 +208,7 @@ func cmdDeepSeek(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 1
 	}
-	warnSecurity(stderr)
+	warnSecurity(stderr, noColor)
 	accounts := cfg.DeepSeekAccounts
 	if fs.NArg() == 1 {
 		filtered, ok := filterDeepSeek(accounts, fs.Arg(0))
@@ -229,9 +233,9 @@ func cmdDeepSeek(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	res := app.Result{DeepSeek: results}
 	if jsonOut {
 		if len(results) == 1 {
-			writeJSON(stdout, map[string]any{"deepseek": results[0]})
+			writeJSON(stdout, map[string]any{"deepseek": publicDeepSeekResult(results[0])})
 		} else {
-			writeJSON(stdout, map[string]any{"deepseek": results})
+			writeJSON(stdout, map[string]any{"deepseek": publicDeepSeekResults(results)})
 		}
 		return exitCodeForResults(res)
 	}
@@ -265,7 +269,7 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 1
 	}
-	warnSecurity(stderr)
+	warnSecurity(stderr, noColor)
 	accounts := cfg.Accounts
 	if fs.NArg() == 1 {
 		filtered, ok := filterAccounts(accounts, fs.Arg(0))
@@ -291,9 +295,9 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	res := app.Result{Accounts: results}
 	if jsonOut {
 		if len(results) == 1 {
-			writeJSON(stdout, map[string]any{"account": results[0]})
+			writeJSON(stdout, map[string]any{"account": publicAccountResult(results[0])})
 		} else {
-			writeJSON(stdout, map[string]any{"accounts": results})
+			writeJSON(stdout, map[string]any{"accounts": publicAccountResults(results)})
 		}
 		return exitCodeForResults(res)
 	}
@@ -309,7 +313,7 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	return exitCodeForResults(res)
 }
 
-// filterDeepSeek 按 id 精确匹配，否则按 name 精确匹配
+// filterDeepSeek 按 id 或 name 精确匹配（任一命中即包含）
 func filterDeepSeek(list []models.DeepSeekAccount, q string) ([]models.DeepSeekAccount, bool) {
 	var out []models.DeepSeekAccount
 	for _, a := range list {
@@ -320,7 +324,7 @@ func filterDeepSeek(list []models.DeepSeekAccount, q string) ([]models.DeepSeekA
 	return out, len(out) > 0
 }
 
-// filterAccounts 按 id 精确匹配，否则按 name 精确匹配
+// filterAccounts 按 id 或 name 精确匹配（任一命中即包含）
 func filterAccounts(list []models.Account, q string) ([]models.Account, bool) {
 	var out []models.Account
 	for _, a := range list {
@@ -359,10 +363,11 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 1
 	}
+	warnSecurity(stderr, false)
 	if jsonOut {
 		writeJSON(stdout, map[string]any{
-			"deepseek_accounts": sliceOrEmpty(cfg.DeepSeekAccounts),
-			"accounts":          sliceOrEmpty(cfg.Accounts),
+			"deepseek_accounts": sliceOrEmpty(publicDeepSeekAccounts(cfg.DeepSeekAccounts)),
+			"accounts":          sliceOrEmpty(publicAccounts(cfg.Accounts)),
 		})
 		return 0
 	}
@@ -455,7 +460,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 			return 1
 		}
 		if jsonOut {
-			writeJSON(stdout, map[string]any{"account": acc})
+			writeJSON(stdout, map[string]any{"account": publicAccount(acc)})
 		} else {
 			fmt.Fprintf(stdout, "已添加 OpenCode 账号「%s」(id=%s)\n", acc.Name, acc.ID)
 		}
@@ -484,7 +489,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		return 1
 	}
 	if jsonOut {
-		writeJSON(stdout, map[string]any{"deepseek_account": acc})
+		writeJSON(stdout, map[string]any{"deepseek_account": publicDeepSeekAccount(acc)})
 	} else {
 		fmt.Fprintf(stdout, "已添加 DeepSeek 账号「%s」(id=%s)\n", acc.Name, acc.ID)
 	}
@@ -660,14 +665,15 @@ func resolveSecret(flagVal, flagName, envName, prompt string, required bool, std
 	return strings.TrimSpace(v), nil
 }
 
-// isTTY stdin 是否为终端（ModeCharDevice）
+// isTTY stdin 是否为真实终端：用 ioctl TCGETS 判定（ModeCharDevice 会把 /dev/null 误判为终端，momus P1-2）
 func isTTY(r io.Reader) bool {
 	f, ok := r.(*os.File)
 	if !ok {
 		return false
 	}
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	var termios [64]byte
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&termios[0])))
+	return errno == 0
 }
 
 // promptTTY 从 TTY 读取一行；secret 时尝试 stty -echo 关闭回显
@@ -701,16 +707,18 @@ func promptTTY(stdin io.Reader, stdout io.Writer, prompt string, secret bool) (s
 
 // ── 输出小工具 ────────────────────────────────────────────────
 
-// warnSecurity SecurityWarning 非空时输出到 stderr（TTY 下黄色）
-func warnSecurity(stderr io.Writer) {
+// warnSecurity SecurityWarning 非空时输出到 stderr（TTY 下黄色；noColor 时无色）
+func warnSecurity(stderr io.Writer, noColor bool) {
 	if config.SecurityWarning == "" {
 		return
 	}
-	c := colorizer(false)
+	c := colorizer(noColor)
 	msg := "警告: " + config.SecurityWarning
-	if f, ok := stderr.(*os.File); ok {
-		if fi, err := f.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
-			msg = c.Yellow(msg)
+	if !noColor && os.Getenv("NO_COLOR") == "" {
+		if f, ok := stderr.(*os.File); ok {
+			if isTTY(f) {
+				msg = c.Yellow(msg)
+			}
 		}
 	}
 	fmt.Fprintln(stderr, msg)
@@ -722,6 +730,102 @@ func sliceOrEmpty[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+// ── JSON 凭据掩码（momus P1-3）：明文凭据不落到 stdout（终端日志/CI 日志/录屏泄漏向量）──
+// maskSecret 保留首尾 4 字符，中间掩码；短于 9 字符全掩码；空串原样。
+func maskSecret(s string) string {
+	if s == "" {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= 8 {
+		return "****"
+	}
+	return string(r[:4]) + "****" + string(r[len(r)-4:])
+}
+
+func publicDeepSeekAccount(a models.DeepSeekAccount) map[string]any {
+	return map[string]any{
+		"id":            a.ID,
+		"name":          a.Name,
+		"apiKey":        maskSecret(a.ApiKey),
+		"platformToken": maskSecret(a.PlatformToken),
+	}
+}
+
+func publicAccount(a models.Account) map[string]any {
+	return map[string]any{
+		"id":          a.ID,
+		"name":        a.Name,
+		"goApiKey":    maskSecret(a.GoApiKey),
+		"workspaceId": maskSecret(a.WorkspaceId),
+		"authCookie":  maskSecret(a.AuthCookie),
+	}
+}
+
+func publicDeepSeekResults(rs []app.DeepSeekResult) []map[string]any {
+	out := make([]map[string]any, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, publicDeepSeekResult(r))
+	}
+	return out
+}
+
+func publicDeepSeekResult(r app.DeepSeekResult) map[string]any {
+	m := map[string]any{
+		"account": publicDeepSeekAccount(r.Account),
+	}
+	if r.Balance != nil {
+		m["balance"] = r.Balance
+	}
+	if r.Cost != nil {
+		m["cost"] = r.Cost
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	return m
+}
+
+func publicAccountResults(rs []app.AccountResult) []map[string]any {
+	out := make([]map[string]any, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, publicAccountResult(r))
+	}
+	return out
+}
+
+func publicAccountResult(r app.AccountResult) map[string]any {
+	m := map[string]any{
+		"account": publicAccount(r.Account),
+	}
+	if r.GoUsage != nil {
+		m["go_usage"] = r.GoUsage
+	}
+	if r.ZenBilling != nil {
+		m["zen_billing"] = r.ZenBilling
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	return m
+}
+
+func publicDeepSeekAccounts(as []models.DeepSeekAccount) []map[string]any {
+	out := make([]map[string]any, 0, len(as))
+	for _, a := range as {
+		out = append(out, publicDeepSeekAccount(a))
+	}
+	return out
+}
+
+func publicAccounts(as []models.Account) []map[string]any {
+	out := make([]map[string]any, 0, len(as))
+	for _, a := range as {
+		out = append(out, publicAccount(a))
+	}
+	return out
 }
 
 // unixMillisOrZero 零值时间输出 0 而非负时间戳

@@ -247,6 +247,39 @@ func TestCostCrossYearMonthParams(t *testing.T) {
 	}
 }
 
+// TestCostMonthEndOverflow 月末溢出回归（momus P1-1）：3/31、5/31 等日 AddDate 会归一化到
+// 下月日期导致请求错月份（旧实现 5/31 → 上月请求 month=5 重复当月、金额翻倍）。
+// 修复后用 day=1 构造上月，请求必须为正确的上月月份。
+func TestCostMonthEndOverflow(t *testing.T) {
+	cases := []struct {
+		now    time.Time
+		prevQ  string // 上月请求参数
+		curQ   string // 当月请求参数
+	}{
+		{time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC), "month=2&year=2026", "month=3&year=2026"},
+		{time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC), "month=4&year=2026", "month=5&year=2026"},
+		{time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC), "month=6&year=2026", "month=7&year=2026"},
+		{time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC), "month=11&year=2026", "month=12&year=2026"},
+		{time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC), "month=12&year=2025", "month=1&year=2026"},
+	}
+	for _, tc := range cases {
+		var requests []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests = append(requests, r.URL.RawQuery)
+			w.Write([]byte(`{"code":0,"data":{"biz_data":[]}}`))
+		}))
+		repo := &DeepSeekRepo{BaseBalanceURL: srv.URL, BaseCostURL: srv.URL, Client: srv.Client()}
+		repo.Now = func() time.Time { return tc.now }
+		if _, err := repo.Cost("tok"); err == nil || err.Error() != "消费数据为空" {
+			t.Fatalf("%s: 空数据应报「消费数据为空」，got %v", tc.now.Format("2006-01-02"), err)
+		}
+		if len(requests) != 2 || requests[0] != tc.curQ || requests[1] != tc.prevQ {
+			t.Errorf("%s: 请求参数不符，want [%s %s] got %v", tc.now.Format("2006-01-02"), tc.curQ, tc.prevQ, requests)
+		}
+		srv.Close()
+	}
+}
+
 // ── Zen billing ───────────────────────────────────────────────
 
 func TestZenBillingOK(t *testing.T) {
