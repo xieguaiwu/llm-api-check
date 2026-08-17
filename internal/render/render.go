@@ -200,10 +200,12 @@ func writeAccountOverview(b *strings.Builder, r app.AccountResult, c Colorizer) 
 	if goU != nil {
 		var parts []string
 		for _, w := range goWindows(goU) {
-			col := ColorForPercent(w.win.Percent, w.win.Status == "rate-limited")
+			rateLimited := w.win.Status == "rate-limited"
+			col := ColorForPercent(w.win.Percent, rateLimited)
 			seg := fmt.Sprintf("%s %d%% %s", w.label, w.win.Percent, UsageBar(w.win.Percent, 10))
-			if w.win.Status == "rate-limited" {
-				seg += " " + c.Red("已限流")
+			if rateLimited {
+				// 整段已是红色（ColorForPercent 对 rate-limited 强制红），不再嵌套上色
+				seg += " 已限流"
 			}
 			parts = append(parts, c.apply(col, seg))
 		}
