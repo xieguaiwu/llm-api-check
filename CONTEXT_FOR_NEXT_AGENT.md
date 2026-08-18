@@ -5,6 +5,9 @@ llm-api-check — Go CLI，复刻 Android app「API Checkers」（现名 pocket-
 
 **公开 repo：https://github.com/xieguaiwu/llm-api-check（PUBLIC，13 commits，发布前按 System_Fix git 审计：历史零真实 key）**
 
+## 最后一次完成的工作（2026-08-18 10:0x）
+- **限流时限直接可见（c694d24）**：对照 Android DetailScreen.WindowRow 修复——rate-limited 行由「已限流」替代倒计时改为「已限流 · N小时M分后重置」并存（限流时限直接显示，需求已写入 ~/prompt_boilerplates/Coding/index.md §六 项目专属要求）。render_test 断言同步反转（限流行必须含倒计时）。实测：xieguaiwu Monthly 限流 → `已限流 · 175小时7分后重置`。已部署 ~/.local/bin/llm-api-check。
+
 ## 最后一次完成的工作（2026-08-18 01:55）
 - **发布公开 repo（01:55）**：System_Fix → dotfiles-sync-and-audit 流程审计（历史全量扫描真实 key 前缀 sk-uZY/sk-2a37/sk-rGB/sk-vrIY/nvapi- 零命中；Fe26.2 命中均为 README 格式示例；fixture 为 TEST 占位符；config.json/.env 未入库；工作区干净）→ gh repo create llm-api-check --public → push 完成（main 同步 2b55ca2）
 - **真实冒烟完成（01:26）**：从 ~/.config/fish/config.fish 提取 4 个 key 配置 4 个账号并验证真实 API：DeepSeek 主号（余额 ¥62.45）、opencode 主号（M 70% 黄）、xieguaiwu（M 100% 已限流红）、songjieshi（W 77% 黄）。直连无代理成功。
