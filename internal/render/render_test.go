@@ -191,7 +191,7 @@ func TestRenderAccountDetail(t *testing.T) {
 		"Rolling 5h",
 		"4小时20分后重置",
 		"52分钟后重置",
-		"已限流", // rate-limited → 红「已限流」替代倒计时
+		"已限流", // rate-limited → 红「已限流」徽章 + 倒计时并存（对照 Android WindowRow）
 		"Zen Plan · 按量",
 		"余额 $19.99",
 		"本月 $0.00 / $50.00 [░░░░░░░░░░] 0%",
@@ -201,9 +201,9 @@ func TestRenderAccountDetail(t *testing.T) {
 			t.Errorf("详情缺少 %q:\n%s", want, got)
 		}
 	}
-	// rate-limited 行不显示倒计时
-	if strings.Contains(got, "1小时后重置") {
-		t.Errorf("限流行应显示「已限流」而非倒计时:\n%s", got)
+	// rate-limited 行必须同时显示「已限流」与重置倒计时（限流时限直接可见，对照 Android WindowRow）
+	if !strings.Contains(got, "1小时后重置") {
+		t.Errorf("限流行应同时显示「已限流」与倒计时（限流时限）:\n%s", got)
 	}
 }
 

@@ -226,7 +226,8 @@ func writeAccountOverview(b *strings.Builder, r app.AccountResult, c Colorizer) 
 // ── OpenCode 账号详情（对应 DetailScreen） ────────────────────
 
 // RenderAccountDetail OpenCode 账号详情：Go 三窗口 + Zen 账单 + 错误卡。
-// 窗口行尾：正常显示重置倒计时；status=rate-limited → 红「已限流」替代。
+// 窗口行尾：始终显示重置倒计时（限流时限）；status=rate-limited → 红「已限流」徽章与倒计时并存
+// （对照 Android DetailScreen.WindowRow：CountdownText 恒显 + 已限流徽章）。
 func RenderAccountDetail(r app.AccountResult, now time.Time, c Colorizer) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (OpenCode)\n", r.Account.Name)
@@ -252,7 +253,8 @@ func RenderAccountDetail(r app.AccountResult, now time.Time, c Colorizer) string
 			pct := c.apply(col, fmt.Sprintf("%d%%", row.win.Percent))
 			suffix := FormatCountdown(row.win.ResetsAt, now)
 			if rateLimited {
-				suffix = c.Red("已限流")
+				// 限流时限必须直接可见：已限流徽章 + 重置倒计时并存（对照 Android WindowRow）
+				suffix = c.Red("已限流") + " · " + suffix
 			}
 			fmt.Fprintf(&b, "  %-12s %s %s · %s\n", row.label, UsageBar(row.win.Percent, 10), pct, suffix)
 		}
