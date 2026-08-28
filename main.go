@@ -13,9 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/xieguiawu/llm-api-check/internal/app"
 	"github.com/xieguiawu/llm-api-check/internal/config"
@@ -843,17 +841,6 @@ func resolveSecret(flagVal, flagName, envName, prompt string, required bool, std
 		return "", nil
 	}
 	return strings.TrimSpace(v), nil
-}
-
-// isTTY stdin 是否为真实终端：用 ioctl TCGETS 判定（ModeCharDevice 会把 /dev/null 误判为终端，momus P1-2）
-func isTTY(r io.Reader) bool {
-	f, ok := r.(*os.File)
-	if !ok {
-		return false
-	}
-	var termios [64]byte
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&termios[0])))
-	return errno == 0
 }
 
 // promptTTY 从 TTY 读取一行；secret 时尝试 stty -echo 关闭回显
