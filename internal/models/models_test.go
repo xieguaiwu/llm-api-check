@@ -71,3 +71,48 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// ── Qwen ───────────────────────────────────────────────────────
+
+func TestNormalizeQwenRegion(t *testing.T) {
+	ok := map[string]string{
+		"":               RegionQwenCN,
+		"cn":             RegionQwenCN,
+		" CN-Beijing ":   RegionQwenCN,
+		"beijing":        RegionQwenCN,
+		"intl":           RegionQwenIntl,
+		"sg":             RegionQwenIntl,
+		"ap-southeast-1": RegionQwenIntl,
+		"International":  RegionQwenIntl,
+	}
+	for in, want := range ok {
+		got, err := NormalizeQwenRegion(in)
+		if err != nil || got != want {
+			t.Errorf("NormalizeQwenRegion(%q) = (%q,%v), want %q", in, got, err, want)
+		}
+	}
+	if _, err := NormalizeQwenRegion("mars"); err == nil {
+		t.Error("未知区域应报错")
+	}
+}
+
+func TestQwenAccountHelpers(t *testing.T) {
+	a := QwenAccount{ID: "q", Name: "n", ApiKey: "k", ConsoleCookie: "  "}
+	if a.HasCookie() {
+		t.Error("纯空白 Cookie 应视为未配置")
+	}
+	if a.QwenRegion() != RegionQwenCN {
+		t.Errorf("空区域应回落中国大陆: %q", a.QwenRegion())
+	}
+	a.Region = "非法区域"
+	if a.QwenRegion() != RegionQwenCN {
+		t.Errorf("非法区域应回落中国大陆: %q", a.QwenRegion())
+	}
+	a.ConsoleCookie = "sec_token=tok"
+	if !a.HasCookie() {
+		t.Error("配置 Cookie 后 HasCookie 应为真")
+	}
+	if QwenRegionDisplayName("intl") != "国际（新加坡）" || QwenRegionDisplayName("") != "中国大陆（北京）" {
+		t.Error("区域展示名不符")
+	}
+}

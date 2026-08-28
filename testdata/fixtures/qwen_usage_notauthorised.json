@@ -1,0 +1,10 @@
+{
+  "code": "200",
+  "data": {
+    "success": false,
+    "httpStatus": 200,
+    "errorCode": "BailianGateway.Workspace.NotAuthorised",
+    "errorMsg": "BailianGateway.Workspace.NotAuthorised"
+  },
+  "successResponse": true
+}

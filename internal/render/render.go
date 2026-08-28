@@ -10,6 +10,7 @@ import (
 
 	"github.com/xieguiawu/llm-api-check/internal/app"
 	"github.com/xieguiawu/llm-api-check/internal/models"
+	"github.com/xieguiawu/llm-api-check/internal/parsers"
 )
 
 // ── 颜色 ───────────────────────────────────────────────────────
@@ -150,15 +151,15 @@ func FormatCountdown(resetsAt string, now time.Time) string {
 
 // ── 总览视图（对应 HomeScreen） ───────────────────────────────
 
-// RenderOverview 总览：DeepSeek 账号 + OpenCode 账号卡片列表。
-func RenderOverview(ds []app.DeepSeekResult, accs []app.AccountResult, lastUpdated time.Time, c Colorizer) string {
+// RenderOverview 总览：DeepSeek 账号 + OpenCode 账号 + Qwen 账号卡片列表。
+func RenderOverview(ds []app.DeepSeekResult, accs []app.AccountResult, qwen []app.QwenResult, lastUpdated time.Time, c Colorizer) string {
 	var b strings.Builder
 	if lastUpdated.IsZero() {
 		b.WriteString("LLM API Check — 尚未更新\n")
 	} else {
 		fmt.Fprintf(&b, "LLM API Check — 更新于 %s\n", lastUpdated.Format("15:04"))
 	}
-	if len(ds) == 0 && len(accs) == 0 {
+	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 {
 		b.WriteString("\n未配置任何账号，运行 llm-api-check accounts add --help 添加\n")
 		return b.String()
 	}
@@ -169,6 +170,10 @@ func RenderOverview(ds []app.DeepSeekResult, accs []app.AccountResult, lastUpdat
 	for _, r := range accs {
 		fmt.Fprintf(&b, "\nOpenCode (%s)\n", r.Account.Name)
 		writeAccountOverview(&b, r, c)
+	}
+	for _, r := range qwen {
+		fmt.Fprintf(&b, "\nQwen (%s)\n", r.Account.Name)
+		writeQwenOverview(&b, r, c)
 	}
 	return b.String()
 }
@@ -345,4 +350,132 @@ func goWindows(u *models.GoUsage) []windowEntry {
 		ws = append(ws, windowEntry{"M", u.Monthly})
 	}
 	return ws
+}
+
+// ── Qwen 总览（对应 HomeScreen 的 Qwen 卡片） ─────────────────
+
+// qwenWindowEntry 带标签的 Qwen 窗口
+type qwenWindowEntry struct {
+	label string
+	win   *models.QwenWindow
+}
+
+// qwenWindows 按 5 小时 / 7 天顺序收集非空窗口
+func qwenWindows(u *models.QwenUsage) []qwenWindowEntry {
+	var ws []qwenWindowEntry
+	if u.FiveHour != nil {
+		ws = append(ws, qwenWindowEntry{"5小时", u.FiveHour})
+	}
+	if u.Weekly != nil {
+		ws = append(ws, qwenWindowEntry{"7天", u.Weekly})
+	}
+	return ws
+}
+
+// RegionDisplayName 区域展示名（委托 models，保证 CLI/UI 与 Android 同源）
+func RegionDisplayName(region string) string { return models.QwenRegionDisplayName(region) }
+
+func writeQwenOverview(b *strings.Builder, r app.QwenResult, c Colorizer) {
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type qwen --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return
+	}
+	if r.Usage != nil {
+		var parts []string
+		for _, w := range qwenWindows(r.Usage) {
+			col := ColorForPercent(w.win.Percent, w.win.Exhausted)
+			seg := fmt.Sprintf("%s %d%% %s", w.label, w.win.Percent, UsageBar(w.win.Percent, 10))
+			if w.win.Exhausted {
+				// 整段已是红色（rate-limited 强制红），不再嵌套上色
+				seg += " 已限流"
+			}
+			parts = append(parts, c.apply(col, seg))
+		}
+		if len(parts) > 0 {
+			b.WriteString("  " + strings.Join(parts, " · ") + "\n")
+		}
+	}
+	if plan := planSummary(r); plan != "" {
+		b.WriteString("  " + plan + "\n")
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red("  "+r.Error) + "\n")
+	} else if r.Usage == nil && r.Plan == nil {
+		b.WriteString(c.Gray("  暂无数据") + "\n")
+	}
+}
+
+// planSummary 套餐行：档位（未知则省略）+ 可用模型数
+func planSummary(r app.QwenResult) string {
+	plan := parsers.PlanDisplayName(usagePlanCode(r))
+	count := 0
+	if r.Plan != nil {
+		count = len(r.Plan.Models)
+	}
+	switch {
+	case plan != "" && count > 0:
+		return fmt.Sprintf("套餐 %s · 模型 %d 个", plan, count)
+	case count > 0:
+		return fmt.Sprintf("模型 %d 个", count)
+	case plan != "":
+		return "套餐 " + plan
+	default:
+		return ""
+	}
+}
+
+// usagePlanCode 取配额响应里的套餐档位（未拉到则为空）
+func usagePlanCode(r app.QwenResult) string {
+	if r.Usage == nil {
+		return ""
+	}
+	return r.Usage.PlanCode
+}
+
+// ── Qwen 账号详情（对应 DetailScreen 的 Qwen 页） ──────────────
+
+// RenderQwenDetail Qwen 账号详情：套餐/模型 + 5小时/7天 配额窗口。
+// 窗口行尾同 OpenCode：重置倒计时恒显，配额用尽时「已限流」徽章与倒计时并存
+// （限流时限直接可见，见 ~/prompt_boilerplates/Coding/index.md §六）。
+func RenderQwenDetail(r app.QwenResult, now time.Time, c Colorizer) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (Qwen · %s)\n", r.Account.Name, RegionDisplayName(r.Account.Region))
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type qwen --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red(r.Error) + "\n")
+		}
+		return b.String()
+	}
+	b.WriteString("Token Plan · 订阅\n")
+	if plan := planSummary(r); plan != "" {
+		fmt.Fprintf(&b, "  %-12s %s\n", "套餐", plan)
+	}
+	if r.Usage == nil {
+		if r.Account.HasCookie() {
+			b.WriteString(c.Gray("  配额窗口 暂无数据") + "\n")
+		} else {
+			b.WriteString(c.Gray("  配额窗口 需控制台 Cookie（accounts add --type qwen --console-cookie …）") + "\n")
+		}
+	} else {
+		for _, w := range qwenWindows(r.Usage) {
+			col := ColorForPercent(w.win.Percent, w.win.Exhausted)
+			pct := c.apply(col, fmt.Sprintf("%d%%", w.win.Percent))
+			suffix := FormatCountdown(w.win.ResetsAt, now)
+			if w.win.Exhausted {
+				suffix = c.Red("已限流") + " · " + suffix
+			}
+			fmt.Fprintf(&b, "  %-12s %s %s · %s\n", w.label, UsageBar(w.win.Percent, 10), pct, suffix)
+		}
+	}
+	if r.Plan != nil && len(r.Plan.Models) > 0 {
+		fmt.Fprintf(&b, "  模型 %s\n", strings.Join(r.Plan.Models, ", "))
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red(r.Error) + "\n")
+	}
+	return b.String()
 }

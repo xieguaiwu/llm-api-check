@@ -1,0 +1,13 @@
+{
+  "first_id": "model-id-0",
+  "last_id": "model-id-3",
+  "object": "list",
+  "data": [
+    {"created": 1780806507, "owned_by": "system", "id": "qwen3.8-flash", "object": "model"},
+    {"created": 1787000000, "owned_by": "system", "id": "qwen3.8-max", "object": "model"},
+    {"created": 1779367398, "owned_by": "system", "id": "glm-5.2", "object": "model"},
+    {"created": 1779367398, "owned_by": "system", "id": "deepseek-v4-flash-0731", "object": "model"},
+    {"created": 1779367398, "owned_by": "system", "id": "", "object": "model"}
+  ],
+  "has_more": false
+}

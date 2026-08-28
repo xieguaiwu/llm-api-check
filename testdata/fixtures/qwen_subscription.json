@@ -1,0 +1,12 @@
+{
+  "code": "200",
+  "successResponse": true,
+  "data": {
+    "success": true,
+    "api": "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/subscription",
+    "DataV2": {
+      "ret": ["SUCCESS::接口调用成功"],
+      "data": {"code": "SUCCESS", "success": true, "data": {"specCode": "Lite", "commodityCode": "sfm_tokenplansolo_public_cn", "endTime": 1789000000000}}
+    }
+  }
+}

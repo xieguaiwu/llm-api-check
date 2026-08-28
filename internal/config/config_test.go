@@ -161,3 +161,67 @@ func TestDefaultPathHome(t *testing.T) {
 		t.Errorf("DefaultPath 应回退 ~/.config，got %s want %s", got, want)
 	}
 }
+
+// ── Qwen 账号 ──────────────────────────────────────────────────
+
+func TestQwenRoundtripAndCRUD(t *testing.T) {
+	path := tmpPath(t)
+	cfg := &Config{}
+	a := models.QwenAccount{ID: "q1", Name: "订阅号", ApiKey: "sk-sp-1", ConsoleCookie: "ck", Region: "cn-beijing"}
+	cfg.SaveQwenAccount(a)
+	cfg.SaveQwenAccount(models.QwenAccount{ID: "q2", Name: "二号", ApiKey: "sk-sp-2"})
+	if err := cfg.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.QwenAccounts) != 2 || loaded.QwenAccounts[0] != a {
+		t.Errorf("Qwen 账号往返不一致: %+v", loaded.QwenAccounts)
+	}
+	// upsert 同 id 覆盖
+	a.Name = "改名"
+	loaded.SaveQwenAccount(a)
+	if len(loaded.QwenAccounts) != 2 || loaded.QwenAccounts[0].Name != "改名" {
+		t.Errorf("同 id 应覆盖而非追加: %+v", loaded.QwenAccounts)
+	}
+	loaded.DeleteQwenAccount("q1")
+	if len(loaded.QwenAccounts) != 1 || loaded.QwenAccounts[0].ID != "q2" {
+		t.Errorf("删除不符: %+v", loaded.QwenAccounts)
+	}
+}
+
+// 旧配置（无 qwen_accounts 字段）必须能正常加载
+func TestLoadLegacyConfigWithoutQwen(t *testing.T) {
+	path := tmpPath(t)
+	raw := `{"deepseek_accounts":[{"id":"d1","name":"DS","apiKey":"k"}],"accounts":[],"last_update":{"all":1}}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.QwenAccounts) != 0 {
+		t.Errorf("旧配置应得空 Qwen 列表: %+v", cfg.QwenAccounts)
+	}
+	if len(cfg.DeepSeekAccounts) != 1 {
+		t.Errorf("旧配置 DeepSeek 账号应保留: %+v", cfg.DeepSeekAccounts)
+	}
+}
+
+func TestQwenRegionPersisted(t *testing.T) {
+	path := tmpPath(t)
+	cfg := &Config{QwenAccounts: []models.QwenAccount{{ID: "q1", ApiKey: "k", Region: "ap-southeast-1"}}}
+	if err := cfg.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.QwenAccounts[0].QwenRegion() != models.RegionQwenIntl {
+		t.Errorf("区域往返不符: %+v", loaded.QwenAccounts[0])
+	}
+}

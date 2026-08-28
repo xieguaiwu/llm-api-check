@@ -27,6 +27,7 @@ var SecurityWarning string
 type Config struct {
 	DeepSeekAccounts []models.DeepSeekAccount `json:"deepseek_accounts"`
 	Accounts         []models.Account         `json:"accounts"`
+	QwenAccounts     []models.QwenAccount     `json:"qwen_accounts"`
 	LastUpdate       map[string]int64         `json:"last_update"`
 }
 
@@ -156,6 +157,28 @@ func (c *Config) DeleteAccount(id string) {
 		}
 	}
 	c.Accounts = kept
+}
+
+// SaveQwenAccount 按 id upsert（对应 SecureSettings.saveQwenAccount）
+func (c *Config) SaveQwenAccount(a models.QwenAccount) {
+	for i, x := range c.QwenAccounts {
+		if x.ID == a.ID {
+			c.QwenAccounts[i] = a
+			return
+		}
+	}
+	c.QwenAccounts = append(c.QwenAccounts, a)
+}
+
+// DeleteQwenAccount 按 id 删除（对应 SecureSettings.deleteQwenAccount）
+func (c *Config) DeleteQwenAccount(id string) {
+	kept := c.QwenAccounts[:0]
+	for _, x := range c.QwenAccounts {
+		if x.ID != id {
+			kept = append(kept, x)
+		}
+	}
+	c.QwenAccounts = kept
 }
 
 // SetLastUpdate 记录最近更新时间（对应 SecureSettings.setLastUpdate）

@@ -1,0 +1,13 @@
+{
+  "code": "200",
+  "data": {
+    "success": false,
+    "httpStatus": 200,
+    "errorCode": "BailianGateway.Login.NotLogined",
+    "api": "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage",
+    "errorMsg": "BailianGateway.Login.NotLogined"
+  },
+  "httpStatusCode": "200",
+  "requestId": "04e172c9-c593-454c-a83b-004eb7c28eb5",
+  "successResponse": true
+}

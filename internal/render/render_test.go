@@ -129,7 +129,7 @@ func TestColorizerEnabledHasANSI(t *testing.T) {
 // ── 总览 / 详情渲染 ───────────────────────────────────────────
 
 func TestRenderOverviewEmpty(t *testing.T) {
-	got := RenderOverview(nil, nil, time.Time{}, Colorizer{Disabled: true})
+	got := RenderOverview(nil, nil, nil, time.Time{}, Colorizer{Disabled: true})
 	if !strings.Contains(got, "未配置任何账号") {
 		t.Errorf("空配置应提示添加账号: %q", got)
 	}
@@ -152,7 +152,7 @@ func TestRenderOverviewWithData(t *testing.T) {
 		},
 		ZenBilling: &models.ZenBilling{BalanceUsd: 19.99},
 	}}
-	got := RenderOverview(ds, accs, baseTime(), Colorizer{Disabled: true})
+	got := RenderOverview(ds, accs, nil, baseTime(), Colorizer{Disabled: true})
 	for _, want := range []string{
 		"LLM API Check — 更新于 12:00",
 		"DeepSeek (测试)",
@@ -259,5 +259,90 @@ func TestRenderDeepSeekDetail(t *testing.T) {
 	got2 := RenderDeepSeekDetail(r2, Colorizer{Disabled: true})
 	if !strings.Contains(got2, "未配置平台 Token，仅显示余额") {
 		t.Errorf("无 token 应提示仅显示余额: %q", got2)
+	}
+}
+
+// ── Qwen Token Plan 渲染 ─────────────────────────────────────
+
+func qwenResult() app.QwenResult {
+	now := baseTime()
+	return app.QwenResult{
+		Account: models.QwenAccount{ID: "q1", Name: "订阅号", ApiKey: "sk-sp-x", ConsoleCookie: "ck"},
+		Plan:    &models.QwenPlan{Models: []string{"qwen3.8-flash", "qwen3.8-max"}},
+		Usage: &models.QwenUsage{
+			PlanCode: "lite",
+			FiveHour: &models.QwenWindow{Percent: 79, ResetsAt: now.Add(4*time.Hour + 20*time.Minute).Format(time.RFC3339)},
+			Weekly:   &models.QwenWindow{Percent: 100, ResetsAt: now.Add(2 * time.Hour).Format(time.RFC3339), Exhausted: true},
+		},
+	}
+}
+
+func TestRenderQwenDetailWindows(t *testing.T) {
+	got := RenderQwenDetail(qwenResult(), baseTime(), Colorizer{Disabled: true})
+	for _, want := range []string{
+		"订阅号 (Qwen · 中国大陆（北京）)",
+		"Token Plan · 订阅",
+		"套餐 Lite · 模型 2 个",
+		"5小时", "79%", "4小时20分后重置",
+		"7天", "100%",
+		"qwen3.8-flash, qwen3.8-max",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Qwen 详情缺少 %q:\n%s", want, got)
+		}
+	}
+}
+
+// 限流时限必须直接可见：已限流徽章与重置倒计时同行并存，禁止互相替代
+// （需求见 ~/prompt_boilerplates/Coding/index.md §六 项目专属要求）
+func TestRenderQwenExhaustedKeepsCountdown(t *testing.T) {
+	got := RenderQwenDetail(qwenResult(), baseTime(), Colorizer{Disabled: true})
+	lines := strings.Split(got, "\n")
+	found := 0
+	for _, ln := range lines {
+		if strings.Contains(ln, "已限流") {
+			found++
+			if !strings.Contains(ln, "2小时后重置") {
+				t.Errorf("限流行缺少重置倒计时（徽章替代了时限）: %q", ln)
+			}
+		}
+	}
+	if found != 1 {
+		t.Errorf("应有 1 行标记已限流，实得 %d:\n%s", found, got)
+	}
+}
+
+func TestRenderQwenDetailNoCookie(t *testing.T) {
+	r := qwenResult()
+	r.Account.ConsoleCookie = ""
+	r.Usage = nil
+	got := RenderQwenDetail(r, baseTime(), Colorizer{Disabled: true})
+	if !strings.Contains(got, "需控制台 Cookie") {
+		t.Errorf("未配 Cookie 应提示配额窗口需 Cookie:\n%s", got)
+	}
+	if !strings.Contains(got, "模型 2 个") {
+		t.Errorf("未配 Cookie 仍应显示模型清单:\n%s", got)
+	}
+}
+
+func TestRenderOverviewQwen(t *testing.T) {
+	got := RenderOverview(nil, nil, []app.QwenResult{qwenResult()}, baseTime(), Colorizer{Disabled: true})
+	for _, want := range []string{"Qwen (订阅号)", "5小时 79% [████████░░]", "7天 100% [██████████] 已限流", "套餐 Lite · 模型 2 个"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("总览缺少 %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderQwenColorWhenExhausted(t *testing.T) {
+	r := qwenResult()
+	r.Usage.Weekly.Exhausted = false
+	plain := RenderQwenDetail(r, baseTime(), Colorizer{})
+	if !strings.Contains(plain, "100%") {
+		t.Fatalf("无色渲染应含百分比: %q", plain)
+	}
+	colored := RenderQwenDetail(r, baseTime(), Colorizer{Disabled: false})
+	if strings.Contains(colored, "已限流") {
+		t.Errorf("未用尽不应出现限流徽章:\n%s", colored)
 	}
 }

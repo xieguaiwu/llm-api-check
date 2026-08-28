@@ -312,3 +312,249 @@ func rawFloat(r json.RawMessage) float64 {
 	}
 	return 0.0
 }
+
+// ── Qwen Token Plan：网关模型清单（API Key 认证） ───────────────
+
+// ParseQwenModels 解析 GET /compatible-mode/v1/models 响应，返回排序后的模型 id 列表。
+// 空清单视为失败：宁显示错误也不显示误導的空套餐。
+func ParseQwenModels(raw string) ([]string, error) {
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, fmt.Errorf("Qwen 模型清单 JSON 解析失败: %w", err)
+	}
+	seen := map[string]bool{}
+	models := make([]string, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		models = append(models, id)
+	}
+	if len(models) == 0 {
+		return nil, errors.New("未获取到 Qwen 可用模型")
+	}
+	sort.Strings(models)
+	return models, nil
+}
+
+// ── Qwen Token Plan：控制台 RPC（Cookie 认证） ─────────────────
+//
+// 控制台网关信封形如 {code, data:{DataV2:{ret, data:{code, data:{...}}}}, successResponse}，
+// 目标负载深度嵌套且部分层以「JSON 字符串」形式内嵌，因此解析器做两件事：
+//  1. 先判错信封（data.success=false / data.errorCode 非空）；
+//  2. BFS 遍历对象/数组（含展开形如 JSON 的字符串值），取第一个包含目标键的对象。
+//
+// 响应形状实测来源：百炼控制台 token-plan/personal/api/v2/usage（2026-08-29 抓包）。
+
+// qwenWalkMaxDepth 内嵌 JSON 展开的最大深度（防御无限嵌套）
+const qwenWalkMaxDepth = 12
+
+// qwenFindObject BFS 查找含任一目标键的对象（内嵌 JSON 字符串会被展开后继续遍历）。
+func qwenFindObject(node any, wants []string, depth int) (map[string]any, bool) {
+	if depth > qwenWalkMaxDepth {
+		return nil, false
+	}
+	switch v := node.(type) {
+	case map[string]any:
+		for _, want := range wants {
+			if _, ok := v[want]; ok {
+				return v, true
+			}
+		}
+		for _, child := range v {
+			if got, ok := qwenFindObject(child, wants, depth+1); ok {
+				return got, true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if got, ok := qwenFindObject(child, wants, depth+1); ok {
+				return got, true
+			}
+		}
+	case string:
+		s := strings.TrimSpace(v)
+		if len(s) >= 2 && (s[0] == '{' || s[0] == '[') {
+			var inner any
+			if err := json.Unmarshal([]byte(s), &inner); err == nil {
+				return qwenFindObject(inner, wants, depth+1)
+			}
+		}
+	}
+	return nil, false
+}
+
+// qwenErrorOf 判错信封：返回可读错误（无错则 nil）。
+// 登录类错误（NotLogined / NeedLogin）映射为 Cookie 过期提示，与 Zen billing 同语义。
+func qwenErrorOf(raw string) error {
+	var env struct {
+		Data struct {
+			Success   *json.RawMessage `json:"success"`
+			ErrorCode string           `json:"errorCode"`
+			ErrorMsg  string           `json:"errorMsg"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return nil // 非标准信封交给后续查找逻辑处理
+	}
+	code := strings.TrimSpace(env.Data.ErrorCode)
+	msg := strings.TrimSpace(env.Data.ErrorMsg)
+	if code == "" && msg == "" {
+		return nil
+	}
+	if code == "" {
+		code = msg
+	}
+	low := strings.ToLower(code + " " + msg)
+	if strings.Contains(low, "notlogined") || strings.Contains(low, "needlogin") ||
+		strings.Contains(low, "login") || strings.Contains(low, "unauthor") {
+		return errors.New("控制台 Cookie 已过期或无效，请更新控制台 Cookie")
+	}
+	return fmt.Errorf("Qwen 控制台接口错误：%s", code)
+}
+
+// qwenNumber 宽容取数（数字或数字字符串）。
+func qwenNumber(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+// qwenRatioToWindow 比例值 → 窗口。契约上接口返回 0-1 比例（实测 0.7913113）；
+// 若 >1 则视为已是百分数（防御性处理，避免 7913% 与误判限流）。
+// Exhausted 由原值达满推导（官方规则：窗口内配额用尽则暂停服务）。
+func qwenRatioToWindow(ratio float64, resetsAt any, now time.Time) *models.QwenWindow {
+	percent, exhausted := qwenPercent(ratio)
+	return &models.QwenWindow{Percent: percent, ResetsAt: qwenResetTime(resetsAt, now), Exhausted: exhausted}
+}
+
+// qwenPercent 拆分「百分比 + 是否用尽」。
+//
+// 接口契约为 0-1 比例（实测 0.7913113）。取值域划分：
+//   - ≤ 2：比例域。>1 为超额（配额用尽后网关仍可能给到 1.0x），一律上限 100% + 已限流；
+//   - > 2：不可能是比例，视为已是百分数尺度（防御：避免显示 7913% 与误判限流）。
+func qwenPercent(ratio float64) (percent int, exhausted bool) {
+	if ratio > 2 {
+		return clampPercent(int(ratio)), ratio >= 100
+	}
+	return clampPercent(int(ratio * 100)), ratio >= 1
+}
+
+// clampPercent 把百分比限到 0-100（用量条上限）
+func clampPercent(p int) int {
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return p
+}
+
+// qwenResetTime 重置时间 → RFC3339。数字按 Unix 毫秒；字符串原样传递
+// （解析失败时渲染层降级为「即将重置」）。
+func qwenResetTime(v any, now time.Time) string {
+	if f, ok := qwenNumber(v); ok {
+		return time.UnixMilli(int64(f)).In(now.Location()).Format(time.RFC3339)
+	}
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+// ParseQwenUsage 解析 tokenplan/personal/api/v2/usage 响应。
+// 两个窗口都缺失 → 报错（仓库层会重试，网关偶发返回空信封）。
+func ParseQwenUsage(raw string, now time.Time) (models.QwenUsage, error) {
+	if err := qwenErrorOf(raw); err != nil {
+		return models.QwenUsage{}, err
+	}
+	var node any
+	if err := json.Unmarshal([]byte(raw), &node); err != nil {
+		return models.QwenUsage{}, fmt.Errorf("Qwen 用量 JSON 解析失败: %w", err)
+	}
+	obj, ok := qwenFindObject(node, []string{"per5HourPercentage", "per1WeekPercentage"}, 0)
+	if !ok {
+		return models.QwenUsage{}, errors.New("Qwen 用量数据暂不可用")
+	}
+	out := models.QwenUsage{}
+	if v, has := obj["per5HourPercentage"]; has {
+		if f, ok := qwenNumber(v); ok {
+			out.FiveHour = qwenRatioToWindow(f, obj["per5HourResetTime"], now)
+		}
+	}
+	if v, has := obj["per1WeekPercentage"]; has {
+		if f, ok := qwenNumber(v); ok {
+			out.Weekly = qwenRatioToWindow(f, obj["per1WeekResetTime"], now)
+		}
+	}
+	if out.FiveHour == nil && out.Weekly == nil {
+		return models.QwenUsage{}, errors.New("Qwen 用量数据暂不可用")
+	}
+	return out, nil
+}
+
+// ParseQwenSubscription 解析 tokenplan/personal/api/v2/subscription 响应，
+// 取套餐档位（lite/standard/pro/max）。找不到档位不是错误（best-effort，返回空串）。
+func ParseQwenSubscription(raw string) (string, error) {
+	if err := qwenErrorOf(raw); err != nil {
+		return "", err
+	}
+	var node any
+	if err := json.Unmarshal([]byte(raw), &node); err != nil {
+		return "", fmt.Errorf("Qwen 订阅 JSON 解析失败: %w", err)
+	}
+	keys := []string{"specCode", "spec_code", "planName", "plan_name", "planCode", "plan_code"}
+	obj, ok := qwenFindObject(node, keys, 0)
+	if !ok {
+		return "", nil
+	}
+	for _, k := range keys {
+		if s, ok := obj[k].(string); ok && strings.TrimSpace(s) != "" {
+			return strings.ToLower(strings.TrimSpace(s)), nil
+		}
+	}
+	return "", nil
+}
+
+// PlanDisplayName 套餐档位 → 展示名（未知那么原样输出）。
+func PlanDisplayName(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "":
+		return ""
+	case "lite":
+		return "Lite"
+	case "standard":
+		return "Standard"
+	case "pro":
+		return "Pro"
+	case "max":
+		return "Max"
+	default:
+		return code
+	}
+}
+
+// reQwenSECToken 从控制台 HTML 提取 SEC_TOKEN（window.ALIYUN_CONSOLE_CONFIG 内）。
+var reQwenSECToken = regexp.MustCompile(`SEC_TOKEN\s*[:=]\s*"([^"]+)"`)
+
+// ExtractQwenSECToken 提取 sec_token；找不到返回空串（网关对部分账号接受无 token 请求）。
+func ExtractQwenSECToken(html string) string {
+	m := reQwenSECToken.FindStringSubmatch(html)
+	if m == nil {
+		return ""
+	}
+	return strings.TrimSpace(m[1])
+}

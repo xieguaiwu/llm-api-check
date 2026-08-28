@@ -30,10 +30,20 @@ type AccountResult struct {
 	Error      string             `json:"error,omitempty"`
 }
 
+// QwenResult 单个 Qwen 账号的刷新结果（对应 QwenUi）。
+// Plan 走 API Key（模型清单）；Usage 走控制台 Cookie（配额窗口），未配 Cookie 时为 nil。
+type QwenResult struct {
+	Account models.QwenAccount `json:"account"`
+	Plan    *models.QwenPlan   `json:"plan,omitempty"`
+	Usage   *models.QwenUsage  `json:"usage,omitempty"`
+	Error   string             `json:"error,omitempty"`
+}
+
 // Result 全量刷新结果
 type Result struct {
 	DeepSeek    []DeepSeekResult
 	Accounts    []AccountResult
+	Qwen        []QwenResult
 	LastUpdated time.Time
 }
 
@@ -41,6 +51,7 @@ type Result struct {
 type Repos struct {
 	DeepSeek *repo.DeepSeekRepo
 	OpenCode *repo.OpenCodeRepo
+	Qwen     *repo.QwenRepo
 }
 
 // App 刷新编排器（对应 AppViewModel）
@@ -55,8 +66,12 @@ type App struct {
 // New 默认构造：真实端点 + 15s 超时 client
 func New(cfg *config.Config) *App {
 	return &App{
-		Repos: &Repos{DeepSeek: repo.NewDeepSeekRepo(), OpenCode: repo.NewOpenCodeRepo()},
-		Cfg:   cfg,
+		Repos: &Repos{
+			DeepSeek: repo.NewDeepSeekRepo(),
+			OpenCode: repo.NewOpenCodeRepo(),
+			Qwen:     repo.NewQwenRepo(),
+		},
+		Cfg: cfg,
 	}
 }
 
@@ -84,8 +99,10 @@ func (a *App) RefreshAll() (Result, error) {
 
 	dsAccounts := append([]models.DeepSeekAccount(nil), a.Cfg.DeepSeekAccounts...)
 	accounts := append([]models.Account(nil), a.Cfg.Accounts...)
+	qwenAccounts := append([]models.QwenAccount(nil), a.Cfg.QwenAccounts...)
 	dsRes := make([]DeepSeekResult, len(dsAccounts))
 	accRes := make([]AccountResult, len(accounts))
+	qwenRes := make([]QwenResult, len(qwenAccounts))
 	var wg sync.WaitGroup
 	for i, acc := range dsAccounts {
 		wg.Add(1)
@@ -101,10 +118,17 @@ func (a *App) RefreshAll() (Result, error) {
 			accRes[i] = a.refreshAccount(acc)
 		}(i, acc)
 	}
+	for i, acc := range qwenAccounts {
+		wg.Add(1)
+		go func(i int, acc models.QwenAccount) {
+			defer wg.Done()
+			qwenRes[i] = a.refreshQwen(acc)
+		}(i, acc)
+	}
 	wg.Wait()
 	now := time.Now()
 	a.Cfg.SetLastUpdate("all", now.UnixMilli())
-	return Result{DeepSeek: dsRes, Accounts: accRes, LastUpdated: now}, nil
+	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, LastUpdated: now}, nil
 }
 
 // RefreshDeepSeek 按 id 刷新单个 DeepSeek 账号（对应 refreshDeepSeekNow）
@@ -176,6 +200,42 @@ func (a *App) refreshAccount(acc models.Account) AccountResult {
 		res.Error = joinErrors(goErr, zenErr)
 	} else {
 		res.Error = errMsg(goErr)
+	}
+	return res
+}
+
+// RefreshQwen 按 id 刷新单个 Qwen 账号（对应 refreshQwenNow）
+func (a *App) RefreshQwen(id string) (QwenResult, error) {
+	var acc models.QwenAccount
+	found := false
+	for _, x := range a.Cfg.QwenAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return QwenResult{}, errors.New("账号不存在或已被删除")
+	}
+	return a.refreshQwen(acc), nil
+}
+
+// refreshQwen 刷模型清单（API Key）+ 配额窗口（配了 Cookie 才拉），错误合并。
+func (a *App) refreshQwen(acc models.QwenAccount) QwenResult {
+	res := QwenResult{Account: acc}
+	plan, planErr := a.Repos.Qwen.Plan(acc)
+	if planErr == nil {
+		res.Plan = &plan
+	}
+	if acc.HasCookie() {
+		usage, usageErr := a.Repos.Qwen.Usage(acc)
+		if usageErr == nil {
+			res.Usage = &usage
+		}
+		res.Error = joinErrors(planErr, usageErr)
+	} else {
+		res.Error = errMsg(planErr)
 	}
 	return res
 }

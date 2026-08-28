@@ -252,9 +252,9 @@ func TestCostCrossYearMonthParams(t *testing.T) {
 // 修复后用 day=1 构造上月，请求必须为正确的上月月份。
 func TestCostMonthEndOverflow(t *testing.T) {
 	cases := []struct {
-		now    time.Time
-		prevQ  string // 上月请求参数
-		curQ   string // 当月请求参数
+		now   time.Time
+		prevQ string // 上月请求参数
+		curQ  string // 当月请求参数
 	}{
 		{time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC), "month=2&year=2026", "month=3&year=2026"},
 		{time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC), "month=4&year=2026", "month=5&year=2026"},
@@ -337,4 +337,259 @@ func diffF(a, b float64) float64 {
 		return a - b
 	}
 	return b - a
+}
+
+// ── Qwen Token Plan ────────────────────────────────────────────
+
+// qwenTestEndpoints 把三组端点全指向同一个 httptest 服务
+func qwenTestEndpoints(srvURL string) *QwenEndpoints {
+	return &QwenEndpoints{
+		Gateway:       srvURL,
+		Dashboard:     srvURL + "/cn-beijing?tab=plan",
+		Quota:         srvURL + "/data/api.json",
+		Action:        "BroadScopeAspnGateway",
+		Region:        "cn-beijing",
+		ConsoleSite:   "BAILIAN_ALIYUN",
+		Domain:        "bailian.console.aliyun.com",
+		Lang:          "zh-CN",
+		CommodityCode: "sfm_tokenplansolo_public_cn",
+		Origin:        srvURL,
+	}
+}
+
+func TestQwenPlanOK(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/compatible-mode/v1/models" {
+			t.Errorf("路径不符: %s", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(readFixture(t, "qwen_models.json")))
+	}))
+	defer srv.Close()
+	repo := &QwenRepo{Client: srv.Client(), Endpoints: &QwenEndpoints{Gateway: srv.URL}}
+	plan, err := repo.Plan(models.QwenAccount{ApiKey: "sk-sp-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer sk-sp-test" {
+		t.Errorf("Authorization 头不符: %q", gotAuth)
+	}
+	if len(plan.Models) != 4 || plan.Models[0] != "deepseek-v4-flash-0731" {
+		t.Errorf("模型清单不符: %v", plan.Models)
+	}
+}
+
+func TestQwenPlan401MentionsRegion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	repo := &QwenRepo{Client: srv.Client(), Endpoints: &QwenEndpoints{Gateway: srv.URL}}
+	_, err := repo.Plan(models.QwenAccount{ApiKey: "sk-sp-bad"})
+	if err == nil || !strings.Contains(err.Error(), "区域") {
+		t.Errorf("401 需提示区域绑定（实测同 key 换区域即 200）: %v", err)
+	}
+}
+
+func TestQwenPlanNoKey(t *testing.T) {
+	repo := &QwenRepo{Endpoints: &QwenEndpoints{Gateway: "https://example.invalid"}}
+	if _, err := repo.Plan(models.QwenAccount{}); err == nil || !strings.Contains(err.Error(), "未配置 API Key") {
+		t.Errorf("空 key 应直接提示未配置: %v", err)
+	}
+}
+
+func TestQwenUsageRequiresCookie(t *testing.T) {
+	repo := &QwenRepo{Endpoints: qwenTestEndpoints("https://example.invalid")}
+	_, err := repo.Usage(models.QwenAccount{ApiKey: "sk-sp-x"})
+	if err == nil || err.Error() != "未配置控制台 Cookie" {
+		t.Errorf("未配 Cookie 应显式提示: %v", err)
+	}
+}
+
+func TestQwenUsageOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/cn-beijing"):
+			w.Write([]byte(`window.ALIYUN_CONSOLE_CONFIG = { SEC_TOKEN: "tok-from-html" };`))
+		case r.URL.Path == "/data/api.json":
+			_ = r.ParseForm()
+			api := r.URL.Query().Get("api")
+			switch api {
+			case qwenAPIUsage:
+				if st := r.PostForm.Get("sec_token"); st != "tok-from-html" {
+					t.Errorf("sec_token 未从页面透传: %q", st)
+				}
+				if r.PostForm.Get("product") != "sfm_bailian" || r.PostForm.Get("action") != "BroadScopeAspnGateway" ||
+					r.PostForm.Get("region") != "cn-beijing" {
+					t.Errorf("表单体不符: %s", r.PostForm.Encode())
+				}
+				params := r.PostForm.Get("params")
+				if !strings.Contains(params, `"Api":"`+qwenAPIUsage+`"`) {
+					t.Errorf("params 缺 Api: %s", params)
+				}
+				if strings.Contains(params, "switchAgent") {
+					t.Errorf("params 不得含 switchAgent（会绑死他人工作区）: %s", params)
+				}
+				if r.Header.Get("Cookie") != "login_aliyunid_csrf=csrf-1; cna=anon-1" {
+					t.Errorf("Cookie 头不符: %q", r.Header.Get("Cookie"))
+				}
+				if r.Header.Get("x-xsrf-token") != "csrf-1" {
+					t.Errorf("x-xsrf-token 应取 login_aliyunid_csrf: %q", r.Header.Get("x-xsrf-token"))
+				}
+				if r.Header.Get("Origin") == "" || r.Header.Get("Referer") == "" {
+					t.Error("缺 Origin/Referer（网关同源校验）")
+				}
+				if !strings.Contains(params, "anon-1") {
+					t.Errorf("cna 需作为 X-Anonymous-Id 进入 cornerstoneParam: %s", params)
+				}
+				w.Write([]byte(readFixture(t, "qwen_usage.json")))
+			case qwenAPISubscription:
+				if !strings.Contains(r.PostForm.Get("params"), "sfm_tokenplansolo_public_cn") {
+					t.Errorf("订阅接口需带 commodityCode: %s", r.PostForm.Get("params"))
+				}
+				w.Write([]byte(readFixture(t, "qwen_subscription.json")))
+			}
+		default:
+			t.Errorf("意外路径: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	repo := &QwenRepo{Client: srv.Client(), Endpoints: qwenTestEndpoints(srv.URL), UsageRetryDelay: time.Millisecond}
+	u, err := repo.Usage(models.QwenAccount{
+		ApiKey: "sk-sp-x", ConsoleCookie: "Cookie: login_aliyunid_csrf=csrf-1; cna=anon-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.FiveHour == nil || u.FiveHour.Percent != 79 {
+		t.Errorf("5 小时窗口不符: %+v", u.FiveHour)
+	}
+	if u.PlanCode != "lite" {
+		t.Errorf("套餐档位不符: %q", u.PlanCode)
+	}
+}
+
+func TestQwenUsageSecTokenFromCookieSkipsDashboard(t *testing.T) {
+	dashboard := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/cn-beijing") {
+			dashboard++
+			t.Error("Cookie 内已有 sec_token 时不应再抓页面")
+			return
+		}
+		w.Write([]byte(readFixture(t, "qwen_usage.json")))
+	}))
+	defer srv.Close()
+	repo := &QwenRepo{Client: srv.Client(), Endpoints: qwenTestEndpoints(srv.URL), UsageRetryDelay: time.Millisecond}
+	if _, err := repo.Usage(models.QwenAccount{ConsoleCookie: "sec_token=tok-ck; cna=a"}); err != nil {
+		t.Fatal(err)
+	}
+	if dashboard != 0 {
+		t.Errorf("不应请求 dashboard，实得 %d", dashboard)
+	}
+}
+
+// 网关偶发返回「200 Success 但无窗口」，重试后成功
+func TestQwenUsageRetriesEmptyEnvelope(t *testing.T) {
+	usageCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/data/api.json" && r.URL.Query().Get("api") == qwenAPIUsage:
+			usageCalls++
+			if usageCalls < 3 {
+				w.Write([]byte(readFixture(t, "qwen_usage_empty.json")))
+				return
+			}
+			w.Write([]byte(readFixture(t, "qwen_usage.json")))
+		case r.URL.Path == "/data/api.json":
+			w.Write([]byte(readFixture(t, "qwen_subscription.json")))
+		default:
+			w.Write([]byte(`SEC_TOKEN: "t";`))
+		}
+	}))
+	defer srv.Close()
+	repo := &QwenRepo{Client: srv.Client(), Endpoints: qwenTestEndpoints(srv.URL), UsageAttempts: 3, UsageRetryDelay: time.Millisecond}
+	if _, err := repo.Usage(models.QwenAccount{ConsoleCookie: "sec_token=tok-ck"}); err != nil {
+		t.Fatal(err)
+	}
+	if usageCalls != 3 {
+		t.Errorf("应重试至第 3 次成功，实得 %d", usageCalls)
+	}
+}
+
+// 登录失效重试无意义：必须只请求一次并抛 Cookie 错误
+func TestQwenUsageLoginErrorNoRetry(t *testing.T) {
+	usageCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/data/api.json" && r.URL.Query().Get("api") == qwenAPIUsage {
+			usageCalls++
+		}
+		w.Write([]byte(readFixture(t, "qwen_login_notlogined.json")))
+	}))
+	defer srv.Close()
+	repo := &QwenRepo{Client: srv.Client(), Endpoints: qwenTestEndpoints(srv.URL), UsageAttempts: 3, UsageRetryDelay: time.Millisecond}
+	_, err := repo.Usage(models.QwenAccount{ConsoleCookie: "sec_token=tok-ck"})
+	if err == nil || !strings.Contains(err.Error(), "Cookie") {
+		t.Errorf("应报 Cookie 失效: %v", err)
+	}
+	if usageCalls != 1 {
+		t.Errorf("认证错误不得重试，实得 %d 次", usageCalls)
+	}
+}
+
+func TestQwenUsagePersistentEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(readFixture(t, "qwen_usage_empty.json")))
+	}))
+	defer srv.Close()
+	repo := &QwenRepo{Client: srv.Client(), Endpoints: qwenTestEndpoints(srv.URL), UsageAttempts: 2, UsageRetryDelay: time.Millisecond}
+	_, err := repo.Usage(models.QwenAccount{ConsoleCookie: "sec_token=tok-ck"})
+	if err == nil || !strings.Contains(err.Error(), "暂不可用") {
+		t.Errorf("重试耗尽应抛「暂不可用」: %v", err)
+	}
+}
+
+func TestQwenEndpointsFor(t *testing.T) {
+	cn, err := QwenEndpointsFor("")
+	if err != nil || cn.Gateway != "https://token-plan.cn-beijing.maas.aliyuncs.com" ||
+		cn.Quota != "https://bailian-cs.console.aliyun.com/data/api.json" ||
+		cn.Action != "BroadScopeAspnGateway" || cn.CommodityCode != "sfm_tokenplansolo_public_cn" {
+		t.Errorf("默认区域端点不符: %+v %v", cn, err)
+	}
+	intl, err := QwenEndpointsFor("intl")
+	if err != nil || intl.Gateway != "https://token-plan.ap-southeast-1.maas.aliyuncs.com" ||
+		intl.Action != "IntlBroadScopeAspnGateway" || intl.Quota != "https://cs-data.qwencloud.com/data/api.json" {
+		t.Errorf("国际区域端点不符: %+v %v", intl, err)
+	}
+	if _, err := QwenEndpointsFor("mars"); err == nil {
+		t.Error("未知区域应报错")
+	}
+}
+
+func TestCookieHelpers(t *testing.T) {
+	if got := normalizeCookieHeader("  Cookie: a=1;  b=2\n"); got != "a=1; b=2" {
+		t.Errorf("应剥掉 Cookie: 前缀并压平空白: %q", got)
+	}
+	// 大小写不敏感；但 `cookie=x` 形式的合法 Cookie（名为 cookie）不可误剥
+	if got := normalizeCookieHeader("COOKIE: a=1"); got != "a=1" {
+		t.Errorf("前缀大小写不敏感: %q", got)
+	}
+	if got := normalizeCookieHeader("cookie=a=1"); got != "cookie=a=1" {
+		t.Errorf("名为 cookie 的条目应保持原样: %q", got)
+	}
+	h := "a=1; cna=xyz; sec_token=tok"
+	if cookieValue(h, "cna") != "xyz" || cookieValue(h, "sec_token") != "tok" || cookieValue(h, "nope") != "" {
+		t.Errorf("cookieValue 取值不符: %q", h)
+	}
+}
+
+func TestQwenTraceIDShape(t *testing.T) {
+	id := qwenTraceID()
+	if len(id) != 36 || id[14] != '4' || !strings.Contains("89ab", string(id[19])) {
+		t.Errorf("feTraceId 应为小写 UUIDv4: %q", id)
+	}
+	if qwenTraceID() == id {
+		t.Error("两次 traceId 不应相同")
+	}
 }

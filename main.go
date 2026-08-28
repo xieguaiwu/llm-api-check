@@ -1,6 +1,7 @@
 // Command llm-api-check 复刻 Android app「API Checkers」数据逻辑的 Go CLI：
-// 查看 DeepSeek API（余额 + 消费明细）与 OpenCode（Go usage 三窗口 + Zen
-// billing）的使用情况，支持多账号。
+// 查看 DeepSeek API（余额 + 消费明细）、OpenCode（Go usage 三窗口 + Zen
+// billing）与 Qwen Token Plan（模型清单 + 5 小时/7 天 配额窗口）的使用情况，
+// 支持多账号。
 package main
 
 import (
@@ -23,7 +24,7 @@ import (
 )
 
 // version 编译期可注入（-ldflags "-X main.version=x.y.z"）
-var version = "1.0.0"
+var version = "1.1.0"
 
 // 凭据环境变量（flag 缺失时回退，再回退 TTY 交互提示）
 const (
@@ -32,17 +33,21 @@ const (
 	envAuthCookie  = "LLM_API_CHECK_AUTH_COOKIE"
 	envDsAPIKey    = "LLM_API_CHECK_DEEPSEEK_API_KEY"
 	envPlatformTok = "LLM_API_CHECK_PLATFORM_TOKEN"
+	envQwenAPIKey  = "LLM_API_CHECK_QWEN_API_KEY"
+	envQwenCookie  = "LLM_API_CHECK_QWEN_COOKIE"
+	envQwenRegion  = "LLM_API_CHECK_QWEN_REGION"
 )
 
-const usageText = `llm-api-check — 查看 DeepSeek API 与 OpenCode 使用情况（复刻 Android 版 API Checkers）
+const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode 与 Qwen Token Plan 使用情况（复刻 Android 版 API Checkers）
 
 用法:
   llm-api-check                            刷新全部账号并显示总览（等同 status）
   llm-api-check status [--no-refresh]      总览；默认刷新，--no-refresh 只读配置不联网
   llm-api-check deepseek [名称|ID]         DeepSeek 账号详情（可过滤名字/id，缺省全部）
   llm-api-check opencode [名称|ID]         OpenCode 账号详情（可过滤名字/id，缺省全部）
+  llm-api-check qwen [名称|ID]             Qwen 账号详情（可过滤名字/id，缺省全部）
   llm-api-check accounts list              列出所有账号
-  llm-api-check accounts add --type opencode|deepseek --name 名称 [凭据 flags]
+  llm-api-check accounts add --type opencode|deepseek|qwen --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
   llm-api-check accounts rename --id ID | --name 名称 --new-name 新名称
   llm-api-check config path                打印配置文件路径
@@ -57,6 +62,11 @@ const usageText = `llm-api-check — 查看 DeepSeek API 与 OpenCode 使用情�
             环境变量 LLM_API_CHECK_GO_API_KEY / LLM_API_CHECK_WORKSPACE_ID / LLM_API_CHECK_AUTH_COOKIE
   DeepSeek: --api-key / --platform-token
             环境变量 LLM_API_CHECK_DEEPSEEK_API_KEY / LLM_API_CHECK_PLATFORM_TOKEN
+  Qwen:     --api-key / --console-cookie / --region
+            环境变量 LLM_API_CHECK_QWEN_API_KEY / LLM_API_CHECK_QWEN_COOKIE / LLM_API_CHECK_QWEN_REGION
+            --api-key 为订阅密钥（sk-sp- 开头，与区域绑定）；--region 可选 cn-beijing（默认）/ap-southeast-1
+            --console-cookie 可选：阿里云百炼控制台 Cookie，提供后才能看到 5 小时/7 天 配额窗口
+            （Cookie 从已登录的 bailian.console.aliyun.com 订阅页网络请求里复制）
 
 退出码: 0 成功；1 任一账号完全失败；2 用法错误
 `
@@ -96,6 +106,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdDeepSeek(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "opencode":
 		return cmdOpenCode(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
+	case "qwen":
+		return cmdQwen(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "accounts":
 		return cmdAccounts(rest[1:], stdin, stdout, stderr, jsonOut)
 	case "config":
@@ -152,12 +164,13 @@ func cmdStatus(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut
 		writeJSON(stdout, map[string]any{
 			"deepseek":         sliceOrEmpty(publicDeepSeekResults(res.DeepSeek)),
 			"accounts":         sliceOrEmpty(publicAccountResults(res.Accounts)),
+			"qwen":             sliceOrEmpty(publicQwenResults(res.Qwen)),
 			"last_updated":     unixMillisOrZero(res.LastUpdated),
 			"security_warning": sw,
 		})
 		return exitCodeForResults(res)
 	}
-	fmt.Fprint(stdout, render.RenderOverview(res.DeepSeek, res.Accounts, res.LastUpdated, colorizer(noColor)))
+	fmt.Fprint(stdout, render.RenderOverview(res.DeepSeek, res.Accounts, res.Qwen, res.LastUpdated, colorizer(noColor)))
 	return exitCodeForResults(res)
 }
 
@@ -169,6 +182,9 @@ func resultsFromAccounts(cfg *config.Config) app.Result {
 	}
 	for _, acc := range cfg.Accounts {
 		res.Accounts = append(res.Accounts, app.AccountResult{Account: acc})
+	}
+	for _, acc := range cfg.QwenAccounts {
+		res.Qwen = append(res.Qwen, app.QwenResult{Account: acc})
 	}
 	return res
 }
@@ -185,6 +201,11 @@ func exitCodeForResults(res app.Result) int {
 			return 1
 		}
 	}
+	for _, r := range res.Qwen {
+		if r.Error != "" && r.Plan == nil && r.Usage == nil {
+			return 1
+		}
+	}
 	return 0
 }
 
@@ -194,7 +215,7 @@ func cmdDeepSeek(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	fs := flag.NewFlagSet("deepseek", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(moveNoRefresh(args)); err != nil {
 		fmt.Fprintln(stderr, "用法: llm-api-check deepseek [名称|ID] [--no-refresh]")
 		return 2
 	}
@@ -255,7 +276,7 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	fs := flag.NewFlagSet("opencode", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(moveNoRefresh(args)); err != nil {
 		fmt.Fprintln(stderr, "用法: llm-api-check opencode [名称|ID] [--no-refresh]")
 		return 2
 	}
@@ -313,6 +334,20 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	return exitCodeForResults(res)
 }
 
+// moveNoRefresh 把 --no-refresh 提前：Go flag 包遇到首个非 flag 参数即停止解析，
+// 否则 `llm-api-check qwen 名称 --no-refresh` 会被误判为多余参数（exit 2）。
+func moveNoRefresh(args []string) []string {
+	for i, a := range args {
+		if a == "--no-refresh" {
+			out := make([]string, 0, len(args))
+			out = append(out, "--no-refresh")
+			out = append(out, args[:i]...)
+			return append(out, args[i+1:]...)
+		}
+	}
+	return args
+}
+
 // filterDeepSeek 按 id 或 name 精确匹配（任一命中即包含）
 func filterDeepSeek(list []models.DeepSeekAccount, q string) ([]models.DeepSeekAccount, bool) {
 	var out []models.DeepSeekAccount
@@ -327,6 +362,80 @@ func filterDeepSeek(list []models.DeepSeekAccount, q string) ([]models.DeepSeekA
 // filterAccounts 按 id 或 name 精确匹配（任一命中即包含）
 func filterAccounts(list []models.Account, q string) ([]models.Account, bool) {
 	var out []models.Account
+	for _, a := range list {
+		if a.ID == q || a.Name == q {
+			out = append(out, a)
+		}
+	}
+	return out, len(out) > 0
+}
+
+// ── qwen 详情 ──────────────────────────────────────────────
+
+func cmdQwen(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, noColor bool) int {
+	fs := flag.NewFlagSet("qwen", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	if err := fs.Parse(moveNoRefresh(args)); err != nil {
+		fmt.Fprintln(stderr, "用法: llm-api-check qwen [名称|ID] [--no-refresh]")
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "用法: llm-api-check qwen [名称|ID] [--no-refresh]")
+		return 2
+	}
+	path := config.DefaultPath()
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 1
+	}
+	warnSecurity(stderr, noColor)
+	accounts := cfg.QwenAccounts
+	if fs.NArg() == 1 {
+		filtered, ok := filterQwen(accounts, fs.Arg(0))
+		if !ok {
+			fmt.Fprintf(stderr, "账号不存在: %s\n", fs.Arg(0))
+			return 1
+		}
+		accounts = filtered
+	}
+	a := app.New(cfg)
+	results := make([]app.QwenResult, 0, len(accounts))
+	for _, acc := range accounts {
+		var r app.QwenResult
+		if *noRefresh {
+			r = app.QwenResult{Account: acc}
+		} else if r, err = a.RefreshQwen(acc.ID); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		results = append(results, r)
+	}
+	res := app.Result{Qwen: results}
+	if jsonOut {
+		if len(results) == 1 {
+			writeJSON(stdout, map[string]any{"qwen": publicQwenResult(results[0])})
+		} else {
+			writeJSON(stdout, map[string]any{"qwen": publicQwenResults(results)})
+		}
+		return exitCodeForResults(res)
+	}
+	c := colorizer(noColor)
+	var b strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(render.RenderQwenDetail(r, time.Now(), c))
+	}
+	fmt.Fprint(stdout, b.String())
+	return exitCodeForResults(res)
+}
+
+// filterQwen 按 id 或 name 精确匹配（任一命中即包含）
+func filterQwen(list []models.QwenAccount, q string) ([]models.QwenAccount, bool) {
+	var out []models.QwenAccount
 	for _, a := range list {
 		if a.ID == q || a.Name == q {
 			out = append(out, a)
@@ -368,6 +477,7 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		writeJSON(stdout, map[string]any{
 			"deepseek_accounts": sliceOrEmpty(publicDeepSeekAccounts(cfg.DeepSeekAccounts)),
 			"accounts":          sliceOrEmpty(publicAccounts(cfg.Accounts)),
+			"qwen_accounts":     sliceOrEmpty(publicQwenAccounts(cfg.QwenAccounts)),
 		})
 		return 0
 	}
@@ -387,26 +497,36 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		}
 		fmt.Fprintf(stdout, "  %s  %s  [Zen: %s]\n", a.ID, a.Name, zen)
 	}
+	fmt.Fprintf(stdout, "Qwen 账号 (%d):\n", len(cfg.QwenAccounts))
+	for _, a := range cfg.QwenAccounts {
+		quota := "未配置 Cookie（仅模型清单）"
+		if a.HasCookie() {
+			quota = "已配置 Cookie（含配额窗口）"
+		}
+		fmt.Fprintf(stdout, "  %s  %s  [%s · %s]\n", a.ID, a.Name, render.RegionDisplayName(a.Region), quota)
+	}
 	return 0
 }
 
 func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut bool) int {
 	fs := flag.NewFlagSet("accounts add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	typ := fs.String("type", "", "账号类型: opencode|deepseek")
+	typ := fs.String("type", "", "账号类型: opencode|deepseek|qwen")
 	name := fs.String("name", "", "账号名称")
 	goKey := fs.String("go-api-key", "", "OpenCode Go API Key")
 	wsID := fs.String("workspace-id", "", "OpenCode Workspace ID（可选）")
 	cookie := fs.String("auth-cookie", "", "OpenCode Auth Cookie（可选）")
-	apiKey := fs.String("api-key", "", "DeepSeek API Key")
+	apiKey := fs.String("api-key", "", "DeepSeek / Qwen API Key")
 	ptok := fs.String("platform-token", "", "DeepSeek 平台 Token（可选）")
+	qwenCookie := fs.String("console-cookie", "", "Qwen 控制台 Cookie（可选，配额窗口需要）")
+	qwenRegion := fs.String("region", "", "Qwen 区域: cn-beijing（默认）|ap-southeast-1")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek --name 名称 [凭据 flags]")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen --name 名称 [凭据 flags]")
 		return 2
 	}
-	if *typ != "opencode" && *typ != "deepseek" {
-		fmt.Fprintln(stderr, "错误: --type 必须是 opencode 或 deepseek")
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek --name 名称 [凭据 flags]")
+	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" {
+		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek 或 qwen")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen --name 名称 [凭据 flags]")
 		return 2
 	}
 	if strings.TrimSpace(*name) == "" {
@@ -467,31 +587,75 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		return 0
 	}
 	// deepseek
-	key, err := resolveSecret(*apiKey, "api-key", envDsAPIKey, "DeepSeek API Key: ", true, stdin, stdout)
+	if *typ == "deepseek" {
+		key, err := resolveSecret(*apiKey, "api-key", envDsAPIKey, "DeepSeek API Key: ", true, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
+		tok, err := resolveSecret(*ptok, "platform-token", envPlatformTok, "平台 Token（可选，回车跳过）: ", false, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
+		acc := models.DeepSeekAccount{
+			ID:            config.NewID(),
+			Name:          strings.TrimSpace(*name),
+			ApiKey:        key,
+			PlatformToken: tok,
+		}
+		cfg.SaveDeepSeekAccount(acc)
+		if err := cfg.Save(config.DefaultPath()); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		if jsonOut {
+			writeJSON(stdout, map[string]any{"deepseek_account": publicDeepSeekAccount(acc)})
+		} else {
+			fmt.Fprintf(stdout, "已添加 DeepSeek 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+		}
+		return 0
+	}
+	// qwen
+	key, err := resolveSecret(*apiKey, "api-key", envQwenAPIKey, "Qwen API Key（sk-sp- 开头）: ", true, stdin, stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 2
 	}
-	tok, err := resolveSecret(*ptok, "platform-token", envPlatformTok, "平台 Token（可选，回车跳过）: ", false, stdin, stdout)
+	ck, err := resolveSecret(*qwenCookie, "console-cookie", envQwenCookie, "控制台 Cookie（可选，回车跳过）: ", false, stdin, stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 2
 	}
-	acc := models.DeepSeekAccount{
+	region, err := resolveSecret(*qwenRegion, "region", envQwenRegion, "区域（可选，回车取默认 cn-beijing）: ", false, stdin, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 2
+	}
+	region, err = models.NormalizeQwenRegion(region)
+	if err != nil {
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 2
+	}
+	acc := models.QwenAccount{
 		ID:            config.NewID(),
 		Name:          strings.TrimSpace(*name),
 		ApiKey:        key,
-		PlatformToken: tok,
+		ConsoleCookie: ck,
+		Region:        region,
 	}
-	cfg.SaveDeepSeekAccount(acc)
+	cfg.SaveQwenAccount(acc)
 	if err := cfg.Save(config.DefaultPath()); err != nil {
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 1
 	}
 	if jsonOut {
-		writeJSON(stdout, map[string]any{"deepseek_account": publicDeepSeekAccount(acc)})
+		writeJSON(stdout, map[string]any{"qwen_account": publicQwenAccount(acc)})
 	} else {
-		fmt.Fprintf(stdout, "已添加 DeepSeek 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+		fmt.Fprintf(stdout, "已添加 Qwen 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+		if !acc.HasCookie() {
+			fmt.Fprintln(stdout, "提示: 未配控制台 Cookie，只能看套餐模型清单；配额窗口需重跑并传 --console-cookie")
+		}
 	}
 	return 0
 }
@@ -541,6 +705,15 @@ func cmdAccountsRemove(args []string, stdout, stderr io.Writer, jsonOut bool) in
 		kept = append(kept, a)
 	}
 	cfg.Accounts = kept
+	var keptQwen []models.QwenAccount
+	for _, a := range cfg.QwenAccounts {
+		if match(a.ID, a.Name) {
+			removed++
+			continue
+		}
+		keptQwen = append(keptQwen, a)
+	}
+	cfg.QwenAccounts = keptQwen
 	if removed == 0 {
 		fmt.Fprintln(stderr, "错误: 未找到匹配的账号")
 		return 1
@@ -597,6 +770,13 @@ func cmdAccountsRename(args []string, stdout, stderr io.Writer, jsonOut bool) in
 	}
 	for i := range cfg.Accounts {
 		a := &cfg.Accounts[i]
+		if match(a.ID, a.Name) {
+			a.Name = strings.TrimSpace(*newName)
+			renamed++
+		}
+	}
+	for i := range cfg.QwenAccounts {
+		a := &cfg.QwenAccounts[i]
 		if match(a.ID, a.Name) {
 			a.Name = strings.TrimSpace(*newName)
 			renamed++
@@ -764,6 +944,16 @@ func publicAccount(a models.Account) map[string]any {
 	}
 }
 
+func publicQwenAccount(a models.QwenAccount) map[string]any {
+	return map[string]any{
+		"id":            a.ID,
+		"name":          a.Name,
+		"apiKey":        maskSecret(a.ApiKey),
+		"consoleCookie": maskSecret(a.ConsoleCookie),
+		"region":        a.QwenRegion(),
+	}
+}
+
 func publicDeepSeekResults(rs []app.DeepSeekResult) []map[string]any {
 	out := make([]map[string]any, 0, len(rs))
 	for _, r := range rs {
@@ -812,6 +1002,30 @@ func publicAccountResult(r app.AccountResult) map[string]any {
 	return m
 }
 
+func publicQwenResults(rs []app.QwenResult) []map[string]any {
+	out := make([]map[string]any, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, publicQwenResult(r))
+	}
+	return out
+}
+
+func publicQwenResult(r app.QwenResult) map[string]any {
+	m := map[string]any{
+		"account": publicQwenAccount(r.Account),
+	}
+	if r.Plan != nil {
+		m["plan"] = r.Plan
+	}
+	if r.Usage != nil {
+		m["usage"] = r.Usage
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	return m
+}
+
 func publicDeepSeekAccounts(as []models.DeepSeekAccount) []map[string]any {
 	out := make([]map[string]any, 0, len(as))
 	for _, a := range as {
@@ -824,6 +1038,14 @@ func publicAccounts(as []models.Account) []map[string]any {
 	out := make([]map[string]any, 0, len(as))
 	for _, a := range as {
 		out = append(out, publicAccount(a))
+	}
+	return out
+}
+
+func publicQwenAccounts(as []models.QwenAccount) []map[string]any {
+	out := make([]map[string]any, 0, len(as))
+	for _, a := range as {
+		out = append(out, publicQwenAccount(a))
 	}
 	return out
 }

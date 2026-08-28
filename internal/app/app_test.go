@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -216,5 +217,125 @@ func TestRefreshAllNoAccounts(t *testing.T) {
 	}
 	if count.Load() != 0 {
 		t.Errorf("不应发起请求，got %d", count.Load())
+	}
+}
+
+// ── Qwen 刷新编排 ──────────────────────────────────────────────
+
+// qwenRepos 注入 Qwen 三端点（模型清单 / 控制台页面 / 用量 RPC）到同一 httptest 服务
+func qwenRepos(srv *httptest.Server) *Repos {
+	ep := &repo.QwenEndpoints{
+		Gateway: srv.URL, Dashboard: srv.URL + "/cn-beijing?tab=plan", Quota: srv.URL + "/data/api.json",
+		Action: "BroadScopeAspnGateway", Region: "cn-beijing", ConsoleSite: "BAILIAN_ALIYUN",
+		Domain: "bailian.console.aliyun.com", Lang: "zh-CN", CommodityCode: "sfm_tokenplansolo_public_cn", Origin: srv.URL,
+	}
+	return &Repos{Qwen: &repo.QwenRepo{
+		Client: srv.Client(), Endpoints: ep, UsageRetryDelay: time.Millisecond,
+	}}
+}
+
+func qwenServer(t *testing.T, usageBody string, usageStatus int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/compatible-mode/v1/models":
+			w.Write([]byte(readFixture(t, "qwen_models.json")))
+		case r.URL.Path == "/cn-beijing":
+			w.Write([]byte(`SEC_TOKEN: "tok-1";`))
+		case r.URL.Path == "/data/api.json":
+			if usageStatus != 0 {
+				w.WriteHeader(usageStatus)
+				return
+			}
+			if r.URL.Query().Get("api") == "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/subscription" {
+				w.Write([]byte(readFixture(t, "qwen_subscription.json")))
+				return
+			}
+			w.Write([]byte(usageBody))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestRefreshQwenWithCookie(t *testing.T) {
+	srv := qwenServer(t, readFixture(t, "qwen_usage.json"), 0)
+	defer srv.Close()
+	cfg := &config.Config{QwenAccounts: []models.QwenAccount{
+		{ID: "q1", Name: "订阅号", ApiKey: "sk-sp-x", ConsoleCookie: "sec_token=tok"},
+	}}
+	a := NewWithRepos(cfg, qwenRepos(srv))
+	res, err := a.RefreshAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Qwen) != 1 {
+		t.Fatalf("Qwen 结果数不符: %d", len(res.Qwen))
+	}
+	r := res.Qwen[0]
+	if r.Error != "" {
+		t.Errorf("不应有错误: %q", r.Error)
+	}
+	if r.Plan == nil || len(r.Plan.Models) != 4 {
+		t.Errorf("模型清单缺失: %+v", r.Plan)
+	}
+	if r.Usage == nil || r.Usage.FiveHour == nil || r.Usage.FiveHour.Percent != 79 {
+		t.Errorf("配额窗口缺失: %+v", r.Usage)
+	}
+	if r.Usage.PlanCode != "lite" {
+		t.Errorf("档位缺失: %q", r.Usage.PlanCode)
+	}
+}
+
+// 无 Cookie：只有套餐模型清单，不算错误（配额窗口为可选能力）
+func TestRefreshQwenWithoutCookie(t *testing.T) {
+	srv := qwenServer(t, readFixture(t, "qwen_usage.json"), 0)
+	defer srv.Close()
+	cfg := &config.Config{QwenAccounts: []models.QwenAccount{{ID: "q1", ApiKey: "sk-sp-x"}}}
+	a := NewWithRepos(cfg, qwenRepos(srv))
+	res, _ := a.RefreshAll()
+	r := res.Qwen[0]
+	if r.Usage != nil {
+		t.Error("未配 Cookie 不应拉配额")
+	}
+	if r.Plan == nil || r.Error != "" {
+		t.Errorf("应只成功拉模型清单: plan=%+v err=%q", r.Plan, r.Error)
+	}
+}
+
+// 部分失败：模型清单成功、配额失败 → 保留数据同时透出错误
+func TestRefreshQwenPartialFailure(t *testing.T) {
+	srv := qwenServer(t, readFixture(t, "qwen_login_notlogined.json"), 0)
+	defer srv.Close()
+	cfg := &config.Config{QwenAccounts: []models.QwenAccount{
+		{ID: "q1", ApiKey: "sk-sp-x", ConsoleCookie: "stale=1"},
+	}}
+	a := NewWithRepos(cfg, qwenRepos(srv))
+	res, _ := a.RefreshAll()
+	r := res.Qwen[0]
+	if r.Plan == nil {
+		t.Error("模型清单应仍成功")
+	}
+	if r.Usage != nil {
+		t.Error("配额应失败")
+	}
+	if !strings.Contains(r.Error, "Cookie") {
+		t.Errorf("错误应指向 Cookie: %q", r.Error)
+	}
+}
+
+func TestRefreshQwenUnknownID(t *testing.T) {
+	a := NewWithRepos(&config.Config{}, &Repos{})
+	if _, err := a.RefreshQwen("nope"); err == nil || !strings.Contains(err.Error(), "不存在") {
+		t.Errorf("未知 id 应报错: %v", err)
+	}
+}
+
+func TestRefreshQwenBadRegion(t *testing.T) {
+	cfg := &config.Config{QwenAccounts: []models.QwenAccount{{ID: "q1", ApiKey: "k", Region: "mars"}}}
+	a := NewWithRepos(cfg, &Repos{Qwen: repo.NewQwenRepo()})
+	res, _ := a.RefreshAll()
+	if res.Qwen[0].Error == "" || !strings.Contains(res.Qwen[0].Error, "区域") {
+		t.Errorf("非法区域应显式报错: %q", res.Qwen[0].Error)
 	}
 }

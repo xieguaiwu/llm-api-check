@@ -139,3 +139,189 @@ func TestNoColorFlagNoANSI(t *testing.T) {
 		t.Errorf("--no-color 输出含 ANSI 转义: %q", out)
 	}
 }
+
+// ── Qwen provider ──────────────────────────────────────────────
+
+func TestQwenAddAndListMasksSecrets(t *testing.T) {
+	dir := withConfigDir(t)
+	code, out, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen",
+		"--name", "订阅号", "--api-key", "sk-sp-qwen1234567890",
+		"--console-cookie", "login_aliyunid_csrf=csrfabc123456; cna=anon", "--region", "cn")
+	if code != 0 {
+		t.Fatalf("add exit=%d, want 0; out=%s err=%s", code, out, errOut)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "llm-api-check", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "sk-sp-qwen1234567890") || !strings.Contains(string(raw), "csrfabc123456") {
+		t.Errorf("配置文件应存真实凭据: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"region": "cn-beijing"`) {
+		t.Errorf("--region cn 应归一化为 cn-beijing: %s", raw)
+	}
+	code, out, _ = runCLI(t, "", "--json", "accounts", "list")
+	if code != 0 {
+		t.Fatalf("list exit=%d", code)
+	}
+	for _, leak := range []string{"sk-sp-qwen1234567890", "csrfabc123456"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("JSON 输出泄漏 %q: %s", leak, out)
+		}
+	}
+	if !strings.Contains(out, "sk-s****7890") {
+		t.Errorf("应含掩码 API Key: %s", out)
+	}
+	if !strings.Contains(out, `"qwen_accounts"`) {
+		t.Errorf("JSON 应含 qwen_accounts: %s", out)
+	}
+	// 文本总览提示 Cookie 已配置
+	_, out, _ = runCLI(t, "", "accounts", "list")
+	if !strings.Contains(out, "已配置 Cookie") {
+		t.Errorf("list 应显示配额能力: %s", out)
+	}
+}
+
+func TestQwenAddWithoutCookieHints(t *testing.T) {
+	withConfigDir(t)
+	t.Setenv("LLM_API_CHECK_QWEN_API_KEY", "sk-sp-envkey123456")
+	code, out, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen", "--name", "仅密钥")
+	if code != 0 {
+		t.Fatalf("add exit=%d; out=%s err=%s", code, out, errOut)
+	}
+	if !strings.Contains(out, "未配控制台 Cookie") {
+		t.Errorf("无 Cookie 时应提示能力受限: %s", out)
+	}
+	if !strings.Contains(out, "中国大陆（北京）") && !strings.Contains(out, "id=") {
+		t.Errorf("应打印新增结果: %s", out)
+	}
+}
+
+func TestQwenAddBadRegionExit2(t *testing.T) {
+	withConfigDir(t)
+	code, _, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen",
+		"--name", "X", "--api-key", "sk-sp-x", "--region", "mars")
+	if code != 2 {
+		t.Fatalf("非法区域 exit=%d, want 2", code)
+	}
+	if !strings.Contains(errOut, "区域") {
+		t.Errorf("应提示区域不支持: %q", errOut)
+	}
+}
+
+func TestQwenAddMissingKeyNonTTY(t *testing.T) {
+	withConfigDir(t)
+	t.Setenv("LLM_API_CHECK_QWEN_API_KEY", "")
+	code, _, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen", "--name", "X")
+	if code != 2 || !strings.Contains(errOut, "缺少凭据 --api-key") {
+		t.Errorf("应提示缺少 Qwen API Key: code=%d err=%q", code, errOut)
+	}
+}
+
+func TestStatusJSONIncludesQwenSection(t *testing.T) {
+	withConfigDir(t)
+	code, out, errOut := runCLI(t, "", "--json", "status", "--no-refresh")
+	if code != 0 {
+		t.Fatalf("status exit=%d err=%s", code, errOut)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("--json status 非法 JSON: %v\n%s", err, out)
+	}
+	q, ok := parsed["qwen"].([]any)
+	if !ok || len(q) != 0 {
+		t.Errorf("qwen 字段应为空数组: %v", parsed["qwen"])
+	}
+}
+
+func TestQwenDetailNoRefreshAndFilter(t *testing.T) {
+	withConfigDir(t)
+	if _, out, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen", "--name", "订阅号",
+		"--api-key", "sk-sp-a1234567890", "--console-cookie", "sec_token=tok", "--region", "intl"); errOut != "" ||
+		!strings.Contains(out, "已添加") {
+		t.Fatalf("add 失败: %s %s", out, errOut)
+	}
+	code, out, _ := runCLI(t, "", "qwen", "订阅号", "--no-refresh")
+	if code != 0 {
+		t.Fatalf("qwen --no-refresh exit=%d", code)
+	}
+	if !strings.Contains(out, "订阅号 (Qwen · 国际（新加坡）)") {
+		t.Errorf("应显示国际区域标题: %s", out)
+	}
+	if !strings.Contains(out, "Token Plan · 订阅") {
+		t.Errorf("应显示订阅分区: %s", out)
+	}
+	// 未知名称 → exit 1
+	if code, _, _ := runCLI(t, "", "qwen", "查无此人"); code != 1 {
+		t.Errorf("未知账号 exit=%d, want 1", code)
+	}
+	// --json 掩码
+	code, out, _ = runCLI(t, "", "--json", "qwen", "--no-refresh")
+	if code != 0 {
+		t.Fatalf("--json qwen exit=%d", code)
+	}
+	if strings.Contains(out, "sk-sp-a1234567890") || strings.Contains(out, `"tok"`) {
+		t.Errorf("--json 泄漏明文凭据: %s", out)
+	}
+}
+
+// 缺 API Key 的账号刷新时无网络调用即失败 → 退出码 1
+func TestQwenRefreshMissingKeyExit1(t *testing.T) {
+	dir := withConfigDir(t)
+	if err := os.MkdirAll(filepath.Join(dir, "llm-api-check"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"deepseek_accounts":[],"accounts":[],"qwen_accounts":[{"id":"q1","name":"空密钥","apiKey":"","consoleCookie":"","region":"cn-beijing"}],"last_update":{}}`
+	if err := os.WriteFile(filepath.Join(dir, "llm-api-check", "config.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := runCLI(t, "", "qwen")
+	if code != 1 {
+		t.Fatalf("完全失败应 exit=1，实得 %d; out=%s", code, out)
+	}
+	if !strings.Contains(out+errOut, "未配置 API Key") {
+		t.Errorf("应提示未配置 API Key: out=%q err=%q", out, errOut)
+	}
+}
+
+func TestQwenRemoveAndRenameAcrossTypes(t *testing.T) {
+	withConfigDir(t)
+	runCLI(t, "", "accounts", "add", "--type", "qwen", "--name", "同号", "--api-key", "sk-sp-q1234567890")
+	runCLI(t, "", "accounts", "add", "--type", "deepseek", "--name", "同号", "--api-key", "sk-d1234567890")
+	code, out, _ := runCLI(t, "", "accounts", "rename", "--name", "同号", "--new-name", "改名")
+	if code != 0 || !strings.Contains(out, "已重命名 2 个账号") {
+		t.Errorf("跨类型重命名不符: %s", out)
+	}
+	_, out, _ = runCLI(t, "", "accounts", "list")
+	if !strings.Contains(out, "改名") {
+		t.Errorf("重命名未生效: %s", out)
+	}
+	code, out, _ = runCLI(t, "", "accounts", "remove", "--name", "改名")
+	if code != 0 || !strings.Contains(out, "已删除 2 个账号") {
+		t.Errorf("跨类型删除不符: %s", out)
+	}
+}
+
+// 位置参数在 flag 之前也要能识别（三个详情命令共用）
+func TestDetailFlagAfterName(t *testing.T) {
+	withConfigDir(t)
+	runCLI(t, "", "accounts", "add", "--type", "deepseek", "--name", "DS", "--api-key", "sk-d1234567890")
+	for _, c := range []string{"deepseek", "opencode", "qwen"} {
+		code, _, errOut := runCLI(t, "", c, "DS", "--no-refresh")
+		if code != 0 && c == "deepseek" {
+			t.Errorf("%s 名称后置 flag 解析失败: exit=%d err=%q", c, code, errOut)
+		}
+	}
+}
+
+func TestUsageTextMentionsQwen(t *testing.T) {
+	code, out, _ := runCLI(t, "", "help")
+	if code != 0 {
+		t.Fatalf("help exit=%d", code)
+	}
+	for _, want := range []string{"llm-api-check qwen", "--type opencode|deepseek|qwen", "LLM_API_CHECK_QWEN_API_KEY", "--console-cookie"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("帮助文本缺少 %q", want)
+		}
+	}
+}

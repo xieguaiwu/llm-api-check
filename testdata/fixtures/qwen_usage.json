@@ -1,0 +1,14 @@
+{
+  "code": "200",
+  "httpStatusCode": "200",
+  "requestId": "6e1c2a94-0000-4000-8000-abcdef012345",
+  "successResponse": true,
+  "data": {
+    "success": true,
+    "api": "zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage",
+    "DataV2": {
+      "ret": ["SUCCESS::接口调用成功"],
+      "data": "{\"msg\":\"Success.\",\"code\":\"SUCCESS\",\"success\":true,\"data\":{\"per5HourPercentage\":0.7913113,\"per5HourResetTime\":1786716480000,\"per1WeekPercentage\":0.451,\"per1WeekResetTime\":1786975680000}}"
+    }
+  }
+}

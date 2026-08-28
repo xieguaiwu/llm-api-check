@@ -2,11 +2,36 @@
 // com.xieguiawu.apicheckers.data.Models.kt。
 //
 // JSON tag 与 Android 版 kotlinx.serialization 序列化名一致：
-//   - 账号列表（Account / DeepSeekAccount）用 camelCase（Kotlin 属性名）
+//   - 账号列表（Account / DeepSeekAccount / QwenAccount）用 camelCase（Kotlin 属性名）
 //   - DeepSeek 原始 API 字段用 snake_case（total_balance 等）
 package models
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
+
+// ── Qwen Token Plan（阿里云百炼订阅）区域常量 ─────────────────
+
+const (
+	// RegionQwenCN 中国大陆（北京）：网关 token-plan.cn-beijing.maas.aliyuncs.com
+	RegionQwenCN = "cn-beijing"
+	// RegionQwenIntl 国际（新加坡）：网关 token-plan.ap-southeast-1.maas.aliyuncs.com
+	RegionQwenIntl = "ap-southeast-1"
+)
+
+// NormalizeQwenRegion 归一化区域取值。空串 → 默认中国大陆。
+// 别名：cn/domestic/beijing → cn-beijing；intl/singapore/international → ap-southeast-1。
+func NormalizeQwenRegion(s string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "cn", "cn-beijing", "domestic", "beijing", "china":
+		return RegionQwenCN, nil
+	case "intl", "international", "singapore", "ap-southeast-1", "sg":
+		return RegionQwenIntl, nil
+	default:
+		return "", errors.New("Qwen 区域不支持：" + s + "（可用值 cn-beijing / ap-southeast-1）")
+	}
+}
 
 // ── OpenCode Go usage（官方 API） ──────────────────────────────
 
@@ -98,4 +123,59 @@ type Account struct {
 // HasZen 只有同时配置了 workspace 与 cookie 才展示 Zen plan（对应 Kotlin hasZen）。
 func (a Account) HasZen() bool {
 	return strings.TrimSpace(a.WorkspaceId) != "" && strings.TrimSpace(a.AuthCookie) != ""
+}
+
+// ── Qwen Token Plan（订阅） ────────────────────────────────────
+
+// QwenAccount Qwen 账号。apiKey 为 Token Plan 订阅密钥（sk-sp- 前缀）；
+// consoleCookie 可选：阿里云百炼控制台 Cookie，缺失时只能显示套餐模型清单，
+// 无法显示配额窗口（用量接口只认控制台会话，实测 API Key 返回
+// BailianGateway.Login.NotLogined）。
+type QwenAccount struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ApiKey        string `json:"apiKey"`
+	ConsoleCookie string `json:"consoleCookie"`
+	Region        string `json:"region"`
+}
+
+// HasCookie 是否配置了控制台 Cookie（对应 Kotlin hasCookie）。
+func (a QwenAccount) HasCookie() bool { return strings.TrimSpace(a.ConsoleCookie) != "" }
+
+// QwenRegion 归一化后的区域（非法/空值回落中国大陆）。
+func (a QwenAccount) QwenRegion() string {
+	r, err := NormalizeQwenRegion(a.Region)
+	if err != nil {
+		return RegionQwenCN
+	}
+	return r
+}
+
+// QwenRegionDisplayName 区域展示名（供 CLI 与 UI 共用）。
+func QwenRegionDisplayName(region string) string {
+	if r, err := NormalizeQwenRegion(region); err == nil && r == RegionQwenIntl {
+		return "国际（新加坡）"
+	}
+	return "中国大陆（北京）"
+}
+
+// QwenWindow 订阅滚动窗口（5 小时 / 7 天）。
+// Percent 由接口返回的比例值（0-1）截断取整；ResetsAt 为 RFC3339；
+// Exhausted 由原始比例 ≥ 1 推导（官方规则：窗口内配额用尽则暂停服务）。
+type QwenWindow struct {
+	Percent   int    `json:"percent"`
+	ResetsAt  string `json:"resetsAt"`
+	Exhausted bool   `json:"exhausted"`
+}
+
+// QwenUsage 控制台用量接口结果（Cookie 认证）。窗口可能缺失（指针为 nil）。
+type QwenUsage struct {
+	PlanCode string      `json:"plan_code"`
+	FiveHour *QwenWindow `json:"five_hour"`
+	Weekly   *QwenWindow `json:"weekly"`
+}
+
+// QwenPlan 网关模型清单（API Key 认证）。
+type QwenPlan struct {
+	Models []string `json:"models"`
 }

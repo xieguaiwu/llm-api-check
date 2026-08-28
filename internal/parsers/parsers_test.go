@@ -330,3 +330,158 @@ func TestParseDeepSeekCostZeroRefDateUsesToday(t *testing.T) {
 		t.Errorf("零值 refDate 应取今天：today=%v", c.Today)
 	}
 }
+
+// ── Qwen Token Plan ────────────────────────────────────────────
+
+func TestParseQwenModelsOK(t *testing.T) {
+	ids, err := ParseQwenModels(readFixture(t, "qwen_models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"deepseek-v4-flash-0731", "glm-5.2", "qwen3.8-flash", "qwen3.8-max"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Errorf("模型清单应去空+排序: %v", ids)
+	}
+}
+
+func TestParseQwenModelsEmptyIsError(t *testing.T) {
+	if _, err := ParseQwenModels(`{"data":[]}`); err == nil {
+		t.Error("空模型清单应显式失败，不返回误导的空套餐")
+	}
+	if _, err := ParseQwenModels(`not json`); err == nil {
+		t.Error("非法 JSON 应报错")
+	}
+}
+
+func TestParseQwenUsageFixture(t *testing.T) {
+	now := time.Date(2026, 8, 29, 1, 0, 0, 0, time.UTC)
+	u, err := ParseQwenUsage(readFixture(t, "qwen_usage.json"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.FiveHour == nil || u.FiveHour.Percent != 79 || u.FiveHour.Exhausted {
+		t.Errorf("5 小时窗口不符: %+v", u.FiveHour)
+	}
+	if u.Weekly == nil || u.Weekly.Percent != 45 {
+		t.Errorf("7 天窗口不符: %+v", u.Weekly)
+	}
+	// 毫秒时间戳 → RFC3339（同一时刻，与时区无关）
+	got, err := time.Parse(time.RFC3339, u.FiveHour.ResetsAt)
+	if err != nil || got.UnixMilli() != 1786716480000 {
+		t.Errorf("重置时间换算错误: %q err=%v", u.FiveHour.ResetsAt, err)
+	}
+}
+
+func TestParseQwenUsageExhausted(t *testing.T) {
+	raw := `{"data":{"DataV2":{"data":{"data":{"per5HourPercentage":1.0,"per5HourResetTime":1786716480000}}}}}`
+	u, err := ParseQwenUsage(raw, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.FiveHour == nil || u.FiveHour.Percent != 100 || !u.FiveHour.Exhausted {
+		t.Errorf("比例 1.0 应判定用尽: %+v", u.FiveHour)
+	}
+}
+
+// 防御性：若接口以百分数尺度返回（79.13），不得显示 7913% 或误判限流
+func TestParseQwenUsagePercentScaleDefense(t *testing.T) {
+	u, err := ParseQwenUsage(`{"per1WeekPercentage":79.13,"per1WeekResetTime":1786716480000}`, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Weekly == nil || u.Weekly.Percent != 79 || u.Weekly.Exhausted {
+		t.Errorf("百分数尺度解析不符: %+v", u.Weekly)
+	}
+	if _, err := ParseQwenUsage(`{"per1WeekPercentage":100}`, time.Unix(0, 0)); err != nil {
+		t.Log(err)
+	}
+}
+
+func TestParseQwenUsageLoginError(t *testing.T) {
+	_, err := ParseQwenUsage(readFixture(t, "qwen_login_notlogined.json"), time.Unix(0, 0))
+	if err == nil || !strings.Contains(err.Error(), "Cookie") {
+		t.Errorf("登录失效应映射为 Cookie 提示，实得: %v", err)
+	}
+}
+
+func TestParseQwenUsageWorkspaceErrorIsNotCookieError(t *testing.T) {
+	_, err := ParseQwenUsage(readFixture(t, "qwen_usage_notauthorised.json"), time.Unix(0, 0))
+	if err == nil {
+		t.Fatal("应报错")
+	}
+	if strings.Contains(err.Error(), "Cookie") {
+		t.Errorf("工作区未授权不是 Cookie 问题，误报会误导用户换 Cookie: %v", err)
+	}
+	if !strings.Contains(err.Error(), "NotAuthorised") {
+		t.Errorf("错误应保留原始 errorCode: %v", err)
+	}
+}
+
+func TestParseQwenUsageEmptyWindows(t *testing.T) {
+	_, err := ParseQwenUsage(readFixture(t, "qwen_usage_empty.json"), time.Unix(0, 0))
+	if err == nil || !strings.Contains(err.Error(), "暂不可用") {
+		t.Errorf("空信封应报「暂不可用」以触发重试: %v", err)
+	}
+}
+
+func TestParseQwenSubscription(t *testing.T) {
+	code, err := ParseQwenSubscription(readFixture(t, "qwen_subscription.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != "lite" {
+		t.Errorf("档位应归一化为小写 lite，实得 %q", code)
+	}
+	if got, err := ParseQwenSubscription(`{"data":{"success":true}}`); err != nil || got != "" {
+		t.Errorf("缺档位应 best-effort 返回空: %q %v", got, err)
+	}
+	if _, err := ParseQwenSubscription(readFixture(t, "qwen_login_notlogined.json")); err == nil {
+		t.Error("登录失效需上报（不能吞成空档位）")
+	}
+}
+
+func TestPlanDisplayName(t *testing.T) {
+	cases := map[string]string{"lite": "Lite", "STANDARD": "Standard", "pro": "Pro", "max": "Max", "solo-x": "solo-x", "": ""}
+	for in, want := range cases {
+		if got := PlanDisplayName(in); got != want {
+			t.Errorf("PlanDisplayName(%q)=%q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestExtractQwenSECToken(t *testing.T) {
+	html := `<script>window.ALIYUN_CONSOLE_CONFIG = { SEC_TOKEN: "IlXr3OdGabc", OTHER: 1 };</script>`
+	if got := ExtractQwenSECToken(html); got != "IlXr3OdGabc" {
+		t.Errorf("SEC_TOKEN 提取失败: %q", got)
+	}
+	if got := ExtractQwenSECToken(`<html>no token</html>`); got != "" {
+		t.Errorf("无 token 应返回空串: %q", got)
+	}
+	if got := ExtractQwenSECToken(`{ "secToken":"from-json" }`); got != "" {
+		t.Logf("JSON 形态由仓库层单独处理: %q", got)
+	}
+}
+
+func TestQwenPercent(t *testing.T) {
+	cases := []struct {
+		in    float64
+		pct   int
+		limit bool
+	}{
+		{0, 0, false},
+		{0.7913113, 79, false},
+		{0.999, 99, false},
+		{1.0, 100, true},
+		{1.4, 100, true},   // 比例域超额（≤2 视为比例 140%）→ 已限流
+		{79.13, 79, false}, // >2 才当百分数尺度
+		{100, 100, true},
+		{120, 100, true},
+		{-0.1, 0, false},
+	}
+	for _, tc := range cases {
+		p, e := qwenPercent(tc.in)
+		if p != tc.pct || e != tc.limit {
+			t.Errorf("qwenPercent(%v) = (%d,%v), want (%d,%v)", tc.in, p, e, tc.pct, tc.limit)
+		}
+	}
+}
