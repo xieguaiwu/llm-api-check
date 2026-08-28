@@ -451,14 +451,14 @@ func RenderQwenDetail(r app.QwenResult, now time.Time, c Colorizer) string {
 		return b.String()
 	}
 	b.WriteString("Token Plan · 订阅\n")
-	if plan := planSummary(r); plan != "" {
-		fmt.Fprintf(&b, "  %-12s %s\n", "套餐", plan)
+	if tier := parsers.PlanDisplayName(usagePlanCode(r)); tier != "" {
+		fmt.Fprintf(&b, "  %-12s %s\n", "套餐", tier)
 	}
 	if r.Usage == nil {
 		if r.Account.HasCookie() {
-			b.WriteString(c.Gray("  配额窗口 暂无数据") + "\n")
+			b.WriteString(c.Gray("  配额窗口       暂无数据") + "\n")
 		} else {
-			b.WriteString(c.Gray("  配额窗口 需控制台 Cookie（accounts add --type qwen --console-cookie …）") + "\n")
+			b.WriteString(c.Gray("  配额窗口       需控制台 Cookie（accounts add --type qwen --console-cookie …）") + "\n")
 		}
 	} else {
 		for _, w := range qwenWindows(r.Usage) {
@@ -466,13 +466,14 @@ func RenderQwenDetail(r app.QwenResult, now time.Time, c Colorizer) string {
 			pct := c.apply(col, fmt.Sprintf("%d%%", w.win.Percent))
 			suffix := FormatCountdown(w.win.ResetsAt, now)
 			if w.win.Exhausted {
+				// 限流时限直接可见：已限流徽章与重置倒计时并存（对照 Android WindowRow）
 				suffix = c.Red("已限流") + " · " + suffix
 			}
 			fmt.Fprintf(&b, "  %-12s %s %s · %s\n", w.label, UsageBar(w.win.Percent, 10), pct, suffix)
 		}
 	}
 	if r.Plan != nil && len(r.Plan.Models) > 0 {
-		fmt.Fprintf(&b, "  模型 %s\n", strings.Join(r.Plan.Models, ", "))
+		fmt.Fprintf(&b, "  %-12s %d 个：%s\n", "模型", len(r.Plan.Models), strings.Join(r.Plan.Models, ", "))
 	}
 	if r.Error != "" {
 		b.WriteString(c.Red(r.Error) + "\n")

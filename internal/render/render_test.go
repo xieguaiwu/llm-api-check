@@ -282,10 +282,10 @@ func TestRenderQwenDetailWindows(t *testing.T) {
 	for _, want := range []string{
 		"订阅号 (Qwen · 中国大陆（北京）)",
 		"Token Plan · 订阅",
-		"套餐 Lite · 模型 2 个",
+		"套餐", "Lite",
 		"5小时", "79%", "4小时20分后重置",
 		"7天", "100%",
-		"qwen3.8-flash, qwen3.8-max",
+		"2 个：qwen3.8-flash, qwen3.8-max",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Qwen 详情缺少 %q:\n%s", want, got)
@@ -320,8 +320,11 @@ func TestRenderQwenDetailNoCookie(t *testing.T) {
 	if !strings.Contains(got, "需控制台 Cookie") {
 		t.Errorf("未配 Cookie 应提示配额窗口需 Cookie:\n%s", got)
 	}
-	if !strings.Contains(got, "模型 2 个") {
+	if !strings.Contains(got, "2 个：qwen3.8-flash") {
 		t.Errorf("未配 Cookie 仍应显示模型清单:\n%s", got)
+	}
+	if strings.Contains(got, "套餐") {
+		t.Errorf("无档位信息时不应出现套餐行:\n%s", got)
 	}
 }
 

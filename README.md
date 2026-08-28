@@ -2,14 +2,15 @@
 
 > [**中文版**](README_zh.md) | [**English**](#)
 
-A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history) and OpenCode (Go plan windows + Zen billing), with multi-account support. Ported from the Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker): same data-layer logic, terminal output instead of an app UI.
+A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history), OpenCode (Go plan windows + Zen billing), and Qwen Token Plan (plan models + 5-hour / 7-day credit windows), with multi-account support. Ported from the Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker): same data-layer logic, terminal output instead of an app UI.
 
 ## Features
 
 - **DeepSeek** — balance via official API (`api.deepseek.com/user/balance`); daily spend (today / 7d / 30d) via the platform API (requires browser login token)
 - **OpenCode Go plan** — 3 usage windows: Rolling 5h / Weekly 7d / Monthly 30d, with percent bars, reset countdown, and rate-limit status
 - **OpenCode Zen plan** — balance, monthly usage/limit, auto-reload settings (parsed from the billing page; requires workspace ID + auth cookie)
-- **Multi-account** — unlimited DeepSeek and OpenCode accounts, shown separately
+- **Qwen Token Plan** — plan model list via the subscription gateway, plus 5-hour / 7-day credit windows with reset countdowns (quota windows require a Bailian console cookie — the quota API does not accept API keys)
+- **Multi-account** — unlimited DeepSeek, OpenCode, and Qwen accounts, shown separately
 - Machine-readable `--json` output, `NO_COLOR` support
 - Zero third-party dependencies (Go stdlib only)
 
@@ -28,7 +29,17 @@ llm-api-check                              # refresh all accounts, show overview
 llm-api-check accounts add --type deepseek --name "DeepSeek" --api-key sk-xxx
 llm-api-check accounts add --type opencode --name "Account 1" --go-api-key sk-xxx \
   --workspace-id wrk_xxx --auth-cookie Fe26.2xxx
+llm-api-check accounts add --type qwen --name "Token Plan" --api-key sk-sp-xxx \
+  --console-cookie 'login_aliyunid_csrf=...; cna=...' --region cn-beijing
 llm-api-check opencode "Account 1"         # account detail (Go windows + Zen card)
+llm-api-check qwen                         # Qwen detail (plan models + credit windows)
+```
+
+Download a prebuilt binary from [Releases](https://github.com/xieguaiwu/llm-api-check/releases) (Linux and macOS, amd64 and arm64), verify it against `sha256sums.txt`, then put it on your `PATH`:
+
+```bash
+tar -xzf llm-api-check_1.1.0_linux_amd64.tar.gz -C ~/.local/bin
+llm-api-check --version
 ```
 
 ## Commands
@@ -39,8 +50,9 @@ llm-api-check opencode "Account 1"         # account detail (Go windows + Zen ca
 | `llm-api-check status [--no-refresh]` | Overview; `--no-refresh` reads config only, no network |
 | `llm-api-check deepseek [name\|ID] [--no-refresh]` | DeepSeek account detail |
 | `llm-api-check opencode [name\|ID] [--no-refresh]` | OpenCode account detail |
+| `llm-api-check qwen [name\|ID] [--no-refresh]` | Qwen account detail |
 | `llm-api-check accounts list` | List all accounts |
-| `llm-api-check accounts add --type opencode\|deepseek --name NAME [credential flags]` | Add account |
+| `llm-api-check accounts add --type opencode\|deepseek\|qwen --name NAME [credential flags]` | Add account |
 | `llm-api-check accounts remove --id ID \| --name NAME` | Remove account |
 | `llm-api-check accounts rename --id ID \| --name NAME --new-name NEW` | Rename account |
 | `llm-api-check config path` | Print config file path |
@@ -48,7 +60,7 @@ llm-api-check opencode "Account 1"         # account detail (Go windows + Zen ca
 
 Global flags: `--json` (all output as JSON), `--no-color` (same as `NO_COLOR` env).
 
-Credential flags fall back in this order: flag → env var → TTY prompt (non-TTY errors out). Env vars: `LLM_API_CHECK_GO_API_KEY`, `LLM_API_CHECK_WORKSPACE_ID`, `LLM_API_CHECK_AUTH_COOKIE`, `LLM_API_CHECK_DEEPSEEK_API_KEY`, `LLM_API_CHECK_PLATFORM_TOKEN`.
+Credential flags fall back in this order: flag → env var → TTY prompt (non-TTY errors out). Env vars: `LLM_API_CHECK_GO_API_KEY`, `LLM_API_CHECK_WORKSPACE_ID`, `LLM_API_CHECK_AUTH_COOKIE`, `LLM_API_CHECK_DEEPSEEK_API_KEY`, `LLM_API_CHECK_PLATFORM_TOKEN`, `LLM_API_CHECK_QWEN_API_KEY`, `LLM_API_CHECK_QWEN_COOKIE`, `LLM_API_CHECK_QWEN_REGION`.
 
 ## Where to get credentials
 
@@ -58,6 +70,10 @@ Credential flags fall back in this order: flag → env var → TTY prompt (non-T
 | DeepSeek platform token | Browser DevTools → Network → any `api/v0` request → `Authorization` header (expires in days/weeks) |
 | OpenCode Go API key | opencode.ai account settings |
 | OpenCode workspace ID + auth cookie | Browser DevTools → Application → Cookies → opencode.ai → `auth` (starts with `Fe26.2`) |
+| Qwen API key | Alibaba Cloud Model Studio (Bailian) → Token Plan → API Key (`sk-sp-…`). Subscription keys are region-bound: a Beijing key only works on the Beijing gateway |
+| Qwen console cookie | Sign in to `bailian.console.aliyun.com` → Token Plan page → DevTools → Network → any `data/api.json` request → copy the whole `Cookie` request header (you can paste it with the `Cookie:` prefix; the tool strips it) |
+
+Qwen quota is console-session data. Without a cookie the tool still validates the key and lists plan models, and says so instead of showing invented numbers.
 
 ## Data sources
 
@@ -67,12 +83,15 @@ Credential flags fall back in this order: flag → env var → TTY prompt (non-T
 | DeepSeek spend | `GET https://platform.deepseek.com/api/v0/usage/cost?month=&year=` | browser token |
 | OpenCode Go usage | `GET https://opencode.ai/zen/go/v1/usage` | API key |
 | OpenCode Zen billing | `GET https://opencode.ai/workspace/{id}/billing` | auth cookie |
+| Qwen plan models | `GET https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models` | API key |
+| Qwen quota windows | `POST https://bailian-cs.console.aliyun.com/data/api.json` (`zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage`) | console cookie + `sec_token` |
 
 ## Security
 
 - No credentials are hardcoded or committed. All secrets live in `~/.config/llm-api-check/config.json`, created with mode `0600`.
 - The Android original encrypts credentials with the Android Keystore; a CLI has no OS keystore, so this tool uses file permissions (same model as `gh` / `aws` CLI). The tool warns on stderr if the config file permissions are too open.
-- Zen billing data is parsed from the billing page HTML — it may break if opencode.ai changes its page structure.
+- Zen billing data is parsed from the billing page HTML — it may break if opencode.ai changes its page structure. Qwen quota windows come from the Bailian console RPC and expire with your console session.
+- The Qwen console cookie carries your Alibaba Cloud login session. Treat that config file as sensitive, and remove the account (`accounts remove`) when you no longer need it.
 
 ## License
 
