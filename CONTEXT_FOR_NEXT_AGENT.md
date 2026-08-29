@@ -8,15 +8,14 @@ llm-api-check v1.2.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 **公开 repo：https://github.com/xieguaiwu/llm-api-check（PUBLIC）**
 发布物：GitHub Release v1.1.0（linux amd64/arm64 + darwin amd64/arm64 tarball + sha256sums.txt）
 
-## 最后一次完成的工作（2026-08-29 13:50）
-- **provider=qwen 配额 CLI 通道（v1.2.0）**：官方 Bailian CLI（npm `bailian-cli`）接入，配额终于可查
-  - 安装：`npm install -g --prefix ~/.local/share/bailian-cli bailian-cli`（**bin 用 `bailian` 名，避免与本机自研翻译 CLI `bl` 冲突**；~/.local/share/bailian-cli/bin/bailian，v1.18.1）
-  - 登录：`bailian auth login --console` 浏览器 OAuth 一次 → `~/.bailian/config.json`（0600）；**API key 登录解不开配额**（`usage token-plan` 认证模式 Console，实测未登录报 `No console access token found`）
-  - 代码：新 `internal/repo/qwen_cli.go`（argv 数组 + 20s 超时 + stdout/stderr 分离过滤 Node 噪音 + JSON 错误信封识别）；`QwenRepo.CLI` 注入点（nil=禁用，测试 hermetic）；`Usage()` 通道优先级 **CLI → Cookie**；探测顺序 env `LLM_API_CHECK_BL_BIN`（显式指定不可执行则报错）→ 独立安装位 → PATH `bailian`（不查 `bl`）；`LLM_API_CHECK_QWEN_CLI=off` 禁用
-  - app/render：`CLIEnabled` 进 QwenResult（json:"-"）；灰字提示改为「需控制台 Cookie 或 Bailian CLI（bailian auth login --console）」
-  - 测试：repo 包 +10 用例（TestHelperProcess 模式、CLI 优先/Cookie 兜底/单窗口/噪音过滤/探测），main 包 +1 端到端（fake CLI 脚本）；`go test ./... -race -count=1` 7 包全绿、`go vet` 干净
-  - 实跑：`llm-api-check qwen` → `7天 [████░░░░░░] 41% · 155小时32分后重置`（5 小时字段缺席——官方「5 小时限额限时取消」，解析器单窗口独立判有已覆盖）
-  - 已部署 `~/.local/bin/llm-api-check`（v1.2.0）；README/README_zh/计划文档同步
+## 最后一次完成的工作（2026-08-29 14:10）
+- **provider=qwen --stats 用量分析（v1.2.0 追加）**：`llm-api-check qwen [名称|ID] --stats` 显示 7 天 token 统计 + 免费额度
+  - 数据源：`bailian usage summary --output json`（一个命令含 period/freeTier/usage 三块）；`QwenCLI.runJSON` 抽取共用（Usage/Summary 同走 argv+超时+stderr 过滤+信封识别）
+  - 渲染：周期、调用模型数/成功次数、Input/Output/Total/Avg Tokens（千分位 formatInt）、免费额度只列已用模型（剩余<100%，全未用提示「未使用」）
+  - `moveNoRefresh` 扩展：`--stats` 在位置参数后也能被 flag 解析（同 `--no-refresh` 的坑）
+  - 错误文案统一「Bailian CLI 不可用: …」；测试 +7（repo Summary×2、render Stats×2+formatInt、main e2e --stats）；7 包 -race 全绿
+  - 实跑：`llm-api-check qwen --stats` → 2 模型 · 14 次调用 · Total 14,785 tokens · qwen3.8-flash 98.7% 免费额度
+  - ⚠️ 会话短寿命实测：OAuth 登录约几小时即过期（13:46 登录 14:0x 已报 Console session not logged in or has expired）→ 过期重跑 `bailian auth login --console` 即可（首次登录进程若卡住先 kill 再重开）
 
 ## 遗留问题 / 待办
 - [ ] **Bailian CLI 会话过期维护**：`~/.bailian/config.json` 会话过期后 `llm-api-check qwen` 会报 `No console access token found` → 重跑 `~/.local/share/bailian-cli/bin/bailian auth login --console`（浏览器 OAuth）。暂未做自动检测提示的差异化文案（现在是通用「调用失败」路径，2026-08-29 实测 exit 3 信封已识别并提示登录）
@@ -38,6 +37,7 @@ llm-api-check v1.2.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - **渲染**：中文输出、ANSI 颜色（NO_COLOR/--no-color 禁用）、用量条 10 格、倒计时「4小时20分后重置 / 52分钟后重置 / 即将重置」、颜色阈值 <70 蓝 / 70-89 黄 / ≥90 红、限流与配额用尽强制红且**「已限流」徽章与重置倒计时必须并存**（index.md §六 项目专属要求）
 - **本机环境**：密钥真值在 `~/.config/fish/config.fish`（非 dotfiles 符号链接、不入库）；该文件首行有 `if not status is-interactive; return; end` 守卫，`fish -c 'source …'` 取值会静默得空值——用 python 正则直读文件（见 System_Fix/dotfiles-sync-and-audit.md 附录 B.5）；订阅密钥与区域强绑定（北京 key 打新加坡端点 401，同 key 换区域即 200）；Bailian CLI 已装 `~/.local/share/bailian-cli/bin/bailian`（独立 prefix，不 shadow 自研 bl）
 
+- **2026-08-29 13:50（edb6db0）**：Qwen 配额 Bailian CLI 通道——官方 bailian-cli（npm，独立 prefix ~/.local/share/bailian-cli）接入，`bailian auth login --console` 一次 OAuth 后 `llm-api-check qwen` 显示配额窗口（CLI 优先、Cookie 兜底）；探测 env LLM_API_CHECK_BL_BIN → 安装位 → PATH bailian（禁查 bl）；LLM_API_CHECK_QWEN_CLI=off 禁用。详见 docs/plans/2026-08-29-qwen-provider.md §一-b
 ## 历史工作记录
 - **2026-08-18 10:0x（c694d24）**：限流时限直接可见——对照 Android DetailScreen.WindowRow，rate-limited 行由「已限流」替代倒计时改为「已限流 · N小时M分后重置」并存；render_test 断言同步反转（限流行必须含倒计时）。实测 xieguaiwu Monthly → `已限流 · 175小时7分后重置`
 - **2026-08-18 01:55**：发布公开 repo（System_Fix → dotfiles-sync-and-audit 审计：历史全量扫描真实 key 前缀零命中；fixture 为 TEST 占位符；config.json/.env 未入库）→ `gh repo create llm-api-check --public`；真实冒烟 4 账号通过；修复总览页已限流嵌套 ANSI 颜色（f2dbf22）

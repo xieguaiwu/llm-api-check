@@ -131,3 +131,15 @@ llm-api-check accounts add --type qwen --name X --api-key sk-sp-... \
 - 真实冒烟（API Key 通道）：`llm-api-check qwen` → `模型 12 个：deepseek-v4-flash-0731, …`
 - **真实冒烟（CLI 通道，2026-08-29 完成）**：`bailian auth login --console` 浏览器登录后，`llm-api-check qwen` → `7天 [████░░░░░░] 41% · 155小时32分后重置`，exit 0
 - 配额通道演进史：未登录 API Key 实测回 NotLogined → CLI 未登录回 `No console access token found` → 登录后返回真实窗口
+
+## 七、用量分析（--stats，2026-08-29 追加，v1.2.0）
+
+`llm-api-check qwen [名称|ID] --stats` 附加 7 天用量分析：
+
+- 数据源：`bailian usage summary --output json`（Console 认证，**一个命令同时含 period + freeTier + usage**，无需单独调 stats）
+- JSON 形状（实测）：`{"period":{start,end,days}, "freeTier":[{model,type,remaining,total,remainingPercent,expires}], "usage":{modelsCalled,successfulCalls,usages:[{key,value,unit,label}]}}`
+- 渲染：周期、调用模型数/成功次数、Input/Output/Total/Avg Tokens（千分位）、免费额度**只列已用过的模型**（剩余 <100%，全未用提示「免费额度未使用」）
+- 免费额度剩余百分比颜色沿用已用比例语义（ColorForPercent(100-剩余)）
+- 实现：`QwenCLI.runJSON` 抽取共用（Usage/Summary 同走：argv + 超时 + stderr 噪音过滤 + 信封识别）；app.RefreshQwenStats；main `--stats` flag（moveNoRefresh 扩展把 `--stats` 也提前，否则 `qwen 名称 --stats` exit 2）
+- 错误文案统一「Bailian CLI 不可用: …（运行 bailian auth login --console 登录后重试）」（Usage/Stats 共用）
+- 实测（2026-08-29 重新登录后）：`qwen --stats` → 2 模型 · 14 次调用 · Total 14,785 tokens · qwen3.8-flash 免费额度 98.7%

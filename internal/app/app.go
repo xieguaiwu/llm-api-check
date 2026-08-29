@@ -31,12 +31,14 @@ type AccountResult struct {
 }
 
 // QwenResult 单个 Qwen 账号的刷新结果（对应 QwenUi）。
-// Plan 走 API Key（模型清单）；Usage 走 Bailian CLI 或控制台 Cookie（配额窗口）。
+// Plan 走 API Key（模型清单）；Usage 走 Bailian CLI 或控制台 Cookie（配额窗口）；
+// Stats 走 Bailian CLI（用量分析，--stats 时才拉）。
 type QwenResult struct {
-	Account models.QwenAccount `json:"account"`
-	Plan    *models.QwenPlan   `json:"plan,omitempty"`
-	Usage   *models.QwenUsage  `json:"usage,omitempty"`
-	Error   string             `json:"error,omitempty"`
+	Account models.QwenAccount  `json:"account"`
+	Plan    *models.QwenPlan    `json:"plan,omitempty"`
+	Usage   *models.QwenUsage   `json:"usage,omitempty"`
+	Stats   *models.QwenSummary `json:"stats,omitempty"`
+	Error   string              `json:"error,omitempty"`
 	// CLIEnabled 本机是否探测到 Bailian CLI（渲染层区分“暂无数据”与“未配置凭据”）
 	CLIEnabled bool `json:"-"`
 }
@@ -223,7 +225,31 @@ func (a *App) RefreshQwen(id string) (QwenResult, error) {
 	return a.refreshQwen(acc), nil
 }
 
-// refreshQwen 刷模型清单（API Key）+ 配额窗口（Bailian CLI 或 Cookie 任一可用时拉取），错误合并。
+// RefreshQwenStats 拉用量分析（token 统计 + 免费额度，仅 Bailian CLI 通道）。
+func (a *App) RefreshQwenStats(id string) (QwenResult, error) {
+	var acc models.QwenAccount
+	found := false
+	for _, x := range a.Cfg.QwenAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return QwenResult{}, errors.New("账号不存在或已被删除")
+	}
+	if !a.Repos.Qwen.CLIEnabled() {
+		return QwenResult{}, errors.New("用量分析需要 Bailian CLI（运行 bailian auth login --console 登录后重试）")
+	}
+	s, err := a.Repos.Qwen.CLI.Summary(acc)
+	if err != nil {
+		return QwenResult{}, err
+	}
+	return QwenResult{Account: acc, Stats: &s}, nil
+}
+
+// RefreshQwen 刷模型清单（API Key）+ 配额窗口（Bailian CLI 或 Cookie 任一可用时拉取），错误合并。
 func (a *App) refreshQwen(acc models.QwenAccount) QwenResult {
 	res := QwenResult{Account: acc, CLIEnabled: a.Repos.Qwen.CLIEnabled()}
 	plan, planErr := a.Repos.Qwen.Plan(acc)

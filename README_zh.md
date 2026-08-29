@@ -32,7 +32,7 @@ llm-api-check accounts add --type opencode --name "账号 1" --go-api-key sk-xxx
 llm-api-check accounts add --type qwen --name "订阅号" --api-key sk-sp-xxx \
   --console-cookie 'login_aliyunid_csrf=...; cna=...' --region cn-beijing
 llm-api-check opencode "账号 1"           # 账号详情（Go 窗口 + Zen 卡片）
-llm-api-check qwen                         # Qwen 详情（套餐模型 + 配额窗口）
+llm-api-check qwen --stats                 # Qwen 详情 + 7 天用量分析（token 统计 + 免费额度）
 ```
 
 可从 [Releases](https://github.com/xieguaiwu/llm-api-check/releases) 下载预编译二进制（Linux / macOS，amd64 / arm64），与 `sha256sums.txt` 对校后放入 `PATH`：
@@ -50,7 +50,7 @@ llm-api-check --version
 | `llm-api-check status [--no-refresh]` | 总览；`--no-refresh` 只读配置不联网 |
 | `llm-api-check deepseek [名称\|ID] [--no-refresh]` | DeepSeek 账号详情 |
 | `llm-api-check opencode [名称\|ID] [--no-refresh]` | OpenCode 账号详情 |
-| `llm-api-check qwen [名称\|ID] [--no-refresh]` | Qwen 账号详情 |
+| `llm-api-check qwen [名称\|ID] [--no-refresh] [--stats]` | Qwen 账号详情（`--stats` 附加 7 天 token 统计与免费额度） |
 | `llm-api-check accounts list` | 列出所有账号 |
 | `llm-api-check accounts add --type opencode\|deepseek\|qwen --name 名称 [凭据 flags]` | 添加账号 |
 | `llm-api-check accounts remove --id ID \| --name 名称` | 删除账号 |

@@ -43,7 +43,7 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode 与 Qwen Tok
   llm-api-check status [--no-refresh]      总览；默认刷新，--no-refresh 只读配置不联网
   llm-api-check deepseek [名称|ID]         DeepSeek 账号详情（可过滤名字/id，缺省全部）
   llm-api-check opencode [名称|ID]         OpenCode 账号详情（可过滤名字/id，缺省全部）
-  llm-api-check qwen [名称|ID]             Qwen 账号详情（可过滤名字/id，缺省全部）
+  llm-api-check qwen [名称|ID] [--stats]     Qwen 账号详情（--stats 附加 7 天用量分析与免费额度）
   llm-api-check accounts list              列出所有账号
   llm-api-check accounts add --type opencode|deepseek|qwen --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
@@ -332,15 +332,17 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	return exitCodeForResults(res)
 }
 
-// moveNoRefresh 把 --no-refresh 提前：Go flag 包遇到首个非 flag 参数即停止解析，
-// 否则 `llm-api-check qwen 名称 --no-refresh` 会被误判为多余参数（exit 2）。
+// moveNoRefresh 把位置参数之后的 flag 提前：Go flag 包遇到首个非 flag 参数即停止解析，
+// 否则 `llm-api-check qwen 名称 --no-refresh` / `--stats` 会被误判为多余参数（exit 2）。
 func moveNoRefresh(args []string) []string {
-	for i, a := range args {
-		if a == "--no-refresh" {
-			out := make([]string, 0, len(args))
-			out = append(out, "--no-refresh")
-			out = append(out, args[:i]...)
-			return append(out, args[i+1:]...)
+	for _, want := range []string{"--no-refresh", "--stats"} {
+		for i, a := range args {
+			if a == want {
+				out := make([]string, 0, len(args))
+				out = append(out, want)
+				out = append(out, args[:i]...)
+				return append(out, args[i+1:]...)
+			}
 		}
 	}
 	return args
@@ -374,12 +376,13 @@ func cmdQwen(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, 
 	fs := flag.NewFlagSet("qwen", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	stats := fs.Bool("stats", false, "显示用量分析（7 天 token 统计 + 免费额度）")
 	if err := fs.Parse(moveNoRefresh(args)); err != nil {
-		fmt.Fprintln(stderr, "用法: llm-api-check qwen [名称|ID] [--no-refresh]")
+		fmt.Fprintln(stderr, "用法: llm-api-check qwen [名称|ID] [--no-refresh] [--stats]")
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(stderr, "用法: llm-api-check qwen [名称|ID] [--no-refresh]")
+		fmt.Fprintln(stderr, "用法: llm-api-check qwen [名称|ID] [--no-refresh] [--stats]")
 		return 2
 	}
 	path := config.DefaultPath()
@@ -407,6 +410,14 @@ func cmdQwen(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, 
 		} else if r, err = a.RefreshQwen(acc.ID); err != nil {
 			fmt.Fprintf(stderr, "错误: %v\n", err)
 			return 1
+		}
+		if *stats && !*noRefresh {
+			sr, sErr := a.RefreshQwenStats(acc.ID)
+			if sErr != nil {
+				r.Error = joinText(r.Error, sErr.Error())
+			} else {
+				r.Stats = sr.Stats
+			}
 		}
 		results = append(results, r)
 	}
@@ -1007,10 +1018,26 @@ func publicQwenResult(r app.QwenResult) map[string]any {
 	if r.Usage != nil {
 		m["usage"] = r.Usage
 	}
+	if r.Stats != nil {
+		m["stats"] = r.Stats
+	}
 	if r.Error != "" {
 		m["error"] = r.Error
 	}
 	return m
+}
+
+// joinText 合并两段错误文本（main 层轻量版，与 app.joinErrors 同语义）。
+func joinText(a, b string) string {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	return a + "\n" + b
 }
 
 func publicDeepSeekAccounts(as []models.DeepSeekAccount) []map[string]any {

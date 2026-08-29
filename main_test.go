@@ -341,6 +341,10 @@ if [ "$1" = "usage" ] && [ "$2" = "token-plan" ]; then
   echo '{"per5HourPercentage":0.5,"per5HourResetTime":1790000000000,"per1WeekPercentage":0.7,"per1WeekResetTime":1791000000000}'
   exit 0
 fi
+if [ "$1" = "usage" ] && [ "$2" = "summary" ]; then
+  echo '{"period":{"start":"2026-08-22","end":"2026-08-29","days":7},"freeTier":[{"model":"qwen3.8-flash","type":"Text","remaining":986768,"total":1000000,"remainingPercent":98.7,"expires":"2026-11-28"}],"usage":{"modelsCalled":2,"successfulCalls":14,"usages":[{"key":"total_token","value":14785,"unit":"tokens","label":"Total Tokens"}]}}'
+  exit 0
+fi
 echo '{"error":{"code":3,"message":"No console access token found."}}'
 exit 0
 `
@@ -366,5 +370,16 @@ exit 0
 	}
 	if strings.Contains(out, "需控制台 Cookie") {
 		t.Errorf("CLI 通道可用时不应提示缺 Cookie: %s", out)
+	}
+
+	// --stats 附加用量分析（fake CLI 的 summary 分支）
+	code, out, errOut = runCLI(t, "", "qwen", "订阅号", "--stats")
+	if code != 0 {
+		t.Fatalf("qwen --stats exit=%d err=%q", code, errOut)
+	}
+	for _, want := range []string{"用量分析", "14,785", "qwen3.8-flash", "98.7%", "2026-08-22 ~ 2026-08-29（7 天）"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--stats 输出缺少 %q: %s", want, out)
+		}
 	}
 }

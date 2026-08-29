@@ -91,21 +91,54 @@ func (c *QwenCLI) timeout() time.Duration {
 // Usage 调用 `bailian usage token-plan` 拉配额窗口。
 // 返回的错误可直接展示（含 CLI 修复提示）。
 func (c *QwenCLI) Usage(acc models.QwenAccount) (models.QwenUsage, error) {
-	if c.BinPath == "" {
-		return models.QwenUsage{}, errors.New("未找到 Bailian CLI（bailian-cli）")
-	}
 	region, err := models.NormalizeQwenRegion(acc.Region)
 	if err != nil {
 		return models.QwenUsage{}, err
 	}
-	site := "domestic"
+	site := qwenCLISite(region)
+	raw, err := c.runJSON("usage", "token-plan",
+		"--console-region", region, "--console-site", site, "--output", "json")
+	if err != nil {
+		return models.QwenUsage{}, err
+	}
+	return parsers.ParseQwenUsage(raw, time.Now())
+}
+
+// Summary 调用 `bailian usage summary` 拉用量分析（token 统计 + 免费额度）。
+func (c *QwenCLI) Summary(acc models.QwenAccount) (models.QwenSummary, error) {
+	region, err := models.NormalizeQwenRegion(acc.Region)
+	if err != nil {
+		return models.QwenSummary{}, err
+	}
+	raw, err := c.runJSON("usage", "summary",
+		"--console-region", region, "--console-site", qwenCLISite(region), "--output", "json")
+	if err != nil {
+		return models.QwenSummary{}, err
+	}
+	var out models.QwenSummary
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return models.QwenSummary{}, fmt.Errorf("Qwen 用量分析 JSON 解析失败: %w", err)
+	}
+	return out, nil
+}
+
+func qwenCLISite(region string) string {
 	if region == models.RegionQwenIntl {
-		site = "international"
+		return "international"
+	}
+	return "domestic"
+}
+
+// runJSON 执行 Bailian CLI 子命令并返回清洗后的 stdout JSON。
+// 错误处理统一：BinPath 校验 → 超时 → stdout/stderr 分离（过滤 Node 噪音）
+// → 错误信封识别（exit 非零时信封在 stderr，实测 exit 3）。
+func (c *QwenCLI) runJSON(args ...string) (string, error) {
+	if c.BinPath == "" {
+		return "", errors.New("未找到 Bailian CLI（bailian-cli）")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout())
 	defer cancel()
-	cmd := c.command(ctx, c.BinPath, "usage", "token-plan",
-		"--console-region", region, "--console-site", site, "--output", "json")
+	cmd := c.command(ctx, c.BinPath, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -114,18 +147,18 @@ func (c *QwenCLI) Usage(acc models.QwenAccount) (models.QwenUsage, error) {
 		tail := qwenCLIStderrTail(stderr.String())
 		// exit 非零时 CLI 可能把 JSON 错误信封打到 stderr（实测 exit 3 即如此）
 		if envErr := qwenCLIErrorEnvelope(tail); envErr != "" {
-			return models.QwenUsage{}, fmt.Errorf("Bailian CLI 配额不可用: %s（运行 bailian auth login --console 登录后重试）", envErr)
+			return "", fmt.Errorf("Bailian CLI 不可用: %s（运行 bailian auth login --console 登录后重试）", envErr)
 		}
 		if tail == "" {
-			return models.QwenUsage{}, fmt.Errorf("Bailian CLI 调用失败: %v", err)
+			return "", fmt.Errorf("Bailian CLI 调用失败: %v", err)
 		}
-		return models.QwenUsage{}, fmt.Errorf("Bailian CLI 调用失败: %v（%s）", err, tail)
+		return "", fmt.Errorf("Bailian CLI 调用失败: %v（%s）", err, tail)
 	}
 	raw := strings.TrimSpace(stdout.String())
 	if envErr := qwenCLIErrorEnvelope(raw); envErr != "" {
-		return models.QwenUsage{}, fmt.Errorf("Bailian CLI 配额不可用: %s（运行 bailian auth login --console 登录后重试）", envErr)
+		return "", fmt.Errorf("Bailian CLI 不可用: %s（运行 bailian auth login --console 登录后重试）", envErr)
 	}
-	return parsers.ParseQwenUsage(raw, time.Now())
+	return raw, nil
 }
 
 // qwenCLIStderrTail 清洗 Bailian CLI 的 stderr：过滤 Node 运行时噪音

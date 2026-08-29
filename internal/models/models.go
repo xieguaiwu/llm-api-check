@@ -179,3 +179,44 @@ type QwenUsage struct {
 type QwenPlan struct {
 	Models []string `json:"models"`
 }
+
+// ── Qwen 用量分析（Bailian CLI `usage summary --output json`） ──
+
+// QwenTokenStat 单项 token 统计（Input/Output/Total/Avg）。
+type QwenTokenStat struct {
+	Key   string `json:"key"`
+	Value int64  `json:"value"`
+	Unit  string `json:"unit"`
+	Label string `json:"label"`
+}
+
+// QwenUsageStats 统计周期内的调用汇总。
+type QwenUsageStats struct {
+	ModelsCalled    int             `json:"modelsCalled"`
+	SuccessfulCalls int             `json:"successfulCalls"`
+	Usages          []QwenTokenStat `json:"usages"`
+}
+
+// QwenFreeTier 模型免费额度（无 Token Plan 抵扣）。
+type QwenFreeTier struct {
+	Model            string  `json:"model"`
+	Type             string  `json:"type"`
+	Remaining        int64   `json:"remaining"`
+	Total            int64   `json:"total"`
+	RemainingPercent float64 `json:"remainingPercent"`
+	Expires          string  `json:"expires"`
+}
+
+// QwenSummaryPeriod 统计周期。
+type QwenSummaryPeriod struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+	Days  int    `json:"days"`
+}
+
+// QwenSummary 用量分析：周期 + 免费额度 + token 统计（Bailian CLI Console 认证）。
+type QwenSummary struct {
+	Period   QwenSummaryPeriod `json:"period"`
+	FreeTier []QwenFreeTier    `json:"freeTier"`
+	Usage    QwenUsageStats    `json:"usage"`
+}

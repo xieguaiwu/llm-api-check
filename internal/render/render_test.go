@@ -349,3 +349,68 @@ func TestRenderQwenColorWhenExhausted(t *testing.T) {
 		t.Errorf("未用尽不应出现限流徽章:\n%s", colored)
 	}
 }
+
+func TestRenderQwenDetailStats(t *testing.T) {
+	r := qwenResult()
+	r.Stats = &models.QwenSummary{
+		Period: models.QwenSummaryPeriod{Start: "2026-08-22", End: "2026-08-29", Days: 7},
+		FreeTier: []models.QwenFreeTier{
+			{Model: "qwen3.8-flash", Type: "Text", Remaining: 986768, Total: 1000000, RemainingPercent: 98.7, Expires: "2026-11-28"},
+			{Model: "qwen3.8-max", Type: "Text", Remaining: 1000000, Total: 1000000, RemainingPercent: 100, Expires: "2026-11-28"},
+		},
+		Usage: models.QwenUsageStats{
+			ModelsCalled: 2, SuccessfulCalls: 14,
+			Usages: []models.QwenTokenStat{
+				{Key: "input_token", Value: 5034, Unit: "tokens", Label: "Input Tokens"},
+				{Key: "output_token", Value: 9751, Unit: "tokens", Label: "Output Tokens"},
+				{Key: "total_token", Value: 14785, Unit: "tokens", Label: "Total Tokens"},
+			},
+		},
+	}
+	got := RenderQwenDetail(r, baseTime(), Colorizer{Disabled: true})
+	for _, want := range []string{
+		"用量分析",
+		"2026-08-22 ~ 2026-08-29（7 天）",
+		"2 个模型 · 14 次成功调用",
+		"Input Tokens", "5,034",
+		"Output Tokens", "9,751",
+		"Total Tokens", "14,785",
+		"免费额度",
+		"qwen3.8-flash", "98.7%",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("用量分析缺少 %q:\n%s", want, got)
+		}
+	}
+	// 未用模型不列在免费额度段（模型清单行仍含 qwen3.8-max，只检查免费额度段）
+	statsSection := got[strings.Index(got, "用量分析"):strings.Index(got, "模型")]
+	if strings.Contains(statsSection, "qwen3.8-max") {
+		t.Errorf("剩余 100%% 的免费额度不应列出:\n%s", statsSection)
+	}
+}
+
+func TestRenderQwenDetailStatsAllUnused(t *testing.T) {
+	r := qwenResult()
+	r.Stats = &models.QwenSummary{
+		Period:   models.QwenSummaryPeriod{Start: "2026-08-22", End: "2026-08-29", Days: 7},
+		FreeTier: []models.QwenFreeTier{{Model: "qwen3.8-max", Type: "Text", Remaining: 1000000, Total: 1000000, RemainingPercent: 100, Expires: "2026-11-28"}},
+		Usage:    models.QwenUsageStats{ModelsCalled: 0, SuccessfulCalls: 0},
+	}
+	got := RenderQwenDetail(r, baseTime(), Colorizer{Disabled: true})
+	if !strings.Contains(got, "免费额度       未使用") {
+		t.Errorf("全未用应提示未使用:\n%s", got)
+	}
+}
+
+func TestFormatInt(t *testing.T) {
+	for _, tc := range []struct {
+		in   int64
+		want string
+	}{
+		{0, "0"}, {5, "5"}, {999, "999"}, {1000, "1,000"}, {14785, "14,785"}, {1000000, "1,000,000"}, {-1234, "-1,234"},
+	} {
+		if got := formatInt(tc.in); got != tc.want {
+			t.Errorf("formatInt(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

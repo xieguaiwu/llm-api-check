@@ -32,7 +32,7 @@ llm-api-check accounts add --type opencode --name "Account 1" --go-api-key sk-xx
 llm-api-check accounts add --type qwen --name "Token Plan" --api-key sk-sp-xxx \
   --console-cookie 'login_aliyunid_csrf=...; cna=...' --region cn-beijing
 llm-api-check opencode "Account 1"         # account detail (Go windows + Zen card)
-llm-api-check qwen                         # Qwen detail (plan models + credit windows)
+llm-api-check qwen --stats                 # Qwen detail + 7-day usage analysis (tokens + free tier)
 ```
 
 Download a prebuilt binary from [Releases](https://github.com/xieguaiwu/llm-api-check/releases) (Linux and macOS, amd64 and arm64), verify it against `sha256sums.txt`, then put it on your `PATH`:
@@ -50,7 +50,7 @@ llm-api-check --version
 | `llm-api-check status [--no-refresh]` | Overview; `--no-refresh` reads config only, no network |
 | `llm-api-check deepseek [name\|ID] [--no-refresh]` | DeepSeek account detail |
 | `llm-api-check opencode [name\|ID] [--no-refresh]` | OpenCode account detail |
-| `llm-api-check qwen [name\|ID] [--no-refresh]` | Qwen account detail |
+| `llm-api-check qwen [name\|ID] [--no-refresh] [--stats]` | Qwen account detail (`--stats` adds 7-day token stats + free-tier quota) |
 | `llm-api-check accounts list` | List all accounts |
 | `llm-api-check accounts add --type opencode\|deepseek\|qwen --name NAME [credential flags]` | Add account |
 | `llm-api-check accounts remove --id ID \| --name NAME` | Remove account |

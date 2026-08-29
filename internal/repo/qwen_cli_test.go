@@ -96,6 +96,12 @@ func TestQwenCLIHelperProcess(t *testing.T) {
 		os.Exit(3)
 	case "badjson":
 		os.Stdout.WriteString("<html>gateway error</html>")
+	case "summary":
+		if !strings.Contains(join, "usage summary") {
+			os.Stderr.WriteString("wrong subcommand: " + join + "\n")
+			os.Exit(2)
+		}
+		os.Stdout.WriteString(`{"period":{"start":"2026-08-22","end":"2026-08-29","days":7},"freeTier":[{"model":"qwen3.8-flash","type":"Text","remaining":986768,"total":1000000,"remainingPercent":98.7,"expires":"2026-11-28"},{"model":"qwen3.8-max","type":"Text","remaining":1000000,"total":1000000,"remainingPercent":100,"expires":"2026-11-28"}],"usage":{"modelsCalled":2,"successfulCalls":14,"usages":[{"key":"input_token","value":5034,"unit":"tokens","label":"Input Tokens"},{"key":"output_token","value":9751,"unit":"tokens","label":"Output Tokens"},{"key":"total_token","value":14785,"unit":"tokens","label":"Total Tokens"}]}}`)
 	}
 	os.Exit(0)
 }
@@ -169,6 +175,34 @@ func TestQwenCLIUsageEmptyBin(t *testing.T) {
 	_, err := cli.Usage(models.QwenAccount{Region: "cn-beijing"})
 	if err == nil || !strings.Contains(err.Error(), "未找到 Bailian CLI") {
 		t.Errorf("空 BinPath 应报未找到: %v", err)
+	}
+}
+
+func TestQwenCLISummaryOK(t *testing.T) {
+	cli := helperCLI(t, "summary")
+	s, err := cli.Summary(models.QwenAccount{Region: "cn-beijing"})
+	if err != nil {
+		t.Fatalf("Summary err: %v", err)
+	}
+	if s.Period.Days != 7 || s.Period.Start != "2026-08-22" || s.Period.End != "2026-08-29" {
+		t.Errorf("周期不符: %+v", s.Period)
+	}
+	if s.Usage.ModelsCalled != 2 || s.Usage.SuccessfulCalls != 14 {
+		t.Errorf("调用汇总不符: %+v", s.Usage)
+	}
+	if len(s.Usage.Usages) != 3 || s.Usage.Usages[0].Label != "Input Tokens" || s.Usage.Usages[2].Value != 14785 {
+		t.Errorf("token 统计不符: %+v", s.Usage.Usages)
+	}
+	if len(s.FreeTier) != 2 || s.FreeTier[0].Model != "qwen3.8-flash" || s.FreeTier[0].RemainingPercent != 98.7 {
+		t.Errorf("免费额度不符: %+v", s.FreeTier)
+	}
+}
+
+func TestQwenCLISummaryNotLoggedIn(t *testing.T) {
+	cli := helperCLI(t, "notloggedin")
+	_, err := cli.Summary(models.QwenAccount{Region: "cn-beijing"})
+	if err == nil || !strings.Contains(err.Error(), "auth login --console") {
+		t.Errorf("未登录应提示登录: %v", err)
 	}
 }
 

@@ -361,6 +361,57 @@ type qwenWindowEntry struct {
 }
 
 // qwenWindows 按 5 小时 / 7 天顺序收集非空窗口
+// renderQwenStats 渲染用量分析段：周期 + 调用汇总 + token 统计 + 免费额度。
+// 免费额度只列已用过的模型（剩余 < 100%），全未用则一句提示。
+func renderQwenStats(b *strings.Builder, s *models.QwenSummary, c Colorizer) {
+	b.WriteString("  用量分析\n")
+	fmt.Fprintf(b, "  %-14s %s ~ %s（%d 天）\n", "周期", s.Period.Start, s.Period.End, s.Period.Days)
+	fmt.Fprintf(b, "  %-14s %d 个模型 · %d 次成功调用\n", "调用", s.Usage.ModelsCalled, s.Usage.SuccessfulCalls)
+	for _, u := range s.Usage.Usages {
+		fmt.Fprintf(b, "  %-14s %s %s\n", u.Label, formatInt(u.Value), u.Unit)
+	}
+	used := 0
+	for _, f := range s.FreeTier {
+		if f.RemainingPercent < 100 {
+			used++
+		}
+	}
+	if used == 0 {
+		b.WriteString(c.Gray("  免费额度       未使用") + "\n")
+		return
+	}
+	b.WriteString("  免费额度\n")
+	for _, f := range s.FreeTier {
+		if f.RemainingPercent >= 100 {
+			continue
+		}
+		usedPct := int(100 - f.RemainingPercent)
+		col := ColorForPercent(usedPct, usedPct >= 100)
+		pct := c.apply(col, fmt.Sprintf("%.1f%%", f.RemainingPercent))
+		fmt.Fprintf(b, "  %-22s %s %s/%s · %s · %s 到期\n",
+			f.Model, pct, formatInt(f.Remaining), formatInt(f.Total), f.Type, f.Expires)
+	}
+}
+
+// formatInt 千分位格式化整数（如 14785 → 14,785）。
+func formatInt(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	if n < 0 {
+		s = s[1:]
+	}
+	var out []byte
+	for i, ch := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, ch)
+	}
+	if n < 0 {
+		return "-" + string(out)
+	}
+	return string(out)
+}
+
 func qwenWindows(u *models.QwenUsage) []qwenWindowEntry {
 	var ws []qwenWindowEntry
 	if u.FiveHour != nil {
@@ -471,6 +522,9 @@ func RenderQwenDetail(r app.QwenResult, now time.Time, c Colorizer) string {
 			}
 			fmt.Fprintf(&b, "  %-12s %s %s · %s\n", w.label, UsageBar(w.win.Percent, 10), pct, suffix)
 		}
+	}
+	if r.Stats != nil {
+		renderQwenStats(&b, r.Stats, c)
 	}
 	if r.Plan != nil && len(r.Plan.Models) > 0 {
 		fmt.Fprintf(&b, "  %-12s %d 个：%s\n", "模型", len(r.Plan.Models), strings.Join(r.Plan.Models, ", "))
