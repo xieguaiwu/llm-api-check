@@ -117,6 +117,15 @@ func MaskPhone(s string) string {
 
 // ── 主账户信息 ─────────────────────────────────────────────────
 
+// galaxyMissingField RawMessage 是否“缺失或显式 null”（两者都算缺，不把坏数据当 0 展示）
+func galaxyMissingField(r json.RawMessage) bool {
+	if len(r) == 0 {
+		return true
+	}
+	s := strings.TrimSpace(string(r))
+	return s == "null"
+}
+
 // ParseGalaxyBalance 解析 /account/get_main_account_info 的 data 节点。
 // 数值一律走 rawFloat/rawInt 宽容解析（平台偶发把金额序列化成字符串）。
 func ParseGalaxyBalance(raw string) (models.GalaxyBalance, error) {
@@ -133,7 +142,7 @@ func ParseGalaxyBalance(raw string) (models.GalaxyBalance, error) {
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
 		return models.GalaxyBalance{}, fmt.Errorf("智星云账户 JSON 解析失败: %w", err)
 	}
-	if len(p.Money) == 0 {
+	if galaxyMissingField(p.Money) {
 		return models.GalaxyBalance{}, errors.New("智星云账户响应缺少 Money 字段")
 	}
 	bal := models.GalaxyBalance{
@@ -166,7 +175,7 @@ func ParseGalaxyStatusCount(raw string) (models.GalaxyStatusCount, error) {
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
 		return models.GalaxyStatusCount{}, fmt.Errorf("智星云实例统计 JSON 解析失败: %w", err)
 	}
-	if len(p.All) == 0 && len(p.Running) == 0 {
+	if galaxyMissingField(p.All) && galaxyMissingField(p.Running) {
 		return models.GalaxyStatusCount{}, errors.New("智星云实例统计响应为空")
 	}
 	i := func(r json.RawMessage) int {
@@ -195,6 +204,17 @@ func ParseGalaxyStatusCount(raw string) (models.GalaxyStatusCount, error) {
 //
 // now 用于 ServerTime 时钟折算到期时刻（测试传固定值保证确定性）。
 func ParseGalaxyInstances(raw string, now time.Time) (list []models.GalaxyInstance, total int, hasMore bool, err error) {
+	// 先探 list 是否显式 null（与 Android 侧报错口径对齐；null 表示异常响应，
+	// 空数组才是正常空态）
+	var probe struct {
+		List json.RawMessage `json:"list"`
+	}
+	if perr := json.Unmarshal([]byte(raw), &probe); perr != nil {
+		return nil, 0, false, fmt.Errorf("智星云实例列表 JSON 解析失败: %w", perr)
+	}
+	if len(probe.List) > 0 && strings.TrimSpace(string(probe.List)) == "null" {
+		return nil, 0, false, errors.New("智星云实例列表响应异常（list 为 null）")
+	}
 	var payload struct {
 		List []struct {
 			ContainerName   string          `json:"Container_name"`

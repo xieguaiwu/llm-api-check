@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -171,7 +172,9 @@ func (r *GalaxyRepo) call(acc models.GalaxyAccount, path string, params map[stri
 	return data, nil
 }
 
-// galaxyCodeString code 字段宽容取字符串形式（"2000" / 2000 都接受）
+// galaxyCodeString code 字段宽容取字符串形式（"2000" / 2000 都接受）。
+// 数字形式只认整数值——code:2000.5 不是合法成功码（对齐 Kotlin 严格性，
+// 避免把半截错误码截断成成功）。
 func galaxyCodeString(r json.RawMessage) string {
 	if len(r) == 0 {
 		return ""
@@ -181,7 +184,7 @@ func galaxyCodeString(r json.RawMessage) string {
 		return s
 	}
 	var f float64
-	if err := json.Unmarshal(r, &f); err == nil {
+	if err := json.Unmarshal(r, &f); err == nil && f == math.Trunc(f) {
 		return fmt.Sprintf("%d", int64(f))
 	}
 	return strings.Trim(string(r), `"`)
@@ -273,6 +276,7 @@ func (r *GalaxyRepo) Cost(acc models.GalaxyAccount) (models.GalaxyCost, error) {
 	if maxPages <= 0 {
 		maxPages = 8
 	}
+	now := r.now() // 只取一次时钟：跨午夜时翻页、窗口判定、聚合用同一基准（oracle P4-6）
 	var all []parsers.GalaxyChange
 	hasMore := false
 	for page := 1; page <= maxPages; page++ {
@@ -292,11 +296,11 @@ func (r *GalaxyRepo) Cost(acc models.GalaxyAccount) (models.GalaxyCost, error) {
 		if !more {
 			break
 		}
-		if costWindowCovered(all, r.now()) {
+		if costWindowCovered(all, now) {
 			break
 		}
 	}
-	return parsers.AggregateGalaxyCost(all, hasMore, r.now()), nil
+	return parsers.AggregateGalaxyCost(all, hasMore, now), nil
 }
 
 // costWindowCovered 已取到的变更是否已跨过「近 7 天」窗口下界

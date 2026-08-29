@@ -328,3 +328,56 @@ func TestAggregateGalaxyCostCompleteWindows(t *testing.T) {
 		t.Errorf("10 天前的条目不该进 7 天窗口: got %v", cost.Last7d)
 	}
 }
+
+// ── 防御路径回归（oracle 双实现对照修复） ─────────────────────
+
+// TestRawIntStringTolerant 平台偶发把整型序列化成字符串：严格模式会把
+// Status:"1" 解析成 0（已结束），属于静默错误 → rawInt 必须双兼容。
+func TestRawIntStringTolerant(t *testing.T) {
+	if v, ok := rawInt(json.RawMessage(`"1"`)); !ok || v != 1 {
+		t.Errorf("rawInt(\"1\") = %d,%v, want 1,true", v, ok)
+	}
+	if v, ok := rawInt(json.RawMessage(`" 2 "`)); !ok || v != 2 {
+		t.Errorf("rawInt(\" 2 \") = %d,%v, want 2,true（带空白也容忍）", v, ok)
+	}
+	if v, ok := rawInt(json.RawMessage(`"abc"`)); ok || v != 0 {
+		t.Errorf("rawInt(\"abc\") = %d,%v, want 0,false", v, ok)
+	}
+}
+
+// TestParseGalaxyBalanceNullMoney Money 显式 null = 异常响应，不能当 0 元成功
+func TestParseGalaxyBalanceNullMoney(t *testing.T) {
+	if _, err := ParseGalaxyBalance(`{"Money":null,"Name":"x","Phone":""}`); err == nil {
+		t.Error("Money:null 应显式失败（Android 侧同口径报错，两侧不得一静默一报错）")
+	}
+}
+
+// TestParseGalaxyStatusCountNullFields 统计字段显式 null 同族
+func TestParseGalaxyStatusCountNullFields(t *testing.T) {
+	if _, err := ParseGalaxyStatusCount(`{"statusAll":null,"statusRunning":null}`); err == nil {
+		t.Error("统计字段全 null 应显式失败")
+	}
+}
+
+// TestParseGalaxyInstancesNullList list:null = 异常响应（空数组才是正常空态）
+func TestParseGalaxyInstancesNullList(t *testing.T) {
+	if _, _, _, err := ParseGalaxyInstances(`{"list":null}`, time.Now()); err == nil {
+		t.Error("list:null 应显式失败")
+	}
+}
+
+// TestParseGalaxyInstancesStringInts 字符串整型 → 不能把运行中实例读成已结束
+func TestParseGalaxyInstancesStringInts(t *testing.T) {
+	raw := `{"list":[{"Container_name":"c1","Status":"1","IsAbnormal":"0","Gpu_num":"0","Cpu_num":"8","Memory":"16","Due_time":"1788000681","ServerTime":"1787998666","SshPort":"20812"}],"has_more":false,"total_count":"1"}`
+	now := time.Date(2026, 8, 29, 18, 0, 0, 0, time.Local)
+	list, total, _, err := ParseGalaxyInstances(raw, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || total != 1 {
+		t.Fatalf("字符串整型解析失败: list=%d total=%d", len(list), total)
+	}
+	if list[0].Status != 1 || list[0].StatusText != "运行中" || list[0].CpuNum != 8 || list[0].SSHPort != 20812 {
+		t.Errorf("字符串整型字段应宽容解析: %+v", list[0])
+	}
+}

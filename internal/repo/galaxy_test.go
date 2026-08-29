@@ -394,3 +394,19 @@ func md5Hex(s string) string {
 	sum := md5.Sum([]byte(s))
 	return hex.EncodeToString(sum[:])
 }
+
+// TestGalaxyCodeNumericNonInteger code 数字形式非整数不是合法成功码
+// （对齐 Kotlin 严格性，避免 2000.5 被截断判成功）
+func TestGalaxyCodeNumericNonInteger(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"success":true,"code":2000.5,"message":"","data":{"Money":1,"Name":"n","Phone":""}}`))
+	}))
+	defer srv.Close()
+	_, err := newGalaxyRepo(t, srv).Balance(galaxyTestAccount())
+	if err == nil {
+		t.Fatal("code=2000.5 不应判成功")
+	}
+	if !strings.Contains(err.Error(), "2000.5") {
+		t.Errorf("错误应保留原始码值: %v", err)
+	}
+}

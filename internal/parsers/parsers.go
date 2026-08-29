@@ -286,15 +286,25 @@ func normalizeRefDate(refDate time.Time) time.Time {
 }
 
 // rawInt 宽容解析 JSON 整数（对应 jsonPrimitive.intOrNull）
+// rawInt 宽容解析 JSON 整数（对应 jsonPrimitive.intOrNull）。
+// 与 rawFloat 同一宽容口径：JSON 字符串形式的整数（如 "1"）同样接受——
+// 平台偶发把整型字段序列化成字符串，严格模式会把运行中实例（Status:"1"）
+// 解析成 0（已结束），属于静默错误（oracle 双实现对照 P2-1）。
 func rawInt(r json.RawMessage) (int, bool) {
 	if len(r) == 0 {
 		return 0, false
 	}
 	var i int
-	if err := json.Unmarshal(r, &i); err != nil {
-		return 0, false
+	if err := json.Unmarshal(r, &i); err == nil {
+		return i, true
 	}
-	return i, true
+	var s string
+	if err := json.Unmarshal(r, &s); err == nil {
+		if v, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			return v, true
+		}
+	}
+	return 0, false
 }
 
 // rawFloat 宽容解析 JSON 浮点数，失败兜底 0.0（对应 doubleOrNull ?: 0.0）。
