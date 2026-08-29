@@ -1,0 +1,192 @@
+{
+  "go.mod": {
+    "mtime": 1786986298.2272136,
+    "ast_hash": "6212bb52a81e1b5c563b23f25961ea0d",
+    "semantic_hash": ""
+  },
+  "internal/app/app.go": {
+    "mtime": 1787982933.385427,
+    "ast_hash": "8ca8e078726999da4af4efb8cc90ba94",
+    "semantic_hash": ""
+  },
+  "internal/app/app_test.go": {
+    "mtime": 1787941618.08023,
+    "ast_hash": "a5f0a26d314fa9c3de1d00949b0baaa3",
+    "semantic_hash": ""
+  },
+  "internal/config/config.go": {
+    "mtime": 1787941163.6674235,
+    "ast_hash": "10433e1c53c27bf9f6137e457ca2d176",
+    "semantic_hash": ""
+  },
+  "internal/config/config_test.go": {
+    "mtime": 1787941626.9123237,
+    "ast_hash": "95930548b196a901c1ae0aefb7c75f39",
+    "semantic_hash": ""
+  },
+  "internal/models/models.go": {
+    "mtime": 1787982885.8699462,
+    "ast_hash": "5745e0e94be1367cdedfc6a06a2fc5c7",
+    "semantic_hash": ""
+  },
+  "internal/models/models_test.go": {
+    "mtime": 1787941700.8890836,
+    "ast_hash": "e603457504f8a7bbf32cac1cba46c428",
+    "semantic_hash": ""
+  },
+  "internal/parsers/parsers.go": {
+    "mtime": 1787941496.321936,
+    "ast_hash": "9cf57689f2dca171752e2a8316d50764",
+    "semantic_hash": ""
+  },
+  "internal/parsers/parsers_test.go": {
+    "mtime": 1787941501.0964618,
+    "ast_hash": "1b04626a82db9f4c6a725f054897dd44",
+    "semantic_hash": ""
+  },
+  "internal/render/render.go": {
+    "mtime": 1787982924.5463376,
+    "ast_hash": "6c2acf6b5744bd912b3f620b27673e4b",
+    "semantic_hash": ""
+  },
+  "internal/render/render_test.go": {
+    "mtime": 1787982958.8016841,
+    "ast_hash": "dcc3eaa494e78922ece0e65b7b79387e",
+    "semantic_hash": ""
+  },
+  "internal/repo/qwen_cli.go": {
+    "mtime": 1787983031.9904249,
+    "ast_hash": "9f2ad8ad16a0d9f453707480c7347102",
+    "semantic_hash": ""
+  },
+  "internal/repo/qwen_cli_test.go": {
+    "mtime": 1787982941.2315063,
+    "ast_hash": "dc7c0962ebccb9b277cf5f0febac09d8",
+    "semantic_hash": ""
+  },
+  "internal/repo/repo.go": {
+    "mtime": 1787982172.5082319,
+    "ast_hash": "b92e36ef34ebc9206f4de84718ba4f0c",
+    "semantic_hash": ""
+  },
+  "internal/repo/repo_test.go": {
+    "mtime": 1787941573.9552004,
+    "ast_hash": "1b63add50dfb45f9677dcaa8eabdde29",
+    "semantic_hash": ""
+  },
+  "main.go": {
+    "mtime": 1787983001.9191206,
+    "ast_hash": "41ffb6d0b5e3c8adf60a88935d42d963",
+    "semantic_hash": ""
+  },
+  "main_test.go": {
+    "mtime": 1787982971.426812,
+    "ast_hash": "2cca87ad9ec6faa685d8c80ffc8b7a19",
+    "semantic_hash": ""
+  },
+  "scripts/build-dist.sh": {
+    "mtime": 1787942360.9708388,
+    "ast_hash": "a800951eb8ece1f907c3ce7edec11b7d",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/deepseek_balance.json": {
+    "mtime": 1786986329.063493,
+    "ast_hash": "4735eedad64b9666bece3fe83bbff445",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/deepseek_cost.json": {
+    "mtime": 1786986329.063493,
+    "ast_hash": "48a43ab1dbcc63eb138314776a65f558",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/go_usage.json": {
+    "mtime": 1786986329.063493,
+    "ast_hash": "a8ad9e9ad9cfa81f2ad7b421f639319c",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/qwen_login_notlogined.json": {
+    "mtime": 1787941454.0174863,
+    "ast_hash": "f67352767f1f570ee8559099674088a4",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/qwen_models.json": {
+    "mtime": 1787941454.0124862,
+    "ast_hash": "27cee0e60fc2076300dacfb4887726ef",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/qwen_subscription.json": {
+    "mtime": 1787941454.0214863,
+    "ast_hash": "8fe831a0dca63ff31fc97838c80c1c2a",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/qwen_usage.json": {
+    "mtime": 1787941454.0152922,
+    "ast_hash": "ea527851b52b0a4a40e46547c4fedb95",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/qwen_usage_empty.json": {
+    "mtime": 1787941454.0154862,
+    "ast_hash": "7b5ac437b82d2f7f5452bbceac331317",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/qwen_usage_notauthorised.json": {
+    "mtime": 1787941454.0194864,
+    "ast_hash": "99d7ba357d1447c27a2de4bfef6a3f62",
+    "semantic_hash": ""
+  },
+  "tty_darwin.go": {
+    "mtime": 1787943644.274959,
+    "ast_hash": "c4e76bdc51a211484c0b4effe4d5c150",
+    "semantic_hash": ""
+  },
+  "tty_linux.go": {
+    "mtime": 1787943650.2800634,
+    "ast_hash": "705e1109b9489a615db1d69bc0a0ab09",
+    "semantic_hash": ""
+  },
+  "tty_other.go": {
+    "mtime": 1787943644.274959,
+    "ast_hash": "0a143f23e2bf60fcc8004d581ca5506b",
+    "semantic_hash": ""
+  },
+  "tty_unix.go": {
+    "mtime": 1787943650.2790837,
+    "ast_hash": "d21a3a487307f427c15cd7ac0a0ccb19",
+    "semantic_hash": ""
+  },
+  "CONTEXT_FOR_NEXT_AGENT.md": {
+    "mtime": 1787983178.3529043,
+    "ast_hash": "8a76674547f3094909f3ac0915cde9bc",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1787983161.5177357,
+    "ast_hash": "cb2a24be4635dc3601f8ee38802203a0",
+    "semantic_hash": ""
+  },
+  "README_zh.md": {
+    "mtime": 1787983161.5177357,
+    "ast_hash": "77e516e5d9a4db894dc1b24dafa1a6a3",
+    "semantic_hash": ""
+  },
+  "docs/plans/2026-08-18-llm-api-check-cli.md": {
+    "mtime": 1786985880.258685,
+    "ast_hash": "8f35b9832e2d3d7588474f160edf6931",
+    "semantic_hash": ""
+  },
+  "docs/plans/2026-08-24-fdroid-publishing-plan.md": {
+    "mtime": 1787551328.72562,
+    "ast_hash": "6044df60758d8a5a63141d56cc7922da",
+    "semantic_hash": ""
+  },
+  "docs/plans/2026-08-29-qwen-provider.md": {
+    "mtime": 1787983166.2397835,
+    "ast_hash": "497287d1bcf6337f072a9c6196b4d968",
+    "semantic_hash": ""
+  },
+  "testdata/fixtures/billing.html": {
+    "mtime": 1786986329.063493,
+    "ast_hash": "7aa01e57bb8a9275c7535e09ab491ec4",
+    "semantic_hash": ""
+  }
+}
