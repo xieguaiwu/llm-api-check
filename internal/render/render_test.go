@@ -129,7 +129,7 @@ func TestColorizerEnabledHasANSI(t *testing.T) {
 // ── 总览 / 详情渲染 ───────────────────────────────────────────
 
 func TestRenderOverviewEmpty(t *testing.T) {
-	got := RenderOverview(nil, nil, nil, time.Time{}, Colorizer{Disabled: true})
+	got := RenderOverview(app.Result{}, time.Time{}, Colorizer{Disabled: true})
 	if !strings.Contains(got, "未配置任何账号") {
 		t.Errorf("空配置应提示添加账号: %q", got)
 	}
@@ -152,7 +152,7 @@ func TestRenderOverviewWithData(t *testing.T) {
 		},
 		ZenBilling: &models.ZenBilling{BalanceUsd: 19.99},
 	}}
-	got := RenderOverview(ds, accs, nil, baseTime(), Colorizer{Disabled: true})
+	got := RenderOverview(app.Result{DeepSeek: ds, Accounts: accs, LastUpdated: baseTime()}, baseTime(), Colorizer{Disabled: true})
 	for _, want := range []string{
 		"LLM API Check — 更新于 12:00",
 		"DeepSeek (测试)",
@@ -329,7 +329,7 @@ func TestRenderQwenDetailNoCookie(t *testing.T) {
 }
 
 func TestRenderOverviewQwen(t *testing.T) {
-	got := RenderOverview(nil, nil, []app.QwenResult{qwenResult()}, baseTime(), Colorizer{Disabled: true})
+	got := RenderOverview(app.Result{Qwen: []app.QwenResult{qwenResult()}, LastUpdated: baseTime()}, baseTime(), Colorizer{Disabled: true})
 	for _, want := range []string{"Qwen (订阅号)", "5小时 79% [████████░░]", "7天 100% [██████████] 已限流", "套餐 Lite · 模型 2 个"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("总览缺少 %q:\n%s", want, got)

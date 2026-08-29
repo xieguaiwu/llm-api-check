@@ -1,7 +1,7 @@
 // Command llm-api-check 复刻 Android app「API Checkers」数据逻辑的 Go CLI：
 // 查看 DeepSeek API（余额 + 消费明细）、OpenCode（Go usage 三窗口 + Zen
-// billing）与 Qwen Token Plan（模型清单 + 5 小时/7 天 配额窗口）的使用情况，
-// 支持多账号。
+// billing）、Qwen Token Plan（模型清单 + 5 小时/7 天 配额窗口）与智星云
+// AI Galaxy 算力云（余额 + 云主机实例状态）的使用情况，支持多账号。
 package main
 
 import (
@@ -22,7 +22,7 @@ import (
 )
 
 // version 编译期可注入（-ldflags "-X main.version=x.y.z"）
-var version = "1.1.0"
+var version = "1.3.0"
 
 // 凭据环境变量（flag 缺失时回退，再回退 TTY 交互提示）
 const (
@@ -34,18 +34,21 @@ const (
 	envQwenAPIKey  = "LLM_API_CHECK_QWEN_API_KEY"
 	envQwenCookie  = "LLM_API_CHECK_QWEN_COOKIE"
 	envQwenRegion  = "LLM_API_CHECK_QWEN_REGION"
+	envGalaxyAK    = "LLM_API_CHECK_GALAXY_ACCESS_KEY"
+	envGalaxySK    = "LLM_API_CHECK_GALAXY_SECRET_KEY"
 )
 
-const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode 与 Qwen Token Plan 使用情况（复刻 Android 版 API Checkers）
+const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan 与智星云算力云使用情况（复刻 Android 版 API Checkers）
 
 用法:
   llm-api-check                            刷新全部账号并显示总览（等同 status）
   llm-api-check status [--no-refresh]      总览；默认刷新，--no-refresh 只读配置不联网
   llm-api-check deepseek [名称|ID]         DeepSeek 账号详情（可过滤名字/id，缺省全部）
   llm-api-check opencode [名称|ID]         OpenCode 账号详情（可过滤名字/id，缺省全部）
-  llm-api-check qwen [名称|ID] [--stats]     Qwen 账号详情（--stats 附加 7 天用量分析与免费额度）
+  llm-api-check qwen [名称|ID] [--stats]   Qwen 账号详情（--stats 附加 7 天用量分析与免费额度）
+  llm-api-check galaxy [名称|ID] [--limit N]   智星云余额 + 云主机实例状态（--limit 列出实例数，默认 10）
   llm-api-check accounts list              列出所有账号
-  llm-api-check accounts add --type opencode|deepseek|qwen --name 名称 [凭据 flags]
+  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
   llm-api-check accounts rename --id ID | --name 名称 --new-name 新名称
   llm-api-check config path                打印配置文件路径
@@ -65,6 +68,9 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode 与 Qwen Tok
             --api-key 为订阅密钥（sk-sp- 开头，与区域绑定）；--region 可选 cn-beijing（默认）/ap-southeast-1
             --console-cookie 可选：阿里云百炼控制台 Cookie，提供后才能看到 5 小时/7 天 配额窗口
             （Cookie 从已登录的 bailian.console.aliyun.com 订阅页网络请求里复制）
+  智星云:   --access-key / --secret-key
+            环境变量 LLM_API_CHECK_GALAXY_ACCESS_KEY / LLM_API_CHECK_GALAXY_SECRET_KEY
+            控制台「开放API → AccessKey管理」创建（需先完成实名认证）；看余额 + 实例状态与到期时间
 
 退出码: 0 成功；1 任一账号完全失败；2 用法错误
 `
@@ -106,6 +112,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdOpenCode(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "qwen":
 		return cmdQwen(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
+	case "galaxy":
+		return cmdGalaxy(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "accounts":
 		return cmdAccounts(rest[1:], stdin, stdout, stderr, jsonOut)
 	case "config":
@@ -163,12 +171,13 @@ func cmdStatus(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut
 			"deepseek":         sliceOrEmpty(publicDeepSeekResults(res.DeepSeek)),
 			"accounts":         sliceOrEmpty(publicAccountResults(res.Accounts)),
 			"qwen":             sliceOrEmpty(publicQwenResults(res.Qwen)),
+			"galaxy":           sliceOrEmpty(publicGalaxyResults(res.Galaxy)),
 			"last_updated":     unixMillisOrZero(res.LastUpdated),
 			"security_warning": sw,
 		})
 		return exitCodeForResults(res)
 	}
-	fmt.Fprint(stdout, render.RenderOverview(res.DeepSeek, res.Accounts, res.Qwen, res.LastUpdated, colorizer(noColor)))
+	fmt.Fprint(stdout, render.RenderOverview(res, time.Now(), colorizer(noColor)))
 	return exitCodeForResults(res)
 }
 
@@ -183,6 +192,9 @@ func resultsFromAccounts(cfg *config.Config) app.Result {
 	}
 	for _, acc := range cfg.QwenAccounts {
 		res.Qwen = append(res.Qwen, app.QwenResult{Account: acc})
+	}
+	for _, acc := range cfg.GalaxyAccounts {
+		res.Galaxy = append(res.Galaxy, app.GalaxyResult{Account: acc})
 	}
 	return res
 }
@@ -204,6 +216,11 @@ func exitCodeForResults(res app.Result) int {
 			return 1
 		}
 	}
+	for _, r := range res.Galaxy {
+		if r.Error != "" && r.Balance == nil && r.Status == nil && len(r.Instances) == 0 {
+			return 1
+		}
+	}
 	return 0
 }
 
@@ -213,7 +230,7 @@ func cmdDeepSeek(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	fs := flag.NewFlagSet("deepseek", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
-	if err := fs.Parse(moveNoRefresh(args)); err != nil {
+	if err := fs.Parse(moveFlags(args)); err != nil {
 		fmt.Fprintln(stderr, "用法: llm-api-check deepseek [名称|ID] [--no-refresh]")
 		return 2
 	}
@@ -274,7 +291,7 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	fs := flag.NewFlagSet("opencode", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
-	if err := fs.Parse(moveNoRefresh(args)); err != nil {
+	if err := fs.Parse(moveFlags(args)); err != nil {
 		fmt.Fprintln(stderr, "用法: llm-api-check opencode [名称|ID] [--no-refresh]")
 		return 2
 	}
@@ -332,20 +349,27 @@ func cmdOpenCode(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 	return exitCodeForResults(res)
 }
 
-// moveNoRefresh 把位置参数之后的 flag 提前：Go flag 包遇到首个非 flag 参数即停止解析，
-// 否则 `llm-api-check qwen 名称 --no-refresh` / `--stats` 会被误判为多余参数（exit 2）。
-func moveNoRefresh(args []string) []string {
-	for _, want := range []string{"--no-refresh", "--stats"} {
-		for i, a := range args {
-			if a == want {
-				out := make([]string, 0, len(args))
-				out = append(out, want)
-				out = append(out, args[:i]...)
-				return append(out, args[i+1:]...)
-			}
+// moveFlags 把散布在位置参数之后的 flag 提到参数列表最前：Go flag 包遇到首个
+// 非 flag 参数即停止解析，否则 `llm-api-check qwen 名称 --no-refresh` /
+// `--stats` / `galaxy 名称 --limit 5` 会被误判为多余参数（exit 2）。
+// 带值 flag（--limit）连同紧跟的一个 token 一起移动；多个 flag 全部前置。
+func moveFlags(args []string) []string {
+	boolFlags := map[string]bool{"--no-refresh": true, "--stats": true}
+	valueFlags := map[string]bool{"--limit": true}
+	var flags, rest []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case boolFlags[a]:
+			flags = append(flags, a)
+		case valueFlags[a] && i+1 < len(args):
+			flags = append(flags, a, args[i+1])
+			i++
+		default:
+			rest = append(rest, a)
 		}
 	}
-	return args
+	return append(flags, rest...)
 }
 
 // filterDeepSeek 按 id 或 name 精确匹配（任一命中即包含）
@@ -377,7 +401,7 @@ func cmdQwen(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, 
 	fs.SetOutput(io.Discard)
 	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
 	stats := fs.Bool("stats", false, "显示用量分析（7 天 token 统计 + 免费额度）")
-	if err := fs.Parse(moveNoRefresh(args)); err != nil {
+	if err := fs.Parse(moveFlags(args)); err != nil {
 		fmt.Fprintln(stderr, "用法: llm-api-check qwen [名称|ID] [--no-refresh] [--stats]")
 		return 2
 	}
@@ -453,6 +477,81 @@ func filterQwen(list []models.QwenAccount, q string) ([]models.QwenAccount, bool
 	return out, len(out) > 0
 }
 
+// ── 智星云详情 ───────────────────────────────────
+
+func cmdGalaxy(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, noColor bool) int {
+	fs := flag.NewFlagSet("galaxy", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	limit := fs.Int("limit", 10, "列出的活跃实例数（≤100）")
+	if err := fs.Parse(moveFlags(args)); err != nil {
+		fmt.Fprintln(stderr, "用法: llm-api-check galaxy [名称|ID] [--no-refresh] [--limit N]")
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "用法: llm-api-check galaxy [名称|ID] [--no-refresh] [--limit N]")
+		return 2
+	}
+	path := config.DefaultPath()
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 1
+	}
+	warnSecurity(stderr, noColor)
+	accounts := cfg.GalaxyAccounts
+	if fs.NArg() == 1 {
+		filtered, ok := filterGalaxy(accounts, fs.Arg(0))
+		if !ok {
+			fmt.Fprintf(stderr, "账号不存在: %s\n", fs.Arg(0))
+			return 1
+		}
+		accounts = filtered
+	}
+	a := app.New(cfg)
+	results := make([]app.GalaxyResult, 0, len(accounts))
+	for _, acc := range accounts {
+		var r app.GalaxyResult
+		if *noRefresh {
+			r = app.GalaxyResult{Account: acc}
+		} else if r, err = a.RefreshGalaxy(acc.ID, *limit); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		results = append(results, r)
+	}
+	res := app.Result{Galaxy: results}
+	if jsonOut {
+		if len(results) == 1 {
+			writeJSON(stdout, map[string]any{"galaxy": publicGalaxyResult(results[0])})
+		} else {
+			writeJSON(stdout, map[string]any{"galaxy": publicGalaxyResults(results)})
+		}
+		return exitCodeForResults(res)
+	}
+	c := colorizer(noColor)
+	var b strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(render.RenderGalaxyDetail(r, time.Now(), c))
+	}
+	fmt.Fprint(stdout, b.String())
+	return exitCodeForResults(res)
+}
+
+// filterGalaxy 按 id 或 name 精确匹配（任一命中即包含）
+func filterGalaxy(list []models.GalaxyAccount, q string) ([]models.GalaxyAccount, bool) {
+	var out []models.GalaxyAccount
+	for _, a := range list {
+		if a.ID == q || a.Name == q {
+			out = append(out, a)
+		}
+	}
+	return out, len(out) > 0
+}
+
 // ── accounts ──────────────────────────────────────────────────
 
 func cmdAccounts(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut bool) int {
@@ -487,6 +586,7 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 			"deepseek_accounts": sliceOrEmpty(publicDeepSeekAccounts(cfg.DeepSeekAccounts)),
 			"accounts":          sliceOrEmpty(publicAccounts(cfg.Accounts)),
 			"qwen_accounts":     sliceOrEmpty(publicQwenAccounts(cfg.QwenAccounts)),
+			"galaxy_accounts":   sliceOrEmpty(publicGalaxyAccounts(cfg.GalaxyAccounts)),
 		})
 		return 0
 	}
@@ -514,13 +614,21 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		}
 		fmt.Fprintf(stdout, "  %s  %s  [%s · %s]\n", a.ID, a.Name, render.RegionDisplayName(a.Region), quota)
 	}
+	fmt.Fprintf(stdout, "智星云账号 (%d):\n", len(cfg.GalaxyAccounts))
+	for _, a := range cfg.GalaxyAccounts {
+		ready := "凭据不完整"
+		if strings.TrimSpace(a.AccessKey) != "" && strings.TrimSpace(a.SecretKey) != "" {
+			ready = "AccessKey 已配置"
+		}
+		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
+	}
 	return 0
 }
 
 func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut bool) int {
 	fs := flag.NewFlagSet("accounts add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	typ := fs.String("type", "", "账号类型: opencode|deepseek|qwen")
+	typ := fs.String("type", "", "账号类型: opencode|deepseek|qwen|galaxy")
 	name := fs.String("name", "", "账号名称")
 	goKey := fs.String("go-api-key", "", "OpenCode Go API Key")
 	wsID := fs.String("workspace-id", "", "OpenCode Workspace ID（可选）")
@@ -529,13 +637,15 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 	ptok := fs.String("platform-token", "", "DeepSeek 平台 Token（可选）")
 	qwenCookie := fs.String("console-cookie", "", "Qwen 控制台 Cookie（可选，配额窗口需要）")
 	qwenRegion := fs.String("region", "", "Qwen 区域: cn-beijing（默认）|ap-southeast-1")
+	galaxyAK := fs.String("access-key", "", "智星云 AccessKey")
+	galaxySK := fs.String("secret-key", "", "智星云 SecretKey")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen --name 名称 [凭据 flags]")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy --name 名称 [凭据 flags]")
 		return 2
 	}
-	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" {
-		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek 或 qwen")
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen --name 名称 [凭据 flags]")
+	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" {
+		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen 或 galaxy")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy --name 名称 [凭据 flags]")
 		return 2
 	}
 	if strings.TrimSpace(*name) == "" {
@@ -622,6 +732,36 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 			writeJSON(stdout, map[string]any{"deepseek_account": publicDeepSeekAccount(acc)})
 		} else {
 			fmt.Fprintf(stdout, "已添加 DeepSeek 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+		}
+		return 0
+	}
+	// galaxy
+	if *typ == "galaxy" {
+		ak, err := resolveSecret(*galaxyAK, "access-key", envGalaxyAK, "智星云 AccessKey: ", true, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
+		sk, err := resolveSecret(*galaxySK, "secret-key", envGalaxySK, "智星云 SecretKey: ", true, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
+		acc := models.GalaxyAccount{
+			ID:        config.NewID(),
+			Name:      strings.TrimSpace(*name),
+			AccessKey: ak,
+			SecretKey: sk,
+		}
+		cfg.SaveGalaxyAccount(acc)
+		if err := cfg.Save(config.DefaultPath()); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		if jsonOut {
+			writeJSON(stdout, map[string]any{"galaxy_account": publicGalaxyAccount(acc)})
+		} else {
+			fmt.Fprintf(stdout, "已添加智星云账号「%s」(id=%s)\n", acc.Name, acc.ID)
 		}
 		return 0
 	}
@@ -723,6 +863,15 @@ func cmdAccountsRemove(args []string, stdout, stderr io.Writer, jsonOut bool) in
 		keptQwen = append(keptQwen, a)
 	}
 	cfg.QwenAccounts = keptQwen
+	var keptGalaxy []models.GalaxyAccount
+	for _, a := range cfg.GalaxyAccounts {
+		if match(a.ID, a.Name) {
+			removed++
+			continue
+		}
+		keptGalaxy = append(keptGalaxy, a)
+	}
+	cfg.GalaxyAccounts = keptGalaxy
 	if removed == 0 {
 		fmt.Fprintln(stderr, "错误: 未找到匹配的账号")
 		return 1
@@ -786,6 +935,13 @@ func cmdAccountsRename(args []string, stdout, stderr io.Writer, jsonOut bool) in
 	}
 	for i := range cfg.QwenAccounts {
 		a := &cfg.QwenAccounts[i]
+		if match(a.ID, a.Name) {
+			a.Name = strings.TrimSpace(*newName)
+			renamed++
+		}
+	}
+	for i := range cfg.GalaxyAccounts {
+		a := &cfg.GalaxyAccounts[i]
 		if match(a.ID, a.Name) {
 			a.Name = strings.TrimSpace(*newName)
 			renamed++
@@ -952,6 +1108,16 @@ func publicQwenAccount(a models.QwenAccount) map[string]any {
 	}
 }
 
+// publicGalaxyAccount AccessKey 也当凭据对待（可签名发起计费请求），一并掩码
+func publicGalaxyAccount(a models.GalaxyAccount) map[string]any {
+	return map[string]any{
+		"id":        a.ID,
+		"name":      a.Name,
+		"accessKey": maskSecret(a.AccessKey),
+		"secretKey": maskSecret(a.SecretKey),
+	}
+}
+
 func publicDeepSeekResults(rs []app.DeepSeekResult) []map[string]any {
 	out := make([]map[string]any, 0, len(rs))
 	for _, r := range rs {
@@ -1008,6 +1174,38 @@ func publicQwenResults(rs []app.QwenResult) []map[string]any {
 	return out
 }
 
+func publicGalaxyResults(rs []app.GalaxyResult) []map[string]any {
+	out := make([]map[string]any, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, publicGalaxyResult(r))
+	}
+	return out
+}
+
+// publicGalaxyResult 实例数据已是白名单结构（口令在解析层就被丢弃），
+// 这里直接透传不再二次包装字段集，保持 JSON key 集合稳定。
+func publicGalaxyResult(r app.GalaxyResult) map[string]any {
+	m := map[string]any{
+		"account": publicGalaxyAccount(r.Account),
+	}
+	if r.Balance != nil {
+		m["balance"] = r.Balance
+	}
+	if r.Status != nil {
+		m["status"] = r.Status
+	}
+	if len(r.Instances) > 0 {
+		m["instances"] = r.Instances
+	}
+	if r.Cost != nil {
+		m["cost"] = r.Cost
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	return m
+}
+
 func publicQwenResult(r app.QwenResult) map[string]any {
 	m := map[string]any{
 		"account": publicQwenAccount(r.Account),
@@ -1060,6 +1258,14 @@ func publicQwenAccounts(as []models.QwenAccount) []map[string]any {
 	out := make([]map[string]any, 0, len(as))
 	for _, a := range as {
 		out = append(out, publicQwenAccount(a))
+	}
+	return out
+}
+
+func publicGalaxyAccounts(as []models.GalaxyAccount) []map[string]any {
+	out := make([]map[string]any, 0, len(as))
+	for _, a := range as {
+		out = append(out, publicGalaxyAccount(a))
 	}
 	return out
 }

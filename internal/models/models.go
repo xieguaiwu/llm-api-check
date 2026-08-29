@@ -180,6 +180,97 @@ type QwenPlan struct {
 	Models []string `json:"models"`
 }
 
+// ── 智星云 AI Galaxy（GPU 算力云） ───────────────────────────
+
+// GalaxyAccount 智星云账号。凭据 = 控制台「开放API → AccessKey管理」创建的
+// AccessKey/SecretKey（需先完成实名认证）；两者缺一不可，故无 HasXxx 可选分支。
+type GalaxyAccount struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	AccessKey string `json:"accessKey"`
+	SecretKey string `json:"secretKey"`
+}
+
+// GalaxyBalance 主账户余额。三项金额语义不同、平台各自扣费，不互相折算：
+//   - Money            现金余额（充值所得，元）
+//   - PowerMoney       算力券（活动/退租返还，只能抵扣实例费用）
+//   - CreditMoneyQuota 信用额度（余额≤0 时可透支的上限）
+//
+// 控制台另有「可用余额 = Money + 信用额度 + 算力券 − 冻结」，OpenAPI 不返回冻结
+// 金额，故本结构不加总、分列展示（见 docs/plans/2026-08-29-ai-galaxy-provider.md §二）。
+type GalaxyBalance struct {
+	Name             string  `json:"name"`
+	Phone            string  `json:"phone"` // 已脱敏（183****2433）
+	Money            float64 `json:"money"`
+	PowerMoney       float64 `json:"power_money"`
+	CreditMoneyQuota float64 `json:"credit_money_quota"`
+	VipLevel         int     `json:"vip_level"`
+	CustomDiscount   float64 `json:"custom_discount"`
+	LastLoginAt      string  `json:"last_login_at"` // RFC3339，空串表示无记录
+}
+
+// GalaxyStatusCount 实例状态统计。刻意不含 statusDefault：实测统计端点回 9、
+// 同 status_type 的列表只回 4，两个数同屏互相矛盾（契约 §2.4）。
+type GalaxyStatusCount struct {
+	All          int `json:"all"`
+	Running      int `json:"running"`
+	KeeppedDisk  int `json:"keepped_disk"`
+	CreateError  int `json:"create_error"`
+	RunningError int `json:"running_error"`
+}
+
+// GalaxyInstance 云主机实例。字段是显式白名单——接口响应里含 Init_passwd /
+// LastInitPasswd / RdpPasswd / VncPasswd 明文口令，任何一层都不允许透传。
+type GalaxyInstance struct {
+	Name          string  `json:"name"` // Container_name（平台侧唯一名）
+	Note          string  `json:"note"`
+	Status        int     `json:"status"`
+	StatusText    string  `json:"status_text"`
+	Abnormal      bool    `json:"abnormal"`
+	GpuType       string  `json:"gpu_type"`
+	GpuNum        int     `json:"gpu_num"`
+	CpuNum        int     `json:"cpu_num"`
+	MemoryGB      int     `json:"memory_gb"`
+	District      string  `json:"district"`
+	Host          string  `json:"host"` // 平台内部机名（如 lyg2030）
+	SSHHost       string  `json:"ssh_host"`
+	SSHPort       int     `json:"ssh_port"`
+	Image         string  `json:"image"`
+	Kind          string  `json:"kind"` // kvm / docker
+	DueAt         string  `json:"due_at"`
+	DiskReleaseAt string  `json:"disk_release_at"`
+	TotalCost     float64 `json:"total_cost"` // 小时单价（元/时）
+	PayType       string  `json:"pay_type"`   // money / power
+	AutoRenew     bool    `json:"auto_renew"`
+	CreatedAt     string  `json:"created_at"`
+}
+
+// GalaxyCost 近期消耗（余额变更明细聚合）。净消耗 = −(ΔMoney+ΔPower)，净额为负的
+// 返还/充值不计入。两个 *Partial 分别标记「今日」「近 7 天」窗口是否已翻完明细——
+// 明细按时间倒序，只要取到早于窗口下界的一条，该窗口数值即为精确值。
+type GalaxyCost struct {
+	Today        float64           `json:"today"`
+	Last7d       float64           `json:"last7d"`
+	TodayPartial bool              `json:"today_partial"`
+	WeekPartial  bool              `json:"week_partial"`
+	Entries      []GalaxyCostEntry `json:"entries,omitempty"`
+}
+
+// GalaxyCostEntry 单条余额变更（只留展示需要的四项）。
+type GalaxyCostEntry struct {
+	Time   string  `json:"time"` // RFC3339
+	Remark string  `json:"remark"`
+	Spent  float64 `json:"spent"` // 正数＝扣费，负数＝返还
+	Left   float64 `json:"left"`  // 变更后现金余额
+}
+
+// GalaxyRechargeInfo 最近一笔充值订单。
+type GalaxyRechargeInfo struct {
+	Amount   float64 `json:"amount"`
+	OrderAt  string  `json:"order_at"`
+	StatusOk bool    `json:"status_ok"`
+}
+
 // ── Qwen 用量分析（Bailian CLI `usage summary --output json`） ──
 
 // QwenTokenStat 单项 token 统计（Input/Output/Total/Avg）。

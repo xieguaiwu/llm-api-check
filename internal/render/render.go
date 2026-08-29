@@ -5,6 +5,7 @@ package render
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,15 +152,17 @@ func FormatCountdown(resetsAt string, now time.Time) string {
 
 // ── 总览视图（对应 HomeScreen） ───────────────────────────────
 
-// RenderOverview 总览：DeepSeek 账号 + OpenCode 账号 + Qwen 账号卡片列表。
-func RenderOverview(ds []app.DeepSeekResult, accs []app.AccountResult, qwen []app.QwenResult, lastUpdated time.Time, c Colorizer) string {
+// RenderOverview 总览：DeepSeek / OpenCode / Qwen / 智星云 四类账号卡片列表。
+func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
+	ds, accs, qwen, galaxy := res.DeepSeek, res.Accounts, res.Qwen, res.Galaxy
+	lastUpdated := res.LastUpdated
 	var b strings.Builder
 	if lastUpdated.IsZero() {
 		b.WriteString("LLM API Check — 尚未更新\n")
 	} else {
 		fmt.Fprintf(&b, "LLM API Check — 更新于 %s\n", lastUpdated.Format("15:04"))
 	}
-	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 {
+	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 {
 		b.WriteString("\n未配置任何账号，运行 llm-api-check accounts add --help 添加\n")
 		return b.String()
 	}
@@ -174,6 +177,10 @@ func RenderOverview(ds []app.DeepSeekResult, accs []app.AccountResult, qwen []ap
 	for _, r := range qwen {
 		fmt.Fprintf(&b, "\nQwen (%s)\n", r.Account.Name)
 		writeQwenOverview(&b, r, c)
+	}
+	for _, r := range galaxy {
+		fmt.Fprintf(&b, "\n智星云 (%s)\n", r.Account.Name)
+		writeGalaxyOverview(&b, r, now, c)
 	}
 	return b.String()
 }
@@ -323,7 +330,318 @@ func RenderDeepSeekDetail(r app.DeepSeekResult, c Colorizer) string {
 	return b.String()
 }
 
-// ── 小工具 ────────────────────────────────────────────────────
+// ── 智星云 AI Galaxy ────────────────────────────────────
+
+// galaxySpanShort 时长短语：不足 1分 / N分 / N小时M分 / N天M小时
+func galaxySpanShort(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "不足1分"
+	case d < time.Hour:
+		return fmt.Sprintf("%d分", int64(d/time.Minute))
+	case d < 48*time.Hour:
+		m := int64(d/time.Minute) % 60
+		h := int64(d / time.Hour)
+		if m == 0 {
+			return fmt.Sprintf("%d小时", h)
+		}
+		return fmt.Sprintf("%d小时%d分", h, m)
+	default:
+		h := int64(d.Hours()) % 24
+		day := int64(d.Hours()) / 24
+		if h == 0 {
+			return fmt.Sprintf("%d天", day)
+		}
+		return fmt.Sprintf("%d天%d小时", day, h)
+	}
+}
+
+// galaxyExpiryText 到期文案 + 紧急色。时间信息恒显：过期不抹掉时间，
+// 而是给「已到期 N」（同 §六「已限流徐章与重置倒计时并存」的口径）。
+func galaxyExpiryText(dueAt string, now time.Time) (string, Color) {
+	if strings.TrimSpace(dueAt) == "" {
+		return "无到期信息", ColorGray
+	}
+	t, err := time.Parse(time.RFC3339, dueAt)
+	if err != nil {
+		return "到期时间未知", ColorGray
+	}
+	d := t.Sub(now)
+	switch {
+	case d <= 0:
+		return fmt.Sprintf("已到期 %s", galaxySpanShort(-d)), ColorRed
+	case d < 30*time.Minute:
+		return galaxySpanShort(d) + "后到期", ColorRed
+	case d < 2*time.Hour:
+		return galaxySpanShort(d) + "后到期", ColorYellow
+	default:
+		return galaxySpanShort(d) + "后到期", ColorBlue
+	}
+}
+
+// GalaxyStatusColor 实例状态色（运行异常强制红，对照 ColorForPercent 的限流强制红）
+func GalaxyStatusColor(status int, abnormal bool) Color {
+	if abnormal && (status == 1 || status == 4 || status == 5) {
+		return ColorRed
+	}
+	switch status {
+	case 1:
+		return ColorGreen
+	case 4, 5:
+		return ColorYellow
+	case -1, 7:
+		return ColorRed
+	case 8:
+		return ColorBlue
+	default:
+		return ColorGray
+	}
+}
+
+// galaxyGpuLabel GPU 型号简写（去厂商前缀）；无卡实例回「CPU 实例」
+func galaxyGpuLabel(in models.GalaxyInstance) string {
+	if in.GpuNum <= 0 {
+		return "CPU 实例"
+	}
+	g := strings.TrimSpace(in.GpuType)
+	for _, pre := range []string{"GeForce ", "NVIDIA ", "Tesla "} {
+		g = strings.TrimPrefix(g, pre)
+	}
+	return fmt.Sprintf("%s×%d", g, in.GpuNum)
+}
+
+// galaxyUnitPrice 时价文本（保留三位小数并去尾零：0.325 / 0.87）
+func galaxyUnitPrice(v float64) string {
+	s := strconv.FormatFloat(v, 'f', 3, 64)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" || s == "-" {
+		s = "0"
+	}
+	return "¥" + s + "/时"
+}
+
+func writeGalaxyOverview(b *strings.Builder, r app.GalaxyResult, now time.Time, c Colorizer) {
+	if strings.TrimSpace(r.Account.AccessKey) == "" || strings.TrimSpace(r.Account.SecretKey) == "" {
+		b.WriteString(c.Gray("  未配置 AccessKey/SecretKey，运行 llm-api-check accounts add --type galaxy --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return
+	}
+	var parts []string
+	if r.Balance != nil {
+		col := ColorBlue
+		if r.Balance.Money <= 0 {
+			col = ColorRed
+		} else if r.Balance.Money < 50 {
+			col = ColorYellow
+		}
+		parts = append(parts, c.apply(col, fmt.Sprintf("余额 ¥%s", Fmt(r.Balance.Money))))
+		if r.Balance.PowerMoney > 0 {
+			parts = append(parts, fmt.Sprintf("算力券 ¥%s", Fmt(r.Balance.PowerMoney)))
+		}
+	}
+	if r.Status != nil {
+		seg := fmt.Sprintf("运行中 %d", r.Status.Running)
+		if r.Status.CreateError > 0 {
+			seg = c.Red(seg + fmt.Sprintf(" · 启动错误 %d", r.Status.CreateError))
+		}
+		parts = append(parts, seg)
+		if r.Status.KeeppedDisk > 0 {
+			parts = append(parts, fmt.Sprintf("磁盘保留 %d", r.Status.KeeppedDisk))
+		}
+	}
+	if next, ok := galaxyNextExpiry(r.Instances); ok {
+		txt, col := galaxyExpiryText(next, now)
+		parts = append(parts, c.apply(col, "最近 "+txt))
+	}
+	if len(parts) > 0 {
+		b.WriteString("  " + strings.Join(parts, " · ") + "\n")
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red("  "+r.Error) + "\n")
+	}
+	if len(parts) == 0 && r.Error == "" {
+		b.WriteString(c.Gray("  暂无数据") + "\n")
+	}
+}
+
+// galaxyNextExpiry 活跃实例里最早到期的那一个的到期时间
+func galaxyNextExpiry(list []models.GalaxyInstance) (string, bool) {
+	best := ""
+	var bestT time.Time
+	for _, in := range list {
+		if !parsers.GalaxyStatusActive(in.Status) || strings.TrimSpace(in.DueAt) == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339, in.DueAt)
+		if err != nil {
+			continue
+		}
+		if best == "" || t.Before(bestT) {
+			best, bestT = in.DueAt, t
+		}
+	}
+	return best, best != ""
+}
+
+// RenderGalaxyDetail 智星云账号详情：余额三列 + 消耗 + 实例统计 + 活跃实例列表。
+func RenderGalaxyDetail(r app.GalaxyResult, now time.Time, c Colorizer) string {
+	var b strings.Builder
+	owner := strings.TrimSpace(r.Account.Name)
+	if r.Balance != nil && strings.TrimSpace(r.Balance.Name) != "" {
+		owner = fmt.Sprintf("%s · %s", r.Account.Name, r.Balance.Name)
+	}
+	fmt.Fprintf(&b, "%s (智星云)\n", owner)
+	if strings.TrimSpace(r.Account.AccessKey) == "" || strings.TrimSpace(r.Account.SecretKey) == "" {
+		b.WriteString(c.Gray("  未配置 AccessKey/SecretKey，运行 llm-api-check accounts add --type galaxy --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red(r.Error) + "\n")
+		}
+		return b.String()
+	}
+	if r.Balance != nil {
+		bal := r.Balance
+		col := ColorBlue
+		if bal.Money <= 0 {
+			col = ColorRed
+		} else if bal.Money < 50 {
+			col = ColorYellow
+		}
+		fmt.Fprintf(&b, "  %s%s · 算力券 ¥%s · 信用额度 ¥%s\n",
+			padTo("余额", 9), c.apply(col, "¥"+Fmt(bal.Money)), Fmt(bal.PowerMoney), Fmt(bal.CreditMoneyQuota))
+		meta := fmt.Sprintf("VIP%d", bal.VipLevel)
+		if bal.CustomDiscount > 0 && bal.CustomDiscount < 1 {
+			meta += fmt.Sprintf(" · 折扣 %.2f", bal.CustomDiscount)
+		}
+		if bal.Phone != "" {
+			meta += " · " + bal.Phone
+		}
+		fmt.Fprintf(&b, "  %s%s\n", padTo("账户", 9), meta)
+	} else if r.Error == "" {
+		b.WriteString(c.Gray("  "+padTo("余额", 9)+"暂无数据") + "\n")
+	}
+	if r.Cost != nil {
+		// 明细没翻完的窗口只当「至少这么多」：数字前加 ≥，不让下限冒充精确值
+		today, week := "¥"+Fmt(r.Cost.Today), "¥"+Fmt(r.Cost.Last7d)
+		if r.Cost.TodayPartial {
+			today = "≥" + today
+		}
+		if r.Cost.WeekPartial {
+			week = "≥" + week
+		}
+		line := fmt.Sprintf("  %s%s · 近7天 %s", padTo("今日消耗", 9), today, week)
+		if r.Cost.TodayPartial || r.Cost.WeekPartial {
+			line += c.Gray("（明细未翻完）")
+		}
+		b.WriteString(line + "\n")
+	}
+	if r.Status != nil {
+		s := r.Status
+		fmt.Fprintf(&b, "  %s运行中 %d · 磁盘保留 %d · 启动错误 %d · 运行异常 %d · 全部 %d\n",
+			padTo("实例", 9), s.Running, s.KeeppedDisk, s.CreateError, s.RunningError, s.All)
+	}
+	if hourly := r.HourlyCost(); hourly > 0 && r.Balance != nil {
+		fund := r.Balance.Money + r.Balance.PowerMoney
+		var runway string
+		switch {
+		case fund <= 0:
+			runway = c.Red("余额不足")
+		case fund/hourly < 24:
+			runway = c.Yellow(fmt.Sprintf("约可支撑 %s", galaxySpanShort(time.Duration(fund/hourly*float64(time.Hour)))))
+		default:
+			runway = fmt.Sprintf("约 %d 天", int(fund/hourly/24))
+		}
+		fmt.Fprintf(&b, "  %s%s · %s\n", padTo("时价", 9), galaxyUnitPrice(hourly), runway)
+	}
+	if len(r.Instances) > 0 {
+		fmt.Fprintf(&b, "\n  活跃实例（%d）\n", len(r.Instances))
+		for i, in := range r.Instances {
+			idx := fmt.Sprintf("%d)", i+1)
+			label := in.Host
+			if strings.TrimSpace(label) == "" {
+				label = in.Name
+			}
+			endpoint := ""
+			if in.SSHHost != "" || in.SSHPort > 0 {
+				endpoint = fmt.Sprintf("  %s:%d", in.SSHHost, in.SSHPort)
+			}
+			fmt.Fprintf(&b, "  %s %s%s\n", idx, label, endpoint)
+			col := GalaxyStatusColor(in.Status, in.Abnormal)
+			badge := c.apply(col, in.StatusText)
+			if in.Abnormal && (in.Status == 1 || in.Status == 4 || in.Status == 5) {
+				badge = c.Red(in.StatusText + "·异常")
+			}
+			detail := []string{badge, galaxyGpuLabel(in), fmt.Sprintf("%d核/%dG", in.CpuNum, in.MemoryGB)}
+			if in.District != "" {
+				detail = append(detail, in.District)
+			}
+			if in.TotalCost > 0 {
+				detail = append(detail, galaxyUnitPrice(in.TotalCost))
+			}
+			if in.AutoRenew {
+				detail = append(detail, "自动续费")
+			}
+			if in.Note != "" {
+				detail = append(detail, in.Note)
+			}
+			b.WriteString("     " + strings.Join(detail, " · ") + "\n")
+			expText, expCol := galaxyExpiryText(in.DueAt, now)
+			line := "     " + c.apply(expCol, expText)
+			if t, err := time.Parse(time.RFC3339, in.DueAt); err == nil {
+				line += c.Gray(fmt.Sprintf("（%s）", t.Format("01-02 15:04")))
+			}
+			if in.Status == 8 && in.DiskReleaseAt != "" {
+				if t, err := time.Parse(time.RFC3339, in.DiskReleaseAt); err == nil {
+					line += c.Gray(fmt.Sprintf(" · 磁盘 %s 释放", t.Format("01-02 15:04")))
+				}
+			}
+			b.WriteString(line + "\n")
+		}
+	} else if r.Error == "" && r.Status != nil && r.Status.Running == 0 {
+		b.WriteString(c.Gray("\n  无活跃实例") + "\n")
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red(r.Error) + "\n")
+	}
+	return b.String()
+}
+
+// ── 小工具 ────────────────────────────────────────────
+
+// runeWidth 东亚宽字符按 2 列计（CJK 汉字、全角标点、假名、韩文音节）。
+func runeWidth(r rune) int {
+	switch {
+	case r < 0x1100:
+		return 1
+	case r <= 0x115F, r >= 0x2E80 && r <= 0xA4CF && r != 0x303F,
+		r >= 0xAC00 && r <= 0xD7A3, r >= 0xF900 && r <= 0xFAFF,
+		r >= 0xFE30 && r <= 0xFE6F, r >= 0xFF00 && r <= 0xFF60,
+		r >= 0xFFE0 && r <= 0xFFE6:
+		return 2
+	default:
+		return 1
+	}
+}
+
+// displayWidth 字符串终端显示宽度（中文占两列）
+func displayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += runeWidth(r)
+	}
+	return w
+}
+
+// padTo 按显示宽度右对齐补空格（%-10s 按 rune 计数，中英混排会错位）
+func padTo(s string, width int) string {
+	d := displayWidth(s)
+	if d >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-d)
+}
 
 func firstBalanceInfo(b *models.DeepSeekBalance) *models.DeepSeekBalanceInfo {
 	if b == nil || len(b.Infos) == 0 {

@@ -1,7 +1,23 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-08-29 18:50）
+- **provider=galaxy（智星云 AI Galaxy 算力云，v1.3.0）**：`llm-api-check galaxy` 看账户余额 + 租用的云主机实例状态（只读，无写操作）
+  - 通道 = **官方 OpenAPI v2**（AccessKey + SecretKey + MD5 签名，`POST https://app.ai-galaxy.cn/openapi/v2/…`，表单体带 `apikey/timestamp/nonce/sign`）；**不走控制台 session**（会随登录过期，且无官方支持）
+  - 真机联调通过（2026-08-29 18:17 起多次实跑）：余额 ¥96.28、statusAll 85 / 运行中 4、四台实例与 `~/.config/train-watch/servers.json` 逐台对上（js1/js4.blockelite.cn = 223.109.239.11/.36）
+  - 数据面四路并发：`account/get_main_account_info`、`instance/get_instance_status_count`、`instance/get_instance_list`（翻页 + page_size 夹 100）、`billing/get_balance_change_list`（今日/近7天净消耗，双窗口各自完整性标记 → 未翻完数字前加 `≥`）
+  - 🔴 **口令屏蔽**：实例列表响应含 `Init_passwd/LastInitPasswd/RdpPasswd/VncPasswd` 明文口令 → 解析层显式白名单结构体，`--json` 与渲染层不可能带出（有单测断言 SECRET_PWD 哨兵不出现）；刻意不调 `account/get_apikey_info`（会回吐 SecretKey）
+  - 🔴 **弃用 statusDefault**：实测统计端点回 9、同 status_type 列表只回 4，两数互相矛盾 → 统计只显示自洽的 4 个字段（契约 §2.4）
+  - 到期倒计时用 `Due_time - ServerTime` 折算（与本机时钟无关），状态异常徽章与倒计时并存（§六 要求）；`padTo` 按显示宽度对齐（`%-10s` 对中文按 rune 计数会错位）
+  - 凭据：`--access-key/--secret-key` → `LLM_API_CHECK_GALAXY_ACCESS_KEY/…_SECRET_KEY` → TTY；配置 `galaxy_accounts`；`--json` 里 AccessKey 也掩码
+  - **顺带修**：`moveNoRefresh` → `moveFlags`（旧实现每类 flag 只搬一个，`名称 --limit 3 --no-refresh` 会漏搬 `--limit`）
+  - 测试：新增 64 个（parsers 16 / repo 15 / app 8 / render 13 / main 12），共 206 个用例 7 包 `-race` 全绿；反向验证：把签名字典序改成逆序后 `TestGalaxyRequestWireFormat`（独立复算 MD5，不复用被测函数）与 parsers 用例同时失败
+  - 契约文档：`docs/plans/2026-08-29-ai-galaxy-provider.md`（含调查取证：Vue bundle 分析 → Apifox llms.txt → 真实 AK/SK 实测矩阵）
+
+### 待办：Android 对等实现
+`~/Desktop/go-projects/pocket-llm-api-checker` 的同名 provider 正在并行施工（GalaxyRepo/GalaxyCard/GalaxyDetailScreen/SettingsScreen 录入 + 单测），契约以 Go 侧 plan 文档为准。真机冒烟与凭据录入由用户完成。
+
 ## 项目当前状态
-llm-api-check v1.2.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）与 **Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——`llm-api-check qwen` 显示 `7天 41% · 155小时32分后重置`（2026-08-29 实测）；CLI 优先、控制台 Cookie 兜底。**
+llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）** 与 **智星云 AI Galaxy（算力云余额 + 云主机实例状态）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——`llm-api-check qwen` 显示 `7天 41% · 155小时32分后重置`（2026-08-29 实测）；CLI 优先、控制台 Cookie 兜底。**
 
 🔴 **Android 侧唯一权威 clone（2026-08-29 取证）= `~/Desktop/go-projects/pocket-llm-api-checker/`**（HEAD e1c1568，含 fastlane 元数据 + tag v1.0.0 + scripts/ 可复现构建 + docs/fdroid 草稿）。`~/Desktop/android-projects/api-checkers/` 是落后一提交的旧副本（HEAD cec6ef7，无 fastlane、无 tag），只做历史参考，**勿在其上开发**。
 
@@ -24,18 +40,20 @@ llm-api-check v1.2.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - [ ] songjieshi/xieguaiwu 的 key 来自 config.fish 注释行（非当前生效），可能已过期（xieguaiwu 实测 M 100% 已限流属正常用量而非 key 失效）
 - [ ] P3 未修（非阻塞）：NewID panic 改返回错误、writeJSON stderr 注入、promptTTY bufio.Reader 复用、`--json --version` 文本输出；Qwen 额度绝对值（quota-config 接口的 `five_hour`/`weekly` credits）未接入，现只显示百分比（CodexBar 已接 quota-config，可参考）
 - [ ] Zen billing 解析依赖 opencode.ai 页面结构，改版需更新 `internal/parsers/parsers.go` 的 ParseZenBilling；Qwen 同理依赖百炼控制台 RPC（信封形状变化时改 `qwenFindObject` 目标键）或 bailian-cli 输出（字段变化时改 `qwenCLIErrorEnvelope`/`ParseQwenUsage`）
-- [ ] **发版 v1.2.0**（可选）：代码与文档已推 main，但 GitHub Release 仍是 v1.1.0；`VERSION=1.2.0 scripts/build-dist.sh` → tag v1.2.0 → Release（含 --stats 与 CLI 通道变更说明）
+- [ ] **发版 v1.3.0**（可选）：`VERSION=1.3.0 scripts/build-dist.sh` → tag v1.3.0 → Release（含 galaxy provider 与 moveFlags 修复说明；GitHub Release 仍停在 v1.1.0，v1.2.0 也未发）
+- [ ] **智星云可选增强**（未做，需要时再加）：`billing/get_instance_cost_summary` 单实例费用分解、`instance/get_instance_detail` 深看、`/store/*` 显卡价格与库存、自动续费开关状态细化、余额低于阈值告警（可接 belater 定时跑 `galaxy --json`）
 - [ ] 图形知识图谱 graphify-out/ 未生成（可选，`graphify update . --no-llm`）
 
 ## 技术要点（下一位 Agent 必读）
-- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）**
+- **智星云 OpenAPI 铁律**：① 签名 = 非空参数字典序拼 `k=v&…` + 末尾 `&secret=<SecretKey>` → MD5 小写 hex，`sign` 进 body（**不入串**）；② HTTP 恒 200，错误在信封 `{success,code:"2000"}` 里，`code` 是**字符串**；③ `page_size` 上限 100（超限报 `page_size参数超限!`）；④ `status_type` 传非法值不报错、按不过滤处理，不能拿它做参数校验；⑤ 实例响应含明文口令（见上）；⑥ 到期时刻用 `Due_time-ServerTime` 折算；⑦ 平台错误码只有 "2000"（成功）/"4000"（客户端错误，message 说明原因）。详见 docs/plans/2026-08-29-ai-galaxy-provider.md
+- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）**
 - **Bailian CLI 通道铁律**：① 本机 `bl` 是用户自研翻译 CLI——探测与文档一律用 `bailian` 名/绝对路径，`exec.LookPath("bl")` 是被禁止的（会误调）；② `usage token-plan` 认证模式 Console，API key 无效；③ Node 的 UNDICI 警告在 stderr，必须过滤；④ exit 非零时 JSON 错误信封在 stderr（实测 exit 3）；⑤ CLI 会话存 `~/.bailian/config.json`（敏感文件）；⑥ 会话短寿命（几小时），过期重跑 `bailian auth login --console`；⑦ 实现文件 `internal/repo/qwen_cli.go`（QwenCLI.runJSON 共用 Usage/Summary 通道）
 - **Qwen 三个不能踩的坑**（详见 docs/plans/2026-08-29-qwen-provider.md）：① `cornerstoneParam` 绝不得硬编码 `switchAgent`（网关会绑死该工作区 → 他人账号全部 NotAuthorised）② 抓 `SEC_TOKEN` 必须带 `Sec-Fetch-*` 浏览器导航头 + 桌面 UA，否则 OneConsole shell 不渲染该 token ③ 登录失效仍回 HTTP 200，错误在信封 `data.errorCode` 里，不能只看状态码
 - **关键移植点**：ZenBilling 字符串字面量感知括号匹配（inStr/esc 状态机）、`(?:^|,)balance:` 正则、microcents÷1e8、cost 两月都无数据显式失败（不返回误导零数据）；QwenUsage 信封 BFS + 内嵌 JSON 字符串展开（深度上限 12）、`qwenPercent` 比例/百分数双域判定（>2 才当百分数）、空窗口重试 3 次而认证类错误不重试、CLI 单窗口响应独立判有（5 小时限时取消期间字段缺席）
 - **错误消息**与 Android 版逐字一致（对照表在 docs/plans/2026-08-18-llm-api-check-cli.md「错误消息对照表」节；Qwen 新错文见 docs/plans/2026-08-29-qwen-provider.md）
-- **安全**：凭据存 `~/.config/llm-api-check/config.json` chmod 0600（CLI 无 Keystore，文件权限替代 + 权限过宽警告）；凭据来源顺序 flag → 环境变量（`LLM_API_CHECK_*`）→ TTY 提示；`--json` 输出全部掩码凭据；Qwen 控制台 Cookie 含阿里云登录会话，当敏感文件对待；Bailian CLI 会话在 `~/.bailian/config.json`
-- **构建**：`go build -trimpath -ldflags="-s -w -X main.version=1.2.0" -o ~/.local/bin/llm-api-check .`；测试 `go test ./... -race`（7 包）；发版打包 `VERSION=x.y.z scripts/build-dist.sh`（四平台 tarball + sha256sums.txt → dist/，dist/ 不入库）
-- **渲染**：中文输出、ANSI 颜色（NO_COLOR/--no-color 禁用）、用量条 10 格、倒计时「4小时20分后重置 / 52分钟后重置 / 即将重置」、颜色阈值 <70 蓝 / 70-89 黄 / ≥90 红、限流与配额用尽强制红且**「已限流」徽章与重置倒计时必须并存**（index.md §六 项目专属要求）
+- **安全**：凭据存 `~/.config/llm-api-check/config.json` chmod 0600（智星云 AccessKey 也算长期凭据——它能签名发起扣费请求，`--json` 同样掩码）（CLI 无 Keystore，文件权限替代 + 权限过宽警告）；凭据来源顺序 flag → 环境变量（`LLM_API_CHECK_*`）→ TTY 提示；`--json` 输出全部掩码凭据；Qwen 控制台 Cookie 含阿里云登录会话，当敏感文件对待；Bailian CLI 会话在 `~/.bailian/config.json`
+- **构建**：`go build -trimpath -ldflags="-s -w -X main.version=1.3.0" -o ~/.local/bin/llm-api-check .`；测试 `go test ./... -race`（7 包）；发版打包 `VERSION=x.y.z scripts/build-dist.sh`（四平台 tarball + sha256sums.txt → dist/，dist/ 不入库）
+- **渲染**：中文输出、ANSI 颜色（NO_COLOR/--no-color 禁用）、用量条 10 格；中英混排对齐用 `render.padTo`（按显示宽度，中文 2 列），不要用 `%-Ns`、倒计时「4小时20分后重置 / 52分钟后重置 / 即将重置」、颜色阈值 <70 蓝 / 70-89 黄 / ≥90 红、限流与配额用尽强制红且**「已限流」徽章与重置倒计时必须并存**（index.md §六 项目专属要求）
 - **本机环境**：密钥真值在 `~/.config/fish/config.fish`（非 dotfiles 符号链接、不入库）；该文件首行有 `if not status is-interactive; return; end` 守卫，`fish -c 'source …'` 取值会静默得空值——用 python 正则直读文件（见 System_Fix/dotfiles-sync-and-audit.md 附录 B.5）；订阅密钥与区域强绑定（北京 key 打新加坡端点 401，同 key 换区域即 200）；Bailian CLI 已装 `~/.local/share/bailian-cli/bin/bailian`（独立 prefix，不 shadow 自研 bl）
 
 ## 历史工作记录
@@ -46,9 +64,9 @@ llm-api-check v1.2.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - **2026-08-18 01:40**：CLI 全功能实现（models/parsers/repo/config/app/render 六包 + main.go，零第三方依赖）；momus 审查修复（P1×3 + P2×4 + 8 个命令级测试）；v1.0.0 部署与双语 README
 
 ## 知识图谱
-- graphify-out/: 存在（2026-08-29 14:20 生成，`graphify update .` no-LLM）
-- 488 节点 / 1296 边 / 22 社区（18 显示，4 薄社区省略）；EXTRACTED 88%
-- 图谱基于 commit a2c5968；代码变更后跑 `graphify update .` 更新（零 API 成本）
+- graphify-out/: 存在（每次代码变更后 `graphify update .` 重建，no-LLM 零成本）
+- 319 节点 / 736 边 / 24 社区（v1.3.0 galaxy provider 后）
+- 图谱以最新 commit 为准；若 `graphify-out/needs_update` 存在说明已陈旧，先 update 再依赖它回答
 
 ## 最后更新时间
-2026-08-29 14:25
+2026-08-29 18:50

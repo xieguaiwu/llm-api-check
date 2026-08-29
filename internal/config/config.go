@@ -28,6 +28,7 @@ type Config struct {
 	DeepSeekAccounts []models.DeepSeekAccount `json:"deepseek_accounts"`
 	Accounts         []models.Account         `json:"accounts"`
 	QwenAccounts     []models.QwenAccount     `json:"qwen_accounts"`
+	GalaxyAccounts   []models.GalaxyAccount   `json:"galaxy_accounts"`
 	LastUpdate       map[string]int64         `json:"last_update"`
 }
 
@@ -179,6 +180,28 @@ func (c *Config) DeleteQwenAccount(id string) {
 		}
 	}
 	c.QwenAccounts = kept
+}
+
+// SaveGalaxyAccount 按 id upsert（对应 SecureSettings.saveGalaxyAccount）
+func (c *Config) SaveGalaxyAccount(a models.GalaxyAccount) {
+	for i, x := range c.GalaxyAccounts {
+		if x.ID == a.ID {
+			c.GalaxyAccounts[i] = a
+			return
+		}
+	}
+	c.GalaxyAccounts = append(c.GalaxyAccounts, a)
+}
+
+// DeleteGalaxyAccount 按 id 删除（对应 SecureSettings.deleteGalaxyAccount）
+func (c *Config) DeleteGalaxyAccount(id string) {
+	kept := c.GalaxyAccounts[:0]
+	for _, x := range c.GalaxyAccounts {
+		if x.ID != id {
+			kept = append(kept, x)
+		}
+	}
+	c.GalaxyAccounts = kept
 }
 
 // SetLastUpdate 记录最近更新时间（对应 SecureSettings.setLastUpdate）

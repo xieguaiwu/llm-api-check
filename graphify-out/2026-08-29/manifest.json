@@ -5,8 +5,8 @@
     "semantic_hash": ""
   },
   "internal/app/app.go": {
-    "mtime": 1787999172.211017,
-    "ast_hash": "74dbd446374fa1fdf2737c2499f3bca0",
+    "mtime": 1787982933.385427,
+    "ast_hash": "8ca8e078726999da4af4efb8cc90ba94",
     "semantic_hash": ""
   },
   "internal/app/app_test.go": {
@@ -15,8 +15,8 @@
     "semantic_hash": ""
   },
   "internal/config/config.go": {
-    "mtime": 1787999024.6955724,
-    "ast_hash": "959ed017ddef37e34971ece56341ef1f",
+    "mtime": 1787941163.6674235,
+    "ast_hash": "10433e1c53c27bf9f6137e457ca2d176",
     "semantic_hash": ""
   },
   "internal/config/config_test.go": {
@@ -25,8 +25,8 @@
     "semantic_hash": ""
   },
   "internal/models/models.go": {
-    "mtime": 1787999313.5909765,
-    "ast_hash": "e63b3057278dc5935e5623a7ef1f05dc",
+    "mtime": 1787982885.8699462,
+    "ast_hash": "5745e0e94be1367cdedfc6a06a2fc5c7",
     "semantic_hash": ""
   },
   "internal/models/models_test.go": {
@@ -45,13 +45,13 @@
     "semantic_hash": ""
   },
   "internal/render/render.go": {
-    "mtime": 1787999428.9840562,
-    "ast_hash": "8c55a7fa22db55aa1ce498853cc67fe3",
+    "mtime": 1787982924.5463376,
+    "ast_hash": "6c2acf6b5744bd912b3f620b27673e4b",
     "semantic_hash": ""
   },
   "internal/render/render_test.go": {
-    "mtime": 1787999246.262794,
-    "ast_hash": "5b73a8131d3a4e2f6dc5fe207c30c9b8",
+    "mtime": 1787982958.8016841,
+    "ast_hash": "dcc3eaa494e78922ece0e65b7b79387e",
     "semantic_hash": ""
   },
   "internal/repo/qwen_cli.go": {
@@ -75,8 +75,8 @@
     "semantic_hash": ""
   },
   "main.go": {
-    "mtime": 1788000468.3306234,
-    "ast_hash": "121774495c485153a917eec177ad97cd",
+    "mtime": 1787983001.9191206,
+    "ast_hash": "41ffb6d0b5e3c8adf60a88935d42d963",
     "semantic_hash": ""
   },
   "main_test.go": {
@@ -155,18 +155,18 @@
     "semantic_hash": ""
   },
   "CONTEXT_FOR_NEXT_AGENT.md": {
-    "mtime": 1788000540.563542,
-    "ast_hash": "f4d3137a4e2e107c82485691562750a1",
+    "mtime": 1787983178.3529043,
+    "ast_hash": "8a76674547f3094909f3ac0915cde9bc",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1788000408.8662856,
-    "ast_hash": "fdc15d43bc6c4ac2b764f436890a1af5",
+    "mtime": 1787983161.5177357,
+    "ast_hash": "cb2a24be4635dc3601f8ee38802203a0",
     "semantic_hash": ""
   },
   "README_zh.md": {
-    "mtime": 1788000457.7243128,
-    "ast_hash": "2a499d00fd41ce30a3e08034d0f61d75",
+    "mtime": 1787983161.5177357,
+    "ast_hash": "77e516e5d9a4db894dc1b24dafa1a6a3",
     "semantic_hash": ""
   },
   "docs/plans/2026-08-18-llm-api-check-cli.md": {
@@ -187,66 +187,6 @@
   "testdata/fixtures/billing.html": {
     "mtime": 1786986329.063493,
     "ast_hash": "7aa01e57bb8a9275c7535e09ab491ec4",
-    "semantic_hash": ""
-  },
-  "internal/app/galaxy_test.go": {
-    "mtime": 1788000050.6565757,
-    "ast_hash": "09799720d92d94d8a2fa7ecd2eefd961",
-    "semantic_hash": ""
-  },
-  "internal/parsers/galaxy.go": {
-    "mtime": 1788000314.9410825,
-    "ast_hash": "fac506f8528d122785c5c9459d931d4c",
-    "semantic_hash": ""
-  },
-  "internal/parsers/galaxy_test.go": {
-    "mtime": 1788000248.8454964,
-    "ast_hash": "62af38ccdbc22e9b2ac61df29ec6c574",
-    "semantic_hash": ""
-  },
-  "internal/render/galaxy_test.go": {
-    "mtime": 1788000120.783461,
-    "ast_hash": "ff724defefea95eeb54bc512bf0d5e97",
-    "semantic_hash": ""
-  },
-  "internal/repo/galaxy.go": {
-    "mtime": 1787999428.984774,
-    "ast_hash": "632d4b3b7b9d82d48a63a4a68b1980a5",
-    "semantic_hash": ""
-  },
-  "internal/repo/galaxy_test.go": {
-    "mtime": 1788000272.7657282,
-    "ast_hash": "6d43cffe2309d8536ef40593bf8f5208",
-    "semantic_hash": ""
-  },
-  "main_galaxy_test.go": {
-    "mtime": 1788000422.7561002,
-    "ast_hash": "5ca33fecdeba9d526496ca3896ee28f3",
-    "semantic_hash": ""
-  },
-  "testdata/fixtures/galaxy_account_info.json": {
-    "mtime": 1787999485.1870818,
-    "ast_hash": "cce3b0833f7013e4eaecc4616a7e25ca",
-    "semantic_hash": ""
-  },
-  "testdata/fixtures/galaxy_balance_changes.json": {
-    "mtime": 1787999485.2335958,
-    "ast_hash": "3968922291c509a77b02f3b8ae5abbd1",
-    "semantic_hash": ""
-  },
-  "testdata/fixtures/galaxy_instance_list.json": {
-    "mtime": 1787999485.2333436,
-    "ast_hash": "6197c687ff3311cec6d3d7958990dcbd",
-    "semantic_hash": ""
-  },
-  "testdata/fixtures/galaxy_status_count.json": {
-    "mtime": 1787999485.1896534,
-    "ast_hash": "a77dd8e338e6087f87b2ca91372a1ebb",
-    "semantic_hash": ""
-  },
-  "docs/plans/2026-08-29-ai-galaxy-provider.md": {
-    "mtime": 1787998815.3655224,
-    "ast_hash": "536fd708d7602995b02b3724463c7819",
     "semantic_hash": ""
   }
 }

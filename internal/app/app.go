@@ -43,11 +43,34 @@ type QwenResult struct {
 	CLIEnabled bool `json:"-"`
 }
 
+// GalaxyResult 单个智星云账号的刷新结果（对应 GalaxyUi）。
+// Balance 必需；Status/Instances/Cost 任一失败只影响该段（错误合并进 Error）。
+type GalaxyResult struct {
+	Account   models.GalaxyAccount      `json:"account"`
+	Balance   *models.GalaxyBalance     `json:"balance,omitempty"`
+	Status    *models.GalaxyStatusCount `json:"status,omitempty"`
+	Instances []models.GalaxyInstance   `json:"instances,omitempty"`
+	Cost      *models.GalaxyCost        `json:"cost,omitempty"`
+	Error     string                    `json:"error,omitempty"`
+}
+
+// HourlyCost 运行中实例的合计时价（元/时）——余额还能撑多久算得出来
+func (r GalaxyResult) HourlyCost() float64 {
+	var sum float64
+	for _, in := range r.Instances {
+		if in.Status == 1 || in.Status == 4 || in.Status == 5 {
+			sum += in.TotalCost
+		}
+	}
+	return sum
+}
+
 // Result 全量刷新结果
 type Result struct {
 	DeepSeek    []DeepSeekResult
 	Accounts    []AccountResult
 	Qwen        []QwenResult
+	Galaxy      []GalaxyResult
 	LastUpdated time.Time
 }
 
@@ -56,7 +79,11 @@ type Repos struct {
 	DeepSeek *repo.DeepSeekRepo
 	OpenCode *repo.OpenCodeRepo
 	Qwen     *repo.QwenRepo
+	Galaxy   *repo.GalaxyRepo
 }
+
+// GalaxyInstanceLimit 单次刷新展示的活跃实例上限（防止大账号拉穿）
+const GalaxyInstanceLimit = 20
 
 // App 刷新编排器（对应 AppViewModel）
 type App struct {
@@ -74,6 +101,7 @@ func New(cfg *config.Config) *App {
 			DeepSeek: repo.NewDeepSeekRepo(),
 			OpenCode: repo.NewOpenCodeRepo(),
 			Qwen:     repo.NewQwenRepo(),
+			Galaxy:   repo.NewGalaxyRepo(),
 		},
 		Cfg: cfg,
 	}
@@ -104,9 +132,11 @@ func (a *App) RefreshAll() (Result, error) {
 	dsAccounts := append([]models.DeepSeekAccount(nil), a.Cfg.DeepSeekAccounts...)
 	accounts := append([]models.Account(nil), a.Cfg.Accounts...)
 	qwenAccounts := append([]models.QwenAccount(nil), a.Cfg.QwenAccounts...)
+	galaxyAccounts := append([]models.GalaxyAccount(nil), a.Cfg.GalaxyAccounts...)
 	dsRes := make([]DeepSeekResult, len(dsAccounts))
 	accRes := make([]AccountResult, len(accounts))
 	qwenRes := make([]QwenResult, len(qwenAccounts))
+	galaxyRes := make([]GalaxyResult, len(galaxyAccounts))
 	var wg sync.WaitGroup
 	for i, acc := range dsAccounts {
 		wg.Add(1)
@@ -129,10 +159,17 @@ func (a *App) RefreshAll() (Result, error) {
 			qwenRes[i] = a.refreshQwen(acc)
 		}(i, acc)
 	}
+	for i, acc := range galaxyAccounts {
+		wg.Add(1)
+		go func(i int, acc models.GalaxyAccount) {
+			defer wg.Done()
+			galaxyRes[i] = a.refreshGalaxy(acc, GalaxyInstanceLimit)
+		}(i, acc)
+	}
 	wg.Wait()
 	now := time.Now()
 	a.Cfg.SetLastUpdate("all", now.UnixMilli())
-	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, LastUpdated: now}, nil
+	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, LastUpdated: now}, nil
 }
 
 // RefreshDeepSeek 按 id 刷新单个 DeepSeek 账号（对应 refreshDeepSeekNow）
@@ -265,6 +302,73 @@ func (a *App) refreshQwen(acc models.QwenAccount) QwenResult {
 	} else {
 		res.Error = errMsg(planErr)
 	}
+	return res
+}
+
+// RefreshGalaxy 按 id 刷新单个智星云账号（对应 refreshGalaxyNow）。
+// limit ≤0 表示实例列表不限量（受仓库翻页上限约束）。
+func (a *App) RefreshGalaxy(id string, limit int) (GalaxyResult, error) {
+	var acc models.GalaxyAccount
+	found := false
+	for _, x := range a.Cfg.GalaxyAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return GalaxyResult{}, errors.New("账号不存在或已被删除")
+	}
+	return a.refreshGalaxy(acc, limit), nil
+}
+
+// refreshGalaxy 并发拉四类数据（余额/统计/实例/消耗）。
+// 任一路失败不中断其余路：余额拉到就显示余额（同 DeepSeek balance/cost 的处理），
+// 全部失败时上层据「无数据 + 有错误」判 exit 1。
+func (a *App) refreshGalaxy(acc models.GalaxyAccount, limit int) GalaxyResult {
+	res := GalaxyResult{Account: acc}
+	if a.Repos == nil || a.Repos.Galaxy == nil {
+		res.Error = "智星云仓库未初始化"
+		return res
+	}
+	var (
+		wg      sync.WaitGroup
+		bal     models.GalaxyBalance
+		balErr  error
+		cnt     models.GalaxyStatusCount
+		cntErr  error
+		insts   []models.GalaxyInstance
+		insErr  error
+		cost    models.GalaxyCost
+		costErr error
+	)
+	fetch := func(fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn()
+		}()
+	}
+	fetch(func() { bal, balErr = a.Repos.Galaxy.Balance(acc) })
+	fetch(func() { cnt, cntErr = a.Repos.Galaxy.StatusCount(acc) })
+	fetch(func() { insts, insErr = a.Repos.Galaxy.Instances(acc, repo.GalaxyStatusDefault, limit) })
+	fetch(func() { cost, costErr = a.Repos.Galaxy.Cost(acc) })
+	wg.Wait()
+
+	if balErr == nil {
+		res.Balance = &bal
+	}
+	if cntErr == nil {
+		res.Status = &cnt
+	}
+	if insErr == nil {
+		res.Instances = insts
+	}
+	if costErr == nil {
+		res.Cost = &cost
+	}
+	res.Error = joinErrors(balErr, cntErr, insErr, costErr)
 	return res
 }
 
