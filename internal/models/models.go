@@ -264,13 +264,6 @@ type GalaxyCostEntry struct {
 	Left   float64 `json:"left"`  // 变更后现金余额
 }
 
-// GalaxyRechargeInfo 最近一笔充值订单。
-type GalaxyRechargeInfo struct {
-	Amount   float64 `json:"amount"`
-	OrderAt  string  `json:"order_at"`
-	StatusOk bool    `json:"status_ok"`
-}
-
 // ── Qwen 用量分析（Bailian CLI `usage summary --output json`） ──
 
 // QwenTokenStat 单项 token 统计（Input/Output/Total/Avg）。
