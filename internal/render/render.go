@@ -455,10 +455,10 @@ func RenderQwenDetail(r app.QwenResult, now time.Time, c Colorizer) string {
 		fmt.Fprintf(&b, "  %-12s %s\n", "套餐", tier)
 	}
 	if r.Usage == nil {
-		if r.Account.HasCookie() {
+		if r.Account.HasCookie() || r.CLIEnabled {
 			b.WriteString(c.Gray("  配额窗口       暂无数据") + "\n")
 		} else {
-			b.WriteString(c.Gray("  配额窗口       需控制台 Cookie（accounts add --type qwen --console-cookie …）") + "\n")
+			b.WriteString(c.Gray("  配额窗口       需控制台 Cookie 或 Bailian CLI（bailian auth login --console）") + "\n")
 		}
 	} else {
 		for _, w := range qwenWindows(r.Usage) {

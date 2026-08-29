@@ -9,7 +9,7 @@ A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history),
 - **DeepSeek** — balance via official API (`api.deepseek.com/user/balance`); daily spend (today / 7d / 30d) via the platform API (requires browser login token)
 - **OpenCode Go plan** — 3 usage windows: Rolling 5h / Weekly 7d / Monthly 30d, with percent bars, reset countdown, and rate-limit status
 - **OpenCode Zen plan** — balance, monthly usage/limit, auto-reload settings (parsed from the billing page; requires workspace ID + auth cookie)
-- **Qwen Token Plan** — plan model list via the subscription gateway, plus 5-hour / 7-day credit windows with reset countdowns (quota windows require a Bailian console cookie — the quota API does not accept API keys)
+- **Qwen Token Plan** — plan model list via the subscription gateway, plus 5-hour / 7-day credit windows with reset countdowns (quota comes from the official Bailian CLI when available, falling back to a console cookie; the quota API does not accept API keys)
 - **Multi-account** — unlimited DeepSeek, OpenCode, and Qwen accounts, shown separately
 - Machine-readable `--json` output, `NO_COLOR` support
 - Zero third-party dependencies (Go stdlib only)
@@ -60,7 +60,7 @@ llm-api-check --version
 
 Global flags: `--json` (all output as JSON), `--no-color` (same as `NO_COLOR` env).
 
-Credential flags fall back in this order: flag → env var → TTY prompt (non-TTY errors out). Env vars: `LLM_API_CHECK_GO_API_KEY`, `LLM_API_CHECK_WORKSPACE_ID`, `LLM_API_CHECK_AUTH_COOKIE`, `LLM_API_CHECK_DEEPSEEK_API_KEY`, `LLM_API_CHECK_PLATFORM_TOKEN`, `LLM_API_CHECK_QWEN_API_KEY`, `LLM_API_CHECK_QWEN_COOKIE`, `LLM_API_CHECK_QWEN_REGION`.
+Credential flags fall back in this order: flag → env var → TTY prompt (non-TTY errors out). Env vars: `LLM_API_CHECK_GO_API_KEY`, `LLM_API_CHECK_WORKSPACE_ID`, `LLM_API_CHECK_AUTH_COOKIE`, `LLM_API_CHECK_DEEPSEEK_API_KEY`, `LLM_API_CHECK_PLATFORM_TOKEN`, `LLM_API_CHECK_QWEN_API_KEY`, `LLM_API_CHECK_QWEN_COOKIE`, `LLM_API_CHECK_QWEN_REGION`, `LLM_API_CHECK_BL_BIN` (Bailian CLI path), `LLM_API_CHECK_QWEN_CLI` (`off` disables the CLI quota channel).
 
 ## Where to get credentials
 
@@ -71,9 +71,10 @@ Credential flags fall back in this order: flag → env var → TTY prompt (non-T
 | OpenCode Go API key | opencode.ai account settings |
 | OpenCode workspace ID + auth cookie | Browser DevTools → Application → Cookies → opencode.ai → `auth` (starts with `Fe26.2`) |
 | Qwen API key | Alibaba Cloud Model Studio (Bailian) → Token Plan → API Key (`sk-sp-…`). Subscription keys are region-bound: a Beijing key only works on the Beijing gateway |
-| Qwen console cookie | Sign in to `bailian.console.aliyun.com` → Token Plan page → DevTools → Network → any `data/api.json` request → copy the whole `Cookie` request header (you can paste it with the `Cookie:` prefix; the tool strips it) |
+| Bailian CLI (preferred) | Install the official CLI: `npm install -g --prefix ~/.local/share/bailian-cli bailian-cli`, then log in once: `~/.local/share/bailian-cli/bin/bailian auth login --console`. The tool auto-detects it (or set `LLM_API_CHECK_BL_BIN`); CLI takes precedence over the cookie |
+| Qwen console cookie (fallback) | Sign in to `bailian.console.aliyun.com` → Token Plan page → DevTools → Network → any `data/api.json` request → copy the whole `Cookie` request header (you can paste it with the `Cookie:` prefix; the tool strips it) |
 
-Qwen quota is console-session data. Without a cookie the tool still validates the key and lists plan models, and says so instead of showing invented numbers.
+Qwen quota is console-session data. The tool tries the official Bailian CLI first (`bailian usage token-plan`; set `LLM_API_CHECK_QWEN_CLI=off` to disable), then falls back to a console cookie. Without either it still validates the key and lists plan models, and says so instead of showing invented numbers.
 
 ## Data sources
 
@@ -84,14 +85,14 @@ Qwen quota is console-session data. Without a cookie the tool still validates th
 | OpenCode Go usage | `GET https://opencode.ai/zen/go/v1/usage` | API key |
 | OpenCode Zen billing | `GET https://opencode.ai/workspace/{id}/billing` | auth cookie |
 | Qwen plan models | `GET https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models` | API key |
-| Qwen quota windows | `POST https://bailian-cs.console.aliyun.com/data/api.json` (`zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage`) | console cookie + `sec_token` |
+| Qwen quota windows | `bailian usage token-plan --output json` (official CLI) or `POST https://bailian-cs.console.aliyun.com/data/api.json` (`zeldaHttp.apikeyMgr./tokenplan/personal/api/v2/usage`) | CLI console session or cookie + `sec_token` |
 
 ## Security
 
 - No credentials are hardcoded or committed. All secrets live in `~/.config/llm-api-check/config.json`, created with mode `0600`.
 - The Android original encrypts credentials with the Android Keystore; a CLI has no OS keystore, so this tool uses file permissions (same model as `gh` / `aws` CLI). The tool warns on stderr if the config file permissions are too open.
-- Zen billing data is parsed from the billing page HTML — it may break if opencode.ai changes its page structure. Qwen quota windows come from the Bailian console RPC and expire with your console session.
-- The Qwen console cookie carries your Alibaba Cloud login session. Treat that config file as sensitive, and remove the account (`accounts remove`) when you no longer need it.
+- Zen billing data is parsed from the billing page HTML — it may break if opencode.ai changes its page structure. Qwen quota windows come from the Bailian CLI console session (preferred) or the console RPC — both expire with your console session; re-run `bailian auth login --console` to refresh.
+- The Qwen console cookie carries your Alibaba Cloud login session. Treat that config file as sensitive, and remove the account (`accounts remove`) when you no longer need it. The Bailian CLI stores its session under `~/.bailian/config.json` (0600).
 
 ## License
 

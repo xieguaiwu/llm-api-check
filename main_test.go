@@ -19,6 +19,11 @@ func withConfigDir(t *testing.T) string {
 
 func runCLI(t *testing.T, stdin string, args ...string) (int, string, string) {
 	t.Helper()
+	// 默认关闭 Bailian CLI 通道：保证既有用例 hermetic（不依赖本机是否安装 bailian-cli）。
+	// 专门测 CLI 通道的用例需显式 t.Setenv("LLM_API_CHECK_QWEN_CLI", "on")。
+	if os.Getenv("LLM_API_CHECK_QWEN_CLI") == "" {
+		t.Setenv("LLM_API_CHECK_QWEN_CLI", "off")
+	}
 	var out, errB bytes.Buffer
 	code := run(args, strings.NewReader(stdin), &out, &errB)
 	return code, out.String(), errB.String()
@@ -323,5 +328,43 @@ func TestUsageTextMentionsQwen(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("帮助文本缺少 %q", want)
 		}
+	}
+}
+
+// Bailian CLI 通道端到端：env 指定 fake CLI + 显式开启 → qwen 刷新走 CLI 拿配额。
+// fake CLI 脚本只回配额 JSON；API Key 用无效占位（Plan 会 401，但配额行应出现）。
+func TestQwenCLIChannelEndToEnd(t *testing.T) {
+	dir := withConfigDir(t)
+	fake := filepath.Join(dir, "fake-bailian")
+	script := `#!/bin/sh
+if [ "$1" = "usage" ] && [ "$2" = "token-plan" ]; then
+  echo '{"per5HourPercentage":0.5,"per5HourResetTime":1790000000000,"per1WeekPercentage":0.7,"per1WeekResetTime":1791000000000}'
+  exit 0
+fi
+echo '{"error":{"code":3,"message":"No console access token found."}}'
+exit 0
+`
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLM_API_CHECK_QWEN_CLI", "on")
+	t.Setenv("LLM_API_CHECK_BL_BIN", fake)
+
+	code, out, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen",
+		"--name", "订阅号", "--api-key", "sk-sp-clitest1234567890", "--region", "cn-beijing")
+	if code != 0 {
+		t.Fatalf("add exit=%d err=%q", code, errOut)
+	}
+	code, out, errOut = runCLI(t, "", "qwen", "订阅号")
+	if code != 0 {
+		t.Fatalf("qwen exit=%d err=%q out=%s", code, errOut, out)
+	}
+	for _, want := range []string{"50%", "70%", "5小时", "7天"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("输出缺少 %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "需控制台 Cookie") {
+		t.Errorf("CLI 通道可用时不应提示缺 Cookie: %s", out)
 	}
 }

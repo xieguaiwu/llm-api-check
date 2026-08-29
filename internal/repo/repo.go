@@ -287,9 +287,12 @@ func QwenEndpointsFor(region string) (QwenEndpoints, error) {
 	}, nil
 }
 
-// QwenRepo Qwen Token Plan 仓库：模型清单（API Key）+ 配额窗口（控制台 Cookie）。
+// QwenRepo Qwen Token Plan 仓库：模型清单（API Key）+ 配额窗口
+// （Bailian CLI 优先，控制台 Cookie 兜底）。
 type QwenRepo struct {
 	Client *http.Client
+	// CLI 官方 Bailian CLI 配额通道；nil = 禁用（测试默认禁用，保持 hermetic）
+	CLI *QwenCLI
 	// Now 时钟注入（重置时间换 RFC3339 用同一时区）
 	Now func() time.Time
 	// Endpoints 测试注入：非 nil 时接管全部区域解析
@@ -300,8 +303,17 @@ type QwenRepo struct {
 	UsageRetryDelay time.Duration
 }
 
-// NewQwenRepo 默认构造（15s 超时 client）
-func NewQwenRepo() *QwenRepo { return &QwenRepo{Client: defaultClient()} }
+// NewQwenRepo 默认构造（15s 超时 client + 自动探测 Bailian CLI）
+func NewQwenRepo() *QwenRepo {
+	r := &QwenRepo{Client: defaultClient()}
+	if c, err := DetectQwenCLI(); err == nil {
+		r.CLI = c
+	}
+	return r
+}
+
+// CLIEnabled CLI 配额通道是否可用（app 层据此决定是否尝试拉配额）
+func (r *QwenRepo) CLIEnabled() bool { return r.CLI != nil }
 
 func (r *QwenRepo) client() *http.Client {
 	if r.Client != nil {
@@ -347,26 +359,38 @@ func (r *QwenRepo) Plan(acc models.QwenAccount) (models.QwenPlan, error) {
 	return models.QwenPlan{Models: ids}, nil
 }
 
-// Usage 拉配额窗口（5 小时 / 7 天）与套餐档位。未配 Cookie → 显式提示。
+// Usage 拉配额窗口（5 小时 / 7 天）与套餐档位。
+// 通道优先级：Bailian CLI（若启用）→ 控制台 Cookie（若配置）→ 显式错误。
 func (r *QwenRepo) Usage(acc models.QwenAccount) (models.QwenUsage, error) {
+	var cliErr error
+	if r.CLI != nil {
+		u, err := r.CLI.Usage(acc)
+		if err == nil {
+			return u, nil
+		}
+		cliErr = err
+	}
 	if !acc.HasCookie() {
+		if cliErr != nil {
+			return models.QwenUsage{}, cliErr
+		}
 		return models.QwenUsage{}, errors.New("未配置控制台 Cookie")
 	}
 	ep, err := r.endpoints(acc.Region)
 	if err != nil {
-		return models.QwenUsage{}, err
+		return models.QwenUsage{}, joinErrors(cliErr, err)
 	}
 	cookie := normalizeCookieHeader(acc.ConsoleCookie)
 	secToken := r.resolveSECToken(ep, cookie)
 
 	usage, err := r.fetchUsage(ep, cookie, secToken)
 	if err != nil {
-		return models.QwenUsage{}, err
+		return models.QwenUsage{}, joinErrors(cliErr, err)
 	}
 	// 套餐档位 best-effort：登录失效向上抛出，其他失败只记空档位
 	code, subErr := r.fetchSubscription(ep, cookie, secToken)
 	if subErr != nil && strings.Contains(subErr.Error(), "Cookie") {
-		return models.QwenUsage{}, subErr
+		return models.QwenUsage{}, joinErrors(cliErr, subErr)
 	}
 	usage.PlanCode = code
 	return usage, nil
@@ -580,6 +604,20 @@ func (r *QwenRepo) getPage(rawURL, cookie, origin string, navigate bool) (string
 		return "", errors.New("页面获取失败")
 	}
 	return string(body), nil
+}
+
+// joinErrors 合并多个错误为多行文本（与 app 包 joinErrors 语义一致，repo 内自持）
+func joinErrors(errs ...error) error {
+	var msgs []string
+	for _, e := range errs {
+		if e != nil {
+			msgs = append(msgs, e.Error())
+		}
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(msgs, "\n"))
 }
 
 // normalizeCookieHeader 允许用户粘贴完整 `Cookie: xxx` 头，并保证单行

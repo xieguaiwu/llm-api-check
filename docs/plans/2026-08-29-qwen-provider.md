@@ -13,9 +13,30 @@
 | 同一把 `sk-sp-` | `POST https://bailian-cs.console.aliyun.com/data/api.json`（配额 RPC） | HTTP 200 + 信封 `errorCode=BailianGateway.Login.NotLogined` |
 | `sk-ws-`（按量 PAYG） | `GET https://dashscope.aliyuncs.com/compatible-mode/v1/models` | 200（本 provider 不使用按量通道） |
 
-结论：**配额只有控制台会话一条路，API Key 不行**。因此 `consoleCookie` 设计成可选字段，
-缺失时只显示套餐模型清单 + 灰字提示，与既有 Zen billing 的 `workspaceId + authCookie`
-同模式。
+结论：**配额只有控制台会话一条路，API Key 不行**——但控制台会话可以由官方 Bailian CLI 代持（浏览器 OAuth 一次），不必人工抓 Cookie。
+因此 `consoleCookie` 设计成可选字段，缺失时优先走 CLI 通道，其次只显示套餐模型清单 + 灰字提示，与既有 Zen billing 的 `workspaceId + authCookie` 同模式。
+
+## 一-b、Bailian CLI 配额通道（2026-08-29 实测落地，v1.2.0）
+
+官方 Model Studio CLI（npm `bailian-cli`，bin 名 `bailian`/`bl`，≥1.16.0）提供：
+
+```sh
+bl usage token-plan --console-region cn-beijing --console-site domestic --output json
+```
+
+- 认证模式 **Console**：`bailian auth login --console` 浏览器 OAuth 一次，token 存 `~/.bailian/config.json`，之后免交互
+- API key 登录（`auth login --api-key`）**不能**解锁 token-plan（实测未登录报 `No console access token found`）
+- 实测（2026-08-29，cn-beijing 已登录）：返回 `{"per1WeekPercentage":0.418, "per1WeekResetTime":1788542460000}`——**5 小时窗口字段缺席**（官方「5 小时限额限时取消」），解析器单窗口独立判有，正好覆盖
+- 成功 JSON 与 Cookie RPC 负载字段同名同义（分数型 used 比例 + Unix 毫秒重置时间）
+
+**本机集成要点**：
+
+1. 独立 prefix 安装 `npm install -g --prefix ~/.local/share/bailian-cli bailian-cli`，只用 `bailian` 名——避免与本机自研翻译 CLI `bl`（~/.local/bin/bl）同名冲突；`exec.LookPath` 也刻意查 `bailian` 不查 `bl`
+2. 探测顺序：env `LLM_API_CHECK_BL_BIN`（显式指定且不可执行则报错，不静默 fallback）→ 独立安装位 → PATH 中的 `bailian`
+3. `LLM_API_CHECK_QWEN_CLI=off|0|false|no` 禁用 CLI 通道（main 测试默认置 off 保持 hermetic）
+4. 调用：argv 数组（非 shell）、20s 超时（exec.CommandContext）、stdout/stderr 分离（Node UNDICI 警告在 stderr，过滤后再截断 300 字符）、JSON 错误信封识别（exit 非零时信封在 stderr，实测 exit 3）
+5. 通道优先级（同 CodexBar Auto）：CLI 优先、Cookie 兜底；CLI 成功不拉 subscription（无 PlanCode），Cookie 路径保留原 subscription 逻辑
+6. CLI 会话过期 → `bailian auth login --console` 重新登录即可，无需重抓 Cookie
 
 ## 二、配额 RPC 契约
 
@@ -81,7 +102,7 @@ index.md §六 的硬性要求：**「已限流」徽章与重置倒计时并存
 
 | 区域 | 网关 | 配额主机 | action | consoleSite | commodityCode | 实跑验证 |
 |:---|:---|:---|:---|:---|:---|:---|
-| `cn-beijing`（默认） | token-plan.cn-beijing.maas | bailian-cs.console.aliyun.com | BroadScopeAspnGateway | BAILIAN_ALIYUN | sfm_tokenplansolo_public_cn | 模型清单 ✅ / 配额 ⚠️ 需用户提供 Cookie |
+| `cn-beijing`（默认） | token-plan.cn-beijing.maas | bailian-cs.console.aliyun.com | BroadScopeAspnGateway | BAILIAN_ALIYUN | sfm_tokenplansolo_public_cn | 模型清单 ✅ / 配额 ✅（Bailian CLI 已登录实测 2026-08-29） |
 | `ap-southeast-1` | token-plan.ap-southeast-1.maas | cs-data.qwencloud.com | IntlBroadScopeAspnGateway | QWENCLOUD | sfm_tokenplansolo_public_intl | ❌ 本机无国际凭据，未实跑 |
 
 国际路径代码按公开契约实现（端点/常量集中于 `QwenEndpointsFor`），但**未做真实
@@ -106,7 +127,7 @@ llm-api-check accounts add --type qwen --name X --api-key sk-sp-... \
 
 ## 六、验证记录
 
-- 单元测试：`go test ./... -race` 7 包全绿；fixture 为 6 个 `qwen_*.json`。
-- 真实冒烟（API Key 通道）：`llm-api-check qwen` → `模型 12 个：deepseek-v4-flash-0731, …`。
-- 配额通道：契约经未登录请求实测确认（回 NotLogined），有 Cookie 的端到端跑通
-  **待用户提供控制台 Cookie**。
+- 单元测试：`go test ./... -race` 7 包全绿；fixture 为 6 个 `qwen_*.json`；CLI 通道 10 个用例（TestHelperProcess 模式，无真实 CLI 依赖），含 CLI 优先/Cookie 兜底/参数校验/噪音过滤/探测逻辑
+- 真实冒烟（API Key 通道）：`llm-api-check qwen` → `模型 12 个：deepseek-v4-flash-0731, …`
+- **真实冒烟（CLI 通道，2026-08-29 完成）**：`bailian auth login --console` 浏览器登录后，`llm-api-check qwen` → `7天 [████░░░░░░] 41% · 155小时32分后重置`，exit 0
+- 配额通道演进史：未登录 API Key 实测回 NotLogined → CLI 未登录回 `No console access token found` → 登录后返回真实窗口

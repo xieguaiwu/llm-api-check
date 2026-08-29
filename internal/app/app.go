@@ -31,12 +31,14 @@ type AccountResult struct {
 }
 
 // QwenResult 单个 Qwen 账号的刷新结果（对应 QwenUi）。
-// Plan 走 API Key（模型清单）；Usage 走控制台 Cookie（配额窗口），未配 Cookie 时为 nil。
+// Plan 走 API Key（模型清单）；Usage 走 Bailian CLI 或控制台 Cookie（配额窗口）。
 type QwenResult struct {
 	Account models.QwenAccount `json:"account"`
 	Plan    *models.QwenPlan   `json:"plan,omitempty"`
 	Usage   *models.QwenUsage  `json:"usage,omitempty"`
 	Error   string             `json:"error,omitempty"`
+	// CLIEnabled 本机是否探测到 Bailian CLI（渲染层区分“暂无数据”与“未配置凭据”）
+	CLIEnabled bool `json:"-"`
 }
 
 // Result 全量刷新结果
@@ -221,14 +223,14 @@ func (a *App) RefreshQwen(id string) (QwenResult, error) {
 	return a.refreshQwen(acc), nil
 }
 
-// refreshQwen 刷模型清单（API Key）+ 配额窗口（配了 Cookie 才拉），错误合并。
+// refreshQwen 刷模型清单（API Key）+ 配额窗口（Bailian CLI 或 Cookie 任一可用时拉取），错误合并。
 func (a *App) refreshQwen(acc models.QwenAccount) QwenResult {
-	res := QwenResult{Account: acc}
+	res := QwenResult{Account: acc, CLIEnabled: a.Repos.Qwen.CLIEnabled()}
 	plan, planErr := a.Repos.Qwen.Plan(acc)
 	if planErr == nil {
 		res.Plan = &plan
 	}
-	if acc.HasCookie() {
+	if acc.HasCookie() || a.Repos.Qwen.CLIEnabled() {
 		usage, usageErr := a.Repos.Qwen.Usage(acc)
 		if usageErr == nil {
 			res.Usage = &usage
