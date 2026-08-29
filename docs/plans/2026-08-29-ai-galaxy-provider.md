@@ -137,3 +137,23 @@ llm-api-check status                         # 总览含智星云卡片
 - Go：`gofmt` 零差异 / `go vet` / `go test ./... -race` / 四平台交叉编译 / 真机冒烟（真实 AK/SK）
 - Android：`./gradlew :app:testDebugUnitTest` 全绿 + `assembleDebug`
 - 凭据只进 `~/.config/llm-api-check/config.json`（0600、gitignored），**绝不写进仓库、README、plan 文档**
+
+## 六、双实现对照审查与修复（2026-08-29，oracle/momus 并行双审）
+
+oracle 对 Go/Kotlin 双侧做逐项等价性验证（含 kotlinx 1.7.3 字节码反汇编），
+结论：**真实快照形态下两侧输出一致**；差异全部在防御路径（平台返回非契约形态时）。
+已修复：
+
+| # | 分叉点 | 修复 |
+|---|---|---|
+| 1 | Go `rawInt` 只认数字、Kotlin 认数字字符串 → `Status:"1"` 时 Go 显示已结束 | Go rawInt 加字符串宽容（顺带修 DeepSeek code:"40003" 漏判） |
+| 2 | Kotlin `booleanOrNull` 认 `"false"` 字符串 → `has_more:"false"` 继续翻页 | Kotlin galaxyRawBool/信封 success 只认 JSON 布尔 |
+| 3 | `Money:null`：Go 静默 0 成功 vs Kotlin 报错 | Go 显式报错（缺失或 null 同判） |
+| 4 | `list:null`：Go 空列表成功 vs Kotlin 抛异常 | Go 显式报错 |
+| 5 | `code:2000.5`：Go 截断判成功 | Go 只认整数值 |
+| 6 | `Cost()` 三次取时钟，跨午夜口径不稳 | 循环外取一次 |
+
+momus Android 侧 P2×10 已修复 7 项（toString 打码、错误消息不携 body、稳定
+LazyColumn key、乱序签名向量、sorted() ASCII 前提注释、GalaxyCard 错误可见/
+磁盘保留 0 不占位、详情页无活跃实例空态）；P2-7（函数组织）与 P2-9（Keystore
+明文兜底，既有设计）按现状保留并记录。
