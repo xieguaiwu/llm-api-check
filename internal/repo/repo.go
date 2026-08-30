@@ -315,6 +315,19 @@ func NewQwenRepo() *QwenRepo {
 // CLIEnabled CLI 配额通道是否可用（app 层据此决定是否尝试拉配额）
 func (r *QwenRepo) CLIEnabled() bool { return r.CLI != nil }
 
+// CLILoginCmd 给用户看的登录命令（含完整可执行路径）。
+// 探测到 CLI → 探测到的路径；未探测到 → 文档默认安装位（避开了裸 `bailian`
+// 在默认独立 prefix 安装下不在 PATH、照做会 command not found 的问题）。
+func (r *QwenRepo) CLILoginCmd() string {
+	if r.CLI != nil {
+		return r.CLI.loginBin() + " auth login --console"
+	}
+	return QwenCLIDefaultLoginCmd()
+}
+
+// CLIInstallCmd 未探测到 CLI 时应展示的安装命令。
+func (r *QwenRepo) CLIInstallCmd() string { return QwenCLIInstallCmd }
+
 func (r *QwenRepo) client() *http.Client {
 	if r.Client != nil {
 		return r.Client

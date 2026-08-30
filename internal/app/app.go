@@ -4,6 +4,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,10 @@ type QwenResult struct {
 	Error   string              `json:"error,omitempty"`
 	// CLIEnabled 本机是否探测到 Bailian CLI（渲染层区分“暂无数据”与“未配置凭据”）
 	CLIEnabled bool `json:"-"`
+	// CLILoginCmd / CLIInstallCmd 可直接粘贴的登录与安装命令（含真实路径，
+	// 不用裸 bailian——默认独立 prefix 安装不在 PATH）
+	CLILoginCmd   string `json:"-"`
+	CLIInstallCmd string `json:"-"`
 }
 
 // GalaxyResult 单个智星云账号的刷新结果（对应 GalaxyUi）。
@@ -277,7 +282,8 @@ func (a *App) RefreshQwenStats(id string) (QwenResult, error) {
 		return QwenResult{}, errors.New("账号不存在或已被删除")
 	}
 	if !a.Repos.Qwen.CLIEnabled() {
-		return QwenResult{}, errors.New("用量分析需要 Bailian CLI（运行 bailian auth login --console 登录后重试）")
+		return QwenResult{}, fmt.Errorf("用量分析需要 Bailian CLI：本机未探测到。安装：%s；登录：%s",
+			a.Repos.Qwen.CLIInstallCmd(), a.Repos.Qwen.CLILoginCmd())
 	}
 	s, err := a.Repos.Qwen.CLI.Summary(acc)
 	if err != nil {
@@ -288,7 +294,11 @@ func (a *App) RefreshQwenStats(id string) (QwenResult, error) {
 
 // RefreshQwen 刷模型清单（API Key）+ 配额窗口（Bailian CLI 或 Cookie 任一可用时拉取），错误合并。
 func (a *App) refreshQwen(acc models.QwenAccount) QwenResult {
-	res := QwenResult{Account: acc, CLIEnabled: a.Repos.Qwen.CLIEnabled()}
+	res := QwenResult{Account: acc,
+		CLIEnabled:    a.Repos.Qwen.CLIEnabled(),
+		CLILoginCmd:   a.Repos.Qwen.CLILoginCmd(),
+		CLIInstallCmd: a.Repos.Qwen.CLIInstallCmd(),
+	}
 	plan, planErr := a.Repos.Qwen.Plan(acc)
 	if planErr == nil {
 		res.Plan = &plan

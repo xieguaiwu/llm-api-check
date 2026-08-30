@@ -450,3 +450,32 @@ func TestQwenNoRefreshStillReportsCLIEnabled(t *testing.T) {
 		t.Errorf("应显示配额暂无数据: %s", out)
 	}
 }
+
+// ③ 未装 Bailian CLI 时，详情/用量分析都要给出可粘贴的安装 + 登录命令
+// （默认独立 prefix 安装下裸 bailian 不在 PATH，旧文案照做必然 command not found）。
+func TestQwenNoCLIShowsInstallGuidance(t *testing.T) {
+	withConfigDir(t)
+	if code, _, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen", "--name", "订阅号",
+		"--api-key", "sk-sp-nocli1234567890", "--region", "cn-beijing"); code != 0 {
+		t.Fatalf("add exit=%d err=%q", code, errOut)
+	}
+	// runCLI 默认 LLM_API_CHECK_QWEN_CLI=off → 等效「本机未探测到 CLI」
+	code, out, errOut := runCLI(t, "", "qwen", "订阅号", "--no-refresh")
+	if code != 0 {
+		t.Fatalf("--no-refresh exit=%d out=%s err=%s", code, out, errOut)
+	}
+	for _, want := range []string{"需控制台 Cookie 或 Bailian CLI", "安装：npm install -g --prefix ~/.local/share/bailian-cli", "auth login --console"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("详情缺少 %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "bl auth") || strings.Contains(errOut, "bl auth") {
+		t.Errorf("禁止出现裸 bl 指令: out=%s err=%s", out, errOut)
+	}
+
+	// --stats 同样要指出未探测到并给安装命令
+	_, out, errOut = runCLI(t, "", "qwen", "订阅号", "--stats")
+	if !strings.Contains(out, "未探测到") || !strings.Contains(out, "--prefix ~/.local/share/bailian-cli") {
+		t.Errorf("--stats 缺 CLI 时文案应含安装指引:\n%s\n%s", out, errOut)
+	}
+}

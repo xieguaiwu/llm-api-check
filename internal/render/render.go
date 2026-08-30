@@ -806,6 +806,14 @@ func usagePlanCode(r app.QwenResult) string {
 
 // ── Qwen 账号详情（对应 DetailScreen 的 Qwen 页） ──────────────
 
+// qwenLoginCmd 登录命令：用 app 层传入的完整命令（含真实路径），无则退为裸名（仍不用 bl）。
+func qwenLoginCmd(r app.QwenResult) string {
+	if s := strings.TrimSpace(r.CLILoginCmd); s != "" {
+		return s
+	}
+	return "bailian auth login --console"
+}
+
 // RenderQwenDetail Qwen 账号详情：套餐/模型 + 5小时/7天 配额窗口。
 // 窗口行尾同 OpenCode：重置倒计时恒显，配额用尽时「已限流」徽章与倒计时并存
 // （限流时限直接可见，见 ~/prompt_boilerplates/Coding/index.md §六）。
@@ -827,7 +835,13 @@ func RenderQwenDetail(r app.QwenResult, now time.Time, c Colorizer) string {
 		if r.Account.HasCookie() || r.CLIEnabled {
 			b.WriteString(c.Gray("  配额窗口       暂无数据") + "\n")
 		} else {
-			b.WriteString(c.Gray("  配额窗口       需控制台 Cookie 或 Bailian CLI（bailian auth login --console）") + "\n")
+			// 未探测到 CLI：不能只说「运行 bailian auth login --console」——
+			// 默认独立 prefix 安装下 bailian 不在 PATH，照做会 command not found
+			b.WriteString(c.Gray("  配额窗口       需控制台 Cookie 或 Bailian CLI") + "\n")
+			if inst := strings.TrimSpace(r.CLIInstallCmd); inst != "" {
+				b.WriteString(c.Gray("               安装："+inst) + "\n")
+			}
+			b.WriteString(c.Gray("               登录："+qwenLoginCmd(r)) + "\n")
 		}
 	} else {
 		for _, w := range qwenWindows(r.Usage) {

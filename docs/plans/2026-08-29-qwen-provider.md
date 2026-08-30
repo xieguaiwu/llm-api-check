@@ -47,14 +47,17 @@ bailian usage token-plan --console-region cn-beijing --console-site domestic --o
 
 | 信封内容 | 用户可见文案 |
 |:---|:---|
-| 会话类（`not logged in` / `notlogin` / `no console access token` / `has expired` / `session expired` / `login required` / `unauthorized` / `not authorised`） | `Bailian CLI 未登录或会话已过期（会话通常数小时失效）：运行 <真实 bin 路径> auth login --console 在浏览器中重新登录后重试` |
+| 会话类（`not logged in` / `notlogin` / `needlogin` / `no console access token` / `has expired` / `session expired` / `login required`） | `Bailian CLI 未登录或会话已过期（会话通常数小时失效）：运行 <真实 bin 路径> auth login --console 在浏览器中重新登录后重试` |
 | 其他信封错误（如 `BailianGateway.Workspace.NotAuthorised`） | `Bailian CLI 返回错误: <原文（含 hint）>` —— 不谎报成「登录一下就好」 |
 | 无信封、exit 非零 | `Bailian CLI 调用失败: <err>（<stderr 尾部，已洗 Node 噪音>）` |
 
-- `qwenCLIRewriteBin`：把上游文本里的 `bl <子命令>` 改写为探测到的 bin 路径（只读降级为 `bailian`，**绝不降级为 `bl`**）；正则要求后接已知子命令，所以 `unable`/`bailian`/含 `$` 的路径都不会误伤或弄坏
+关键字集合刻意**不含** `unauthorized` / `not authorised` / `not authorized`：权限类错误误归为会话失效会让用户白跑一轮浏览器登录（与本次要消除的误诊同型）。`BailianGateway.Login.NeedLogin` 则必须包含（cookie 路径已文档化的登录码）。
+
+- 信封**两条流都查**（`qwenCLIEnvelopeOf`）：实测成功在 stdout、失败信封在 stderr（exit 3），但旧实现每边只查一条流——上游改版把失败信封揢到 stdout 就退化成 `exit status 1`，挪到 stderr + exit 0 就退化成「JSON 解析失败: unexpected end of JSON input」（两种退化均已由测试锁定）
+- `qwenCLIRewriteBin`：把上游文本里的 `bl <子命令>` 改写为探测到的 bin 路径（无 bin 时降级为 `bailian`，**绝不降级为 `bl`**）；正则要求后接已知子命令，所以 `unable`/`bailian`/含 `$` 的路径都不会误伤或弄坏
 - 会话类分档丢弃英文原文（处置动作唯一）；其他错误保留，便于上游改版时诊断
-- 反向验证已做：去掉 `qwenCLIRewriteBin` / 去掉 `qwenCLISessionExpired` / `--no-refresh` 不回填 `CLIEnabled`，对应测试均 FAIL
-- 同时修：`qwen --no-refresh` 不回填 `CLIEnabled`，导致装了 CLI 仍显示「需控制台 Cookie 或 Bailian CLI」（把用户推向不必要的 Cookie 拓取）
+- **未装 CLI 不得给出照做必失败的命令**（momus P2-③）：默认独立 prefix 安装下 `bailian` **不在 PATH**，所以 `CLILoginCmd` 一律带完整路径，详情页第 838-845 行在未探测到时多打两行（`安装：npm install -g --prefix ~/.local/share/bailian-cli bailian-cli` + `登录：/home/.../bailian auth login --console`），`--stats` 错误文案同口径
+- 测试：222 个用例（含子测试）7 包 `-race` 全绿；**反向验证 5 做**——加回 `not authorized`（误判测例 FAIL）/ 去掉 `needlogin`（FAIL）/ 去掉双流信封检查（两形态均 FAIL）/ 丢弃 `CLILoginCmd` 传递（FAIL）/ 不打印安装行（render + main 均 FAIL）；另 `--no-refresh` 不回填 `CLIEnabled` 亦 FAIL
 
 ## 二、配额 RPC 契约
 

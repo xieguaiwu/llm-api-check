@@ -99,6 +99,8 @@ Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证�
 
 - `bailian auth status` 只读 `~/.bailian/config.json` 里存了什么，token 已失效也照样报存在。判活要看 `bailian usage token-plan` 能不能出数据。
 - 官方 CLI 自带提示写的是 `bl auth login --console`。若本机 `bl` 是别的程序，请用上面的完整路径。本工具不调 `bl`，并把上游文案里的 `bl` 改写为真实路径。
+- 若本机没装 CLI，详情页会同时打印安装命令和带默认绝对路径的登录命令。按上面 `--prefix` 方式安装后，裸名 `bailian` 不在 `PATH` 里——请复制打印出来的路径。
+
 - 不想装 CLI？改用控制台 Cookie（`accounts add --type qwen --console-cookie …`）。Cookie 同样会过期，且 CLI 可用时优先走 CLI。
 
 ## 数据来源

@@ -94,6 +94,18 @@ func TestQwenCLIHelperProcess(t *testing.T) {
 	case "gateway-error":
 		// 非会话类错误：不得误报成「重新登录就好」，但 `bl` 仍须改写
 		os.Stdout.WriteString(`{"error":{"code":5,"message":"BailianGateway.Workspace.NotAuthorised","hint":"Run bl auth login --console."}}`)
+	case "stdout-envelope-nonzero":
+		// 改版形状：失败信封改到 stdout、仍 exit 非零（旧实现会退化成 exit status）
+		os.Stdout.WriteString(`{"error":{"code":3,"message":"Console session is not logged in or has expired."}}`)
+		os.Exit(1)
+	case "stderr-envelope-zero":
+		// 改版形状：失败信封在 stderr、exit 0（旧实现会拿到空 stdout 去解析）
+		os.Stderr.WriteString("(node:1) [UNDICI-EHPA] Warning: experimental\n")
+		os.Stderr.WriteString(`{"error":{"code":3,"message":"No console access token found."}}` + "\n")
+	case "ok-with-stderr-noise":
+		// 成功路径：stderr 有非信封警告不得误判为错误
+		os.Stderr.WriteString("bailian: deprecated flag --foo\n")
+		os.Stdout.WriteString(`{"per1WeekPercentage":0.3,"per1WeekResetTime":1791000000000}`)
 	case "stderr-exit1":
 		os.Stderr.WriteString("bailian: unknown command\n")
 		os.Exit(1)
@@ -221,6 +233,7 @@ func TestQwenCLISessionExpiredClassifies(t *testing.T) {
 		"Console session is not logged in or has expired.",
 		"No console access token found.",
 		"BailianGateway.Login.NotLogined（Run `bl auth login --console`）",
+		"BailianGateway.Login.NeedLogin",
 		"token has expired",
 	}
 	for _, s := range hit {
@@ -228,8 +241,10 @@ func TestQwenCLISessionExpiredClassifies(t *testing.T) {
 			t.Errorf("应归为会话失效: %q", s)
 		}
 	}
+	// 权限/参数/网络类错误不得归为会话失效（否则让用户白跑一轮重新登录）
 	miss := []string{
 		"BailianGateway.Workspace.NotAuthorised",
+		"You are not authorized to access this workspace",
 		"page_size 参数超限!",
 		"upstream timeout",
 	}
@@ -237,6 +252,46 @@ func TestQwenCLISessionExpiredClassifies(t *testing.T) {
 		if qwenCLISessionExpired(s) {
 			t.Errorf("不应归为会话失效: %q", s)
 		}
+	}
+}
+
+// 信封在两条流上的四种组合都要能识别（防上游改版把失败信封捐走）。
+func TestQwenCLIEnvelopeOnBothStreams(t *testing.T) {
+	for _, mode := range []string{"stdout-envelope-nonzero", "stderr-envelope-zero"} {
+		_, err := helperCLI(t, mode).Usage(models.QwenAccount{Region: "cn-beijing"})
+		if err == nil {
+			t.Fatalf("%s 应报错", mode)
+		}
+		if !strings.Contains(err.Error(), "未登录或会话已过期") {
+			t.Errorf("%s 应归为会话失效文案: %v", mode, err)
+		}
+	}
+	// 反向：成功输出 + stderr 有噪声 不得被判为错误
+	u, err := helperCLI(t, "ok-with-stderr-noise").Usage(models.QwenAccount{Region: "cn-beijing"})
+	if err != nil {
+		t.Fatalf("不应误判为错误: %v", err)
+	}
+	if u.Weekly == nil || u.Weekly.Percent != 30 {
+		t.Errorf("应正常解析窗口: %+v", u)
+	}
+}
+
+// ③ 登录/安装命令必须含真实路径（默认独立 prefix 安装下裸 bailian 不在 PATH）。
+func TestQwenRepoCLILoginAndInstallCmd(t *testing.T) {
+	detected := (&QwenRepo{CLI: &QwenCLI{BinPath: "/opt/bailian"}}).CLILoginCmd()
+	if detected != "/opt/bailian auth login --console" {
+		t.Errorf("探测到 CLI 应用其路径: %q", detected)
+	}
+	notDetected := (&QwenRepo{}).CLILoginCmd()
+	if !strings.HasSuffix(notDetected, " auth login --console") ||
+		!strings.Contains(notDetected, "/.local/share/bailian-cli/bin/bailian") {
+		t.Errorf("未探测到时应给默认安装位全路径: %q", notDetected)
+	}
+	if strings.HasPrefix(notDetected, "bailian ") {
+		t.Errorf("不得退为裸名 bailian: %q", notDetected)
+	}
+	if got := (&QwenRepo{}).CLIInstallCmd(); !strings.Contains(got, "--prefix ~/.local/share/bailian-cli") {
+		t.Errorf("安装命令应与探测路径一致: %q", got)
 	}
 }
 

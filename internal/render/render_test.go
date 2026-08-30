@@ -326,6 +326,35 @@ func TestRenderQwenDetailNoCookie(t *testing.T) {
 	if strings.Contains(got, "套餐") {
 		t.Errorf("无档位信息时不应出现套餐行:\n%s", got)
 	}
+	// 未探测到 CLI（app 层不填命令）：仍给可粘贴的安装/登录两行，不得出现裸 bl
+	if !strings.Contains(got, "bailian auth login --console") {
+		t.Errorf("登录行缺失或路径不对:\n%s", got)
+	}
+	if strings.Contains(got, "bl auth") {
+		t.Errorf("禁止出现裸 bl 指令:\n%s", got)
+	}
+}
+
+// ③ 未装 CLI 时不得让用户去跑一个不在 PATH 的裸 `bailian`：
+// 应把安装命令与默认安装位的登录命令一起给出。
+func TestRenderQwenDetailNoCLIShowsInstallCmd(t *testing.T) {
+	r := qwenResult()
+	r.Account.ConsoleCookie = ""
+	r.Usage = nil
+	r.CLIEnabled = false
+	r.CLILoginCmd = "/home/u/.local/share/bailian-cli/bin/bailian auth login --console"
+	r.CLIInstallCmd = "npm install -g --prefix ~/.local/share/bailian-cli bailian-cli"
+	got := RenderQwenDetail(r, baseTime(), Colorizer{Disabled: true})
+	if !strings.Contains(got, "安装：") || !strings.Contains(got, "--prefix ~/.local/share/bailian-cli") {
+		t.Errorf("未探测到 CLI 应给安装命令:\n%s", got)
+	}
+	want := "/home/u/.local/share/bailian-cli/bin/bailian auth login --console"
+	if !strings.Contains(got, want) {
+		t.Errorf("登录行应含 app 层传入的真实路径 %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "需控制台 Cookie 或 Bailian CLI（") {
+		t.Errorf("旧单行括号文案已拆成多行:\n%s", got)
+	}
 }
 
 func TestRenderOverviewQwen(t *testing.T) {

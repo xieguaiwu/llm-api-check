@@ -99,6 +99,8 @@ Notes:
 
 - `bailian auth status` only prints what is stored in `~/.bailian/config.json`. It reports a token even when that token is dead. Trust `bailian usage token-plan` output instead.
 - Upstream CLI messages say `bl auth login --console`. If another program owns the name `bl` on your machine, run the full path above. This tool never calls `bl` and rewrites that word in upstream messages.
+- If the CLI is missing, the detail view prints both the install command and a login command with the default absolute path. The bare name `bailian` is not on your `PATH` after the documented `--prefix` install, so copy the printed path.
+
 - Prefer no CLI? Configure a console cookie instead (`accounts add --type qwen --console-cookie …`). The cookie expires too, and the CLI takes precedence while it works.
 
 ## Data sources

@@ -33,6 +33,18 @@ const (
 // defaultQwenCLIPath 本机 npm 独立安装位（--prefix 安装，避免与用户自研 bl 同名冲突）。
 var defaultQwenCLIPath = filepath.Join(os.Getenv("HOME"), ".local", "share", "bailian-cli", "bin", "bailian")
 
+// QwenCLIInstallCmd 默认安装命令（README/错误文案共用，路径与探测位一致）。
+const QwenCLIInstallCmd = "npm install -g --prefix ~/.local/share/bailian-cli bailian-cli"
+
+// QwenCLIDefaultLoginCmd 未探测到 CLI 时的登录命令（文档默认安装位）。
+// HOME 不可用时退为裸名 bailian（仍绝不退 bl）。
+func QwenCLIDefaultLoginCmd() string {
+	if defaultQwenCLIPath != "" {
+		return defaultQwenCLIPath + " auth login --console"
+	}
+	return "bailian auth login --console"
+}
+
 // QwenCLI 官方 Bailian CLI 的配额通道。
 type QwenCLI struct {
 	// BinPath 可执行文件路径（空串表示未探测到）
@@ -146,8 +158,9 @@ func (c *QwenCLI) runJSON(args ...string) (string, error) {
 	if err := cmd.Run(); err != nil {
 		// stderr 尾部（截断防膨胀；过滤 Node 的 UNDICI/experimental 警告噪音）
 		tail := qwenCLIStderrTail(stderr.String())
-		// exit 非零时 CLI 可能把 JSON 错误信封打到 stderr（实测 exit 3 即如此）
-		if envErr := qwenCLIErrorEnvelope(tail, c.BinPath); envErr != "" {
+		// 两条流都查信封：实测成功在 stdout、失败信封在 stderr（exit 3），
+		// 但上游改版只揢一边就会退化成无用的「exit status N」。
+		if envErr := qwenCLIEnvelopeOf(tail, stdout.String(), c.BinPath); envErr != "" {
 			return "", c.envelopeError(envErr)
 		}
 		tail = qwenCLIRewriteBin(tail, c.BinPath)
@@ -157,10 +170,19 @@ func (c *QwenCLI) runJSON(args ...string) (string, error) {
 		return "", fmt.Errorf("Bailian CLI 调用失败: %v（%s）", err, tail)
 	}
 	raw := strings.TrimSpace(stdout.String())
-	if envErr := qwenCLIErrorEnvelope(raw, c.BinPath); envErr != "" {
+	if envErr := qwenCLIEnvelopeOf(raw, stderr.String(), c.BinPath); envErr != "" {
 		return "", c.envelopeError(envErr)
 	}
 	return raw, nil
+}
+
+// qwenCLIEnvelopeOf 按优先级从两条流里找错误信封（先 primary，再 secondary）。
+// 未命中返回空串。
+func qwenCLIEnvelopeOf(primary, secondary, bin string) string {
+	if env := qwenCLIErrorEnvelope(strings.TrimSpace(primary), bin); env != "" {
+		return env
+	}
+	return qwenCLIErrorEnvelope(qwenCLIStderrTail(secondary), bin)
 }
 
 // envelopeError 把 CLI 错误信封转成用户可见错误。
@@ -188,11 +210,15 @@ func (c *QwenCLI) loginBin() string {
 // 实测文案："Console session is not logged in or has expired."（exit 3）
 //
 //	"No console access token found."（exit 0 信封）
+//
+// 关键字只覆盖「登录/会话」语义，刻意不含 authorised/authorized 类权限码：
+// BailianGateway.Workspace.NotAuthorised 是工作区权限问题，误归为会话失效
+// 会让用户白跑一轮重新登录（与本次修复要消除的误诊同型）。
 func qwenCLISessionExpired(detail string) bool {
 	d := strings.ToLower(detail)
 	for _, s := range []string{
-		"not logged in", "notlogin", "no console access token", "has expired",
-		"session expired", "login required", "unauthorized", "not authorised", "not authorized",
+		"not logged in", "notlogin", "needlogin", "no console access token",
+		"has expired", "session expired", "login required",
 	} {
 		if strings.Contains(d, s) {
 			return true

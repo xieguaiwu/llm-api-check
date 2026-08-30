@@ -1,5 +1,14 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-08-30 15:0x）
+- **momus 审查轮收尾：3 个 P2 全修（审查结论本身是「通过、无阻塞」）**
+  - ① 会话关键字集合收窄：删 `unauthorized` / `not authorised` / `not authorized`（权限类错误误归会话失效 = 让用户白跑一轮浏览器登录），补 `needlogin`（`BailianGateway.Login.NeedLogin` 是 cookie 路径已文档化的登录码，旧集合漏它）
+  - ② `runJSON` 信封改为**两条流都查**（新增 `qwenCLIEnvelopeOf`）：旧实现 exit≠0 只看 stderr、exit 0 只看 stdout，上游改版捐走信封就退化成 `exit status 1` / 「JSON 解析失败: unexpected end of JSON input」（两种退化均有测例锁定）；同时验证「成功输出 + stderr 有非信封噪声」不得误判为错误
+  - ③ 未装 CLI 不再给照做必失败的命令：默认独立 prefix 安装下 `bailian` **不在 PATH**。新增 `QwenRepo.CLILoginCmd()`（探测到→真实路径；未探测→`~/.local/share/bailian-cli/bin/bailian …`）+ `CLIInstallCmd()`，`QwenResult` 多两个 `json:"-"` 字段（`CLILoginCmd`/`CLIInstallCmd`，不过 `publicQwenResult`，`--json` 不泄），详情页未探测到时多打安装+登录两行，`--stats` 错误文案同口径
+  - 质量门：gofmt 0 / vet 0 / 7 包 `-race` 全绿 / 用例 218 → 222；**反向验证 5 做**（加回 `not authorized`、去掉 `needlogin`、去掉双流信封、丢弃 `CLILoginCmd` 传递、不打印安装行——各自对应测例均 FAIL）；新二进制已装 `~/.local/bin`，真机三路径冒烟通过（配额有效 / `LLM_API_CHECK_QWEN_CLI=off` 两行指引 / `--stats` 未探测文案）
+  - 文档：plan §一-b.1 重写（关键字集合理由 + 双流 + 安装指引）、README/README_zh 常见问题各补一条
+  - ⚠️ 未做（非阻塞）：`qwenCLIStderrTail` 的 `tail[len(tail)-300:]` 仍是**字节截断**（上游若打中文错误可能切出乱码；同型问题在 `parsers.go` 的 `redactURL`/`truncateBody` 也存在）——下一位动这块时可改成 rune 安全并补测
+
 ## 最后一次完成的工作（2026-08-30 14:35）
 - **修复「qwen 额度看不到但提示没用」（会话失效文案缺陷）**
   - 复现根因（实测，非推断）：`~/.bailian/config.json` 控制台会话于 08-29 13:58 写入，08-30 已过期 → `bailian usage token-plan` 回 exit 3 + 信封 `Console session is not logged in or has expired.`，hint 写 **`Run \`bl auth login --console\``**
@@ -50,7 +59,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - [ ] **国际区域（ap-southeast-1）无凭据、未实跑**：代码按公开契约实现（`QwenEndpointsFor` + CLI `--console-site international`，CLI 通道单测覆盖了 intl 参数）；启用前先验证 `/tool/user/info.json` 的 sec_token 字段名
 - [ ] **DeepSeek 平台 token / workspace ID + auth cookie 未配置**（config.fish 无）：DeepSeek 消费明细与 Zen billing 不可用。平台 token 需浏览器登录 platform.deepseek.com 后从 DevTools 抓；Zen 需 opencode.ai 的 workspace ID + auth cookie（`Fe26.2` 开头）
 - [ ] songjieshi/xieguaiwu 的 key 来自 config.fish 注释行（非当前生效），可能已过期（xieguaiwu 实测 M 100% 已限流属正常用量而非 key 失效）
-- [ ] P3 未修（非阻塞）：NewID panic 改返回错误、writeJSON stderr 注入、promptTTY bufio.Reader 复用、`--json --version` 文本输出；Qwen 额度绝对值（quota-config 接口的 `five_hour`/`weekly` credits）未接入，现只显示百分比（CodexBar 已接 quota-config，可参考）
+- [x] ~~P3 未修（非阻塞）：NewID panic 改返回错误、writeJSON stderr 注入、promptTTY bufio.Reader 复用、`--json --version` 文本输出~~ 仍未修（本轮只做了 momus 的 3 个 P2）；Qwen 额度绝对值（quota-config 接口的 `five_hour`/`weekly` credits）未接入，现只显示百分比（CodexBar 已接 quota-config，可参考）
 - [ ] Zen billing 解析依赖 opencode.ai 页面结构，改版需更新 `internal/parsers/parsers.go` 的 ParseZenBilling；Qwen 同理依赖百炼控制台 RPC（信封形状变化时改 `qwenFindObject` 目标键）或 bailian-cli 输出（字段变化时改 `qwenCLIErrorEnvelope`/`ParseQwenUsage`）
 - [ ] **发版 v1.3.0**（可选）：`VERSION=1.3.0 scripts/build-dist.sh` → tag v1.3.0 → Release（含 galaxy provider 与 moveFlags 修复说明；GitHub Release 仍停在 v1.1.0，v1.2.0 也未发）
 - [ ] **智星云可选增强**（未做，需要时再加）：`billing/get_instance_cost_summary` 单实例费用分解、`instance/get_instance_detail` 深看、`/store/*` 显卡价格与库存、自动续费开关状态细化、余额低于阈值告警（可接 belater 定时跑 `galaxy --json`）
