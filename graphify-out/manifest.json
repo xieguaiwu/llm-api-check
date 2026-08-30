@@ -5,8 +5,8 @@
     "semantic_hash": ""
   },
   "internal/app/app.go": {
-    "mtime": 1787999172.211017,
-    "ast_hash": "74dbd446374fa1fdf2737c2499f3bca0",
+    "mtime": 1788074027.3912587,
+    "ast_hash": "0c29562370c00434ded4f741da9f8480",
     "semantic_hash": ""
   },
   "internal/app/app_test.go": {
@@ -45,28 +45,28 @@
     "semantic_hash": ""
   },
   "internal/render/render.go": {
-    "mtime": 1787999428.9840562,
-    "ast_hash": "8c55a7fa22db55aa1ce498853cc67fe3",
+    "mtime": 1788074382.2532008,
+    "ast_hash": "8567a3739441576a9584f8b152d4ca9d",
     "semantic_hash": ""
   },
   "internal/render/render_test.go": {
-    "mtime": 1787999246.262794,
-    "ast_hash": "5b73a8131d3a4e2f6dc5fe207c30c9b8",
+    "mtime": 1788074201.7209208,
+    "ast_hash": "c8191e6cbc6aadf32bb0ace251fcf90d",
     "semantic_hash": ""
   },
   "internal/repo/qwen_cli.go": {
-    "mtime": 1788071183.3477638,
-    "ast_hash": "c7a30d781906886268f2996fea4a34ed",
+    "mtime": 1788074276.6826353,
+    "ast_hash": "b34338104bef802a533f99556893c229",
     "semantic_hash": ""
   },
   "internal/repo/qwen_cli_test.go": {
-    "mtime": 1788070957.0877037,
-    "ast_hash": "e7a5f4eacf9590f58e166363bcecab4f",
+    "mtime": 1788074090.4378152,
+    "ast_hash": "a9cf3a59005a388e8e79521642c5fd0f",
     "semantic_hash": ""
   },
   "internal/repo/repo.go": {
-    "mtime": 1787982172.5082319,
-    "ast_hash": "b92e36ef34ebc9206f4de84718ba4f0c",
+    "mtime": 1788073785.055111,
+    "ast_hash": "78265357b1fd2e582c976a0a41277f5b",
     "semantic_hash": ""
   },
   "internal/repo/repo_test.go": {
@@ -75,13 +75,13 @@
     "semantic_hash": ""
   },
   "main.go": {
-    "mtime": 1788071184.0215313,
-    "ast_hash": "dadfe255befab399c136eaf8507de5ad",
+    "mtime": 1788074027.3937862,
+    "ast_hash": "53f22e80650c2378525a65df272275a0",
     "semantic_hash": ""
   },
   "main_test.go": {
-    "mtime": 1788071072.7102685,
-    "ast_hash": "bf64b3dc549388a368ea5b668fcc7e32",
+    "mtime": 1788074248.0002058,
+    "ast_hash": "862f86f213f5af55894ca7eb9165830e",
     "semantic_hash": ""
   },
   "scripts/build-dist.sh": {
@@ -155,18 +155,18 @@
     "semantic_hash": ""
   },
   "CONTEXT_FOR_NEXT_AGENT.md": {
-    "mtime": 1788071475.8013709,
-    "ast_hash": "badfb175935bb6b55f97c8e2d4075c8e",
+    "mtime": 1788074466.9731762,
+    "ast_hash": "d4471712a3a854e4729eb3d7d8893172",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1788071363.3431914,
-    "ast_hash": "045e1ce6743bd4957f6db49cad3b1108",
+    "mtime": 1788074456.84737,
+    "ast_hash": "2252e7e181a8f11e1ed8d78d135e159a",
     "semantic_hash": ""
   },
   "README_zh.md": {
-    "mtime": 1788071369.9052582,
-    "ast_hash": "a999627fad5aa80f1d5984b760869d5d",
+    "mtime": 1788074456.847823,
+    "ast_hash": "8e93fbdea81679e9e33631e5104ce306",
     "semantic_hash": ""
   },
   "docs/plans/2026-08-18-llm-api-check-cli.md": {
@@ -180,8 +180,8 @@
     "semantic_hash": ""
   },
   "docs/plans/2026-08-29-qwen-provider.md": {
-    "mtime": 1788071388.2804465,
-    "ast_hash": "4172b707b8098619dc0ddeabbf17cae3",
+    "mtime": 1788074448.4820058,
+    "ast_hash": "15e4a5613fd9327b0f537535902585f3",
     "semantic_hash": ""
   },
   "testdata/fixtures/billing.html": {
