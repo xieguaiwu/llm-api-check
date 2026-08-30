@@ -25,8 +25,8 @@
     "semantic_hash": ""
   },
   "internal/models/models.go": {
-    "mtime": 1788000627.4291651,
-    "ast_hash": "3a8a0624927779468da0a78cf160bb98",
+    "mtime": 1787999313.5909765,
+    "ast_hash": "e63b3057278dc5935e5623a7ef1f05dc",
     "semantic_hash": ""
   },
   "internal/models/models_test.go": {
@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "internal/parsers/parsers.go": {
-    "mtime": 1788003661.8430834,
-    "ast_hash": "94d7445d3b70124022a7cfdbb01ca191",
+    "mtime": 1787941496.321936,
+    "ast_hash": "9cf57689f2dca171752e2a8316d50764",
     "semantic_hash": ""
   },
   "internal/parsers/parsers_test.go": {
@@ -55,13 +55,13 @@
     "semantic_hash": ""
   },
   "internal/repo/qwen_cli.go": {
-    "mtime": 1788071183.3477638,
-    "ast_hash": "c7a30d781906886268f2996fea4a34ed",
+    "mtime": 1787983031.9904249,
+    "ast_hash": "9f2ad8ad16a0d9f453707480c7347102",
     "semantic_hash": ""
   },
   "internal/repo/qwen_cli_test.go": {
-    "mtime": 1788070957.0877037,
-    "ast_hash": "e7a5f4eacf9590f58e166363bcecab4f",
+    "mtime": 1787982941.2315063,
+    "ast_hash": "dc7c0962ebccb9b277cf5f0febac09d8",
     "semantic_hash": ""
   },
   "internal/repo/repo.go": {
@@ -75,13 +75,13 @@
     "semantic_hash": ""
   },
   "main.go": {
-    "mtime": 1788071184.0215313,
-    "ast_hash": "dadfe255befab399c136eaf8507de5ad",
+    "mtime": 1788000468.3306234,
+    "ast_hash": "121774495c485153a917eec177ad97cd",
     "semantic_hash": ""
   },
   "main_test.go": {
-    "mtime": 1788071072.7102685,
-    "ast_hash": "bf64b3dc549388a368ea5b668fcc7e32",
+    "mtime": 1787982971.426812,
+    "ast_hash": "2cca87ad9ec6faa685d8c80ffc8b7a19",
     "semantic_hash": ""
   },
   "scripts/build-dist.sh": {
@@ -155,18 +155,18 @@
     "semantic_hash": ""
   },
   "CONTEXT_FOR_NEXT_AGENT.md": {
-    "mtime": 1788071475.8013709,
-    "ast_hash": "badfb175935bb6b55f97c8e2d4075c8e",
+    "mtime": 1788000540.563542,
+    "ast_hash": "f4d3137a4e2e107c82485691562750a1",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1788071363.3431914,
-    "ast_hash": "045e1ce6743bd4957f6db49cad3b1108",
+    "mtime": 1788000408.8662856,
+    "ast_hash": "fdc15d43bc6c4ac2b764f436890a1af5",
     "semantic_hash": ""
   },
   "README_zh.md": {
-    "mtime": 1788071369.9052582,
-    "ast_hash": "a999627fad5aa80f1d5984b760869d5d",
+    "mtime": 1788000457.7243128,
+    "ast_hash": "2a499d00fd41ce30a3e08034d0f61d75",
     "semantic_hash": ""
   },
   "docs/plans/2026-08-18-llm-api-check-cli.md": {
@@ -180,8 +180,8 @@
     "semantic_hash": ""
   },
   "docs/plans/2026-08-29-qwen-provider.md": {
-    "mtime": 1788071388.2804465,
-    "ast_hash": "4172b707b8098619dc0ddeabbf17cae3",
+    "mtime": 1787983166.2397835,
+    "ast_hash": "497287d1bcf6337f072a9c6196b4d968",
     "semantic_hash": ""
   },
   "testdata/fixtures/billing.html": {
@@ -195,13 +195,13 @@
     "semantic_hash": ""
   },
   "internal/parsers/galaxy.go": {
-    "mtime": 1788003671.002172,
-    "ast_hash": "666a0d6bdca1eb1ae530072cd069b637",
+    "mtime": 1788000314.9410825,
+    "ast_hash": "fac506f8528d122785c5c9459d931d4c",
     "semantic_hash": ""
   },
   "internal/parsers/galaxy_test.go": {
-    "mtime": 1788003687.890335,
-    "ast_hash": "781c1cc23c7f2b52a735a71700f2b752",
+    "mtime": 1788000248.8454964,
+    "ast_hash": "62af38ccdbc22e9b2ac61df29ec6c574",
     "semantic_hash": ""
   },
   "internal/render/galaxy_test.go": {
@@ -210,13 +210,13 @@
     "semantic_hash": ""
   },
   "internal/repo/galaxy.go": {
-    "mtime": 1788003679.3732526,
-    "ast_hash": "4e72b45f71e421315f78c8b46ea21082",
+    "mtime": 1787999428.984774,
+    "ast_hash": "632d4b3b7b9d82d48a63a4a68b1980a5",
     "semantic_hash": ""
   },
   "internal/repo/galaxy_test.go": {
-    "mtime": 1788003726.7015264,
-    "ast_hash": "c0cb84bc84b0c3eb5508e6bdf0be123d",
+    "mtime": 1788000272.7657282,
+    "ast_hash": "6d43cffe2309d8536ef40593bf8f5208",
     "semantic_hash": ""
   },
   "main_galaxy_test.go": {
@@ -245,8 +245,8 @@
     "semantic_hash": ""
   },
   "docs/plans/2026-08-29-ai-galaxy-provider.md": {
-    "mtime": 1788004027.856611,
-    "ast_hash": "ec15f960adbca8dcadbd8f4b391178dd",
+    "mtime": 1787998815.3655224,
+    "ast_hash": "536fd708d7602995b02b3724463c7819",
     "semantic_hash": ""
   }
 }

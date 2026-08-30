@@ -10,7 +10,7 @@
   "8": "runCLI",
   "9": "llm-api-check",
   "10": "LLM API Check CLI Implementation Plan",
-  "11": "GalaxyRepo",
+  "11": "models.go",
   "12": "二、契约（2026-08-29 真实凭据实测通过）",
   "13": "F-Droid 发布调查与安卓发表计划（2026-08-24）",
   "14": "Qwen Token Plan provider 设计（2026-08-29）",
@@ -20,6 +20,5 @@
   "18": "build-dist.sh",
   "19": "github.com/xieguiawu/llm-api-check",
   "20": "tty_darwin.go",
-  "21": "tty_linux.go",
-  "22": "models.go"
+  "21": "tty_linux.go"
 }
