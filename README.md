@@ -83,6 +83,24 @@ Credential flags fall back in this order: flag → env var → TTY prompt (non-T
 
 Qwen quota is console-session data. The tool tries the official Bailian CLI first (`bailian usage token-plan`; set `LLM_API_CHECK_QWEN_CLI=off` to disable), then falls back to a console cookie. Without either it still validates the key and lists plan models, and says so instead of showing invented numbers.
 
+## Troubleshooting
+
+**Qwen quota windows are missing and the tool says `Bailian CLI 未登录或会话已过期`**
+
+The quota API needs a Bailian console session, and that session is short-lived: in practice it expires after a few hours. Re-run the login command shown in the message — the tool prints the full path of the CLI it detected, so the line is copy-pasteable:
+
+```bash
+~/.local/share/bailian-cli/bin/bailian auth login --console
+```
+
+A browser opens for Alibaba Cloud sign-in. After it finishes, run `llm-api-check qwen` again.
+
+Notes:
+
+- `bailian auth status` only prints what is stored in `~/.bailian/config.json`. It reports a token even when that token is dead. Trust `bailian usage token-plan` output instead.
+- Upstream CLI messages say `bl auth login --console`. If another program owns the name `bl` on your machine, run the full path above. This tool never calls `bl` and rewrites that word in upstream messages.
+- Prefer no CLI? Configure a console cookie instead (`accounts add --type qwen --console-cookie …`). The cookie expires too, and the CLI takes precedence while it works.
+
 ## Data sources
 
 | Source | Endpoint | Auth |

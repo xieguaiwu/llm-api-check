@@ -77,10 +77,29 @@ llm-api-check --version
 | OpenCode Go API key | opencode.ai 账号设置 |
 | OpenCode workspace ID + auth cookie | 浏览器 DevTools → Application → Cookies → opencode.ai → `auth`（以 `Fe26.2` 开头） |
 | Qwen API key | 阿里云百炼 → Token Plan → API Key（`sk-sp-…`）。订阅密钥**与区域绑定**：北京 key 只能打北京网关 |
-| Qwen 控制台 Cookie | 登录 `bailian.console.aliyun.com` → Token Plan 页 → DevTools → Network → 任意 `data/api.json` 请求 → 复制整个 `Cookie` 请求头（连 `Cookie:` 前缀一起粘贴也可以，工具会自动剥除） |
+| Bailian CLI（配额首选通道） | 安装官方 CLI：`npm install -g --prefix ~/.local/share/bailian-cli bailian-cli`，再登录一次：`~/.local/share/bailian-cli/bin/bailian auth login --console`。工具会自动探测（或设 `LLM_API_CHECK_BL_BIN` 指定路径）；CLI 优先于 Cookie |
+| Qwen 控制台 Cookie（兜底通道） | 登录 `bailian.console.aliyun.com` → Token Plan 页 → DevTools → Network → 任意 `data/api.json` 请求 → 复制整个 `Cookie` 请求头（连 `Cookie:` 前缀一起粘贴也可以，工具会自动剥除） |
 | 智星云 AccessKey + SecretKey | gpu.ai-galaxy.cn 控制台 → 开放API → AccessKey管理 → 创建（需先完成实名认证）。请求按「参数名字典序 + 末尾拼 `&secret=`，取 MD5」签名 |
 
 Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证密钥并列出套餐模型，并明说缺什么，不会给出臆造的数字。
+
+## 常见问题
+
+**`qwen` 没有配额窗口，并提示「Bailian CLI 未登录或会话已过期」**
+
+配额只认百炼控制台会话，而这个会话很短命（实测几小时过期）。重新跑提示里的命令即可——工具会打印它探测到的 CLI 完整路径，可直接复制：
+
+```bash
+~/.local/share/bailian-cli/bin/bailian auth login --console
+```
+
+浏览器完成阿里云登录后，再跑 `llm-api-check qwen`。
+
+补充：
+
+- `bailian auth status` 只读 `~/.bailian/config.json` 里存了什么，token 已失效也照样报存在。判活要看 `bailian usage token-plan` 能不能出数据。
+- 官方 CLI 自带提示写的是 `bl auth login --console`。若本机 `bl` 是别的程序，请用上面的完整路径。本工具不调 `bl`，并把上游文案里的 `bl` 改写为真实路径。
+- 不想装 CLI？改用控制台 Cookie（`accounts add --type qwen --console-cookie …`）。Cookie 同样会过期，且 CLI 可用时优先走 CLI。
 
 ## 数据来源
 

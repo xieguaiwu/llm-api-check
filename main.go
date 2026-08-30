@@ -430,7 +430,9 @@ func cmdQwen(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, 
 	for _, acc := range accounts {
 		var r app.QwenResult
 		if *noRefresh {
-			r = app.QwenResult{Account: acc}
+			// CLIEnabled 仍需如实上报：否则装了 CLI 也会显示
+			// 「需控制台 Cookie 或 Bailian CLI」（误导用户去抓 Cookie）
+			r = app.QwenResult{Account: acc, CLIEnabled: a.Repos.Qwen.CLIEnabled()}
 		} else if r, err = a.RefreshQwen(acc.ID); err != nil {
 			fmt.Fprintf(stderr, "错误: %v\n", err)
 			return 1

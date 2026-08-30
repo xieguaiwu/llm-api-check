@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -146,19 +147,76 @@ func (c *QwenCLI) runJSON(args ...string) (string, error) {
 		// stderr 尾部（截断防膨胀；过滤 Node 的 UNDICI/experimental 警告噪音）
 		tail := qwenCLIStderrTail(stderr.String())
 		// exit 非零时 CLI 可能把 JSON 错误信封打到 stderr（实测 exit 3 即如此）
-		if envErr := qwenCLIErrorEnvelope(tail); envErr != "" {
-			return "", fmt.Errorf("Bailian CLI 不可用: %s（运行 bailian auth login --console 登录后重试）", envErr)
+		if envErr := qwenCLIErrorEnvelope(tail, c.BinPath); envErr != "" {
+			return "", c.envelopeError(envErr)
 		}
+		tail = qwenCLIRewriteBin(tail, c.BinPath)
 		if tail == "" {
 			return "", fmt.Errorf("Bailian CLI 调用失败: %v", err)
 		}
 		return "", fmt.Errorf("Bailian CLI 调用失败: %v（%s）", err, tail)
 	}
 	raw := strings.TrimSpace(stdout.String())
-	if envErr := qwenCLIErrorEnvelope(raw); envErr != "" {
-		return "", fmt.Errorf("Bailian CLI 不可用: %s（运行 bailian auth login --console 登录后重试）", envErr)
+	if envErr := qwenCLIErrorEnvelope(raw, c.BinPath); envErr != "" {
+		return "", c.envelopeError(envErr)
 	}
 	return raw, nil
+}
+
+// envelopeError 把 CLI 错误信封转成用户可见错误。
+// 会话类失败（未登录/过期）单独立文案：这类失败最常见（实测会话约数小时失效），
+// 且处置动作唯一（重新浏览器登录），不必把英文原文塞进提示。
+// 其它信封错误保留原文，避免误导成「登录一下就好」。
+func (c *QwenCLI) envelopeError(detail string) error {
+	if qwenCLISessionExpired(detail) {
+		return fmt.Errorf("Bailian CLI 未登录或会话已过期（会话通常数小时失效）：运行 %s auth login --console 在浏览器中重新登录后重试", c.loginBin())
+	}
+	return fmt.Errorf("Bailian CLI 返回错误: %s", detail)
+}
+
+// loginBin 登录命令用的可执行文件名：优先探测到的绝对路径（可直接复制执行），
+// 退化时用 "bailian"。绝不用 "bl"——官方 CLI 自带提示写的是 bl，
+// 而本机 bl 是另一套同名翻译 CLI（见 docs/plans/2026-08-29-qwen-provider.md §一-b 铁律 1）。
+func (c *QwenCLI) loginBin() string {
+	if b := strings.TrimSpace(c.BinPath); b != "" {
+		return b
+	}
+	return "bailian"
+}
+
+// qwenCLISessionExpired 判定是否为控制台会话失效。
+// 实测文案："Console session is not logged in or has expired."（exit 3）
+//
+//	"No console access token found."（exit 0 信封）
+func qwenCLISessionExpired(detail string) bool {
+	d := strings.ToLower(detail)
+	for _, s := range []string{
+		"not logged in", "notlogin", "no console access token", "has expired",
+		"session expired", "login required", "unauthorized", "not authorised", "not authorized",
+	} {
+		if strings.Contains(d, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// qwenCLIBlCmdRe 匹配官方 CLI 提示里的 "bl <子命令>" 调用形式（含反引号/括号引导）。
+var qwenCLIBlCmdRe = regexp.MustCompile("(^|[\\s`(])bl(\\s+(?:auth|usage|config|deploy|models|version|doctor|update)\\b)")
+
+// qwenCLIRewriteBin 把 CLI 原文中的 "bl <子命令>" 改写成本机真实 bin 路径。
+// 不改写会把用户指向同名翻译 CLI（照做必然失败），属可复现的误导。
+func qwenCLIRewriteBin(s, bin string) string {
+	if strings.TrimSpace(bin) == "" {
+		bin = "bailian"
+	}
+	return qwenCLIBlCmdRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := qwenCLIBlCmdRe.FindStringSubmatch(m)
+		if sub == nil {
+			return m
+		}
+		return sub[1] + bin + sub[2]
+	})
 }
 
 // qwenCLIStderrTail 清洗 Bailian CLI 的 stderr：过滤 Node 运行时噪音
@@ -181,8 +239,8 @@ func qwenCLIStderrTail(raw string) string {
 }
 
 // qwenCLIErrorEnvelope 识别 Bailian CLI 的 JSON 错误信封 {"error":{code,message,hint}}。
-// 命中返回可展示的消息（含 hint），未命中返回空串。
-func qwenCLIErrorEnvelope(raw string) string {
+// 命中返回可展示的消息（含 hint，且 hint 里的 "bl" 已改写为 bin），未命中返回空串。
+func qwenCLIErrorEnvelope(raw, bin string) string {
 	var env struct {
 		Error struct {
 			Message string `json:"message"`
@@ -190,10 +248,11 @@ func qwenCLIErrorEnvelope(raw string) string {
 		} `json:"error"`
 	}
 	if json.Unmarshal([]byte(raw), &env) == nil && strings.TrimSpace(env.Error.Message) != "" {
-		if strings.TrimSpace(env.Error.Hint) != "" {
-			return strings.TrimSpace(env.Error.Message) + "（" + strings.TrimSpace(env.Error.Hint) + "）"
+		msg := qwenCLIRewriteBin(strings.TrimSpace(env.Error.Message), bin)
+		if hint := strings.TrimSpace(env.Error.Hint); hint != "" {
+			return msg + "（" + qwenCLIRewriteBin(hint, bin) + "）"
 		}
-		return strings.TrimSpace(env.Error.Message)
+		return msg
 	}
 	return ""
 }

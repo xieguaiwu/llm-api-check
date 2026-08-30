@@ -21,7 +21,7 @@
 官方 Model Studio CLI（npm `bailian-cli`，bin 名 `bailian`/`bl`，≥1.16.0）提供：
 
 ```sh
-bl usage token-plan --console-region cn-beijing --console-site domestic --output json
+bailian usage token-plan --console-region cn-beijing --console-site domestic --output json
 ```
 
 - 认证模式 **Console**：`bailian auth login --console` 浏览器 OAuth 一次，token 存 `~/.bailian/config.json`，之后免交互
@@ -36,7 +36,25 @@ bl usage token-plan --console-region cn-beijing --console-site domestic --output
 3. `LLM_API_CHECK_QWEN_CLI=off|0|false|no` 禁用 CLI 通道（main 测试默认置 off 保持 hermetic）
 4. 调用：argv 数组（非 shell）、20s 超时（exec.CommandContext）、stdout/stderr 分离（Node UNDICI 警告在 stderr，过滤后再截断 300 字符）、JSON 错误信封识别（exit 非零时信封在 stderr，实测 exit 3）
 5. 通道优先级（同 CodexBar Auto）：CLI 优先、Cookie 兜底；CLI 成功不拉 subscription（无 PlanCode），Cookie 路径保留原 subscription 逻辑
-6. CLI 会话过期 → `bailian auth login --console` 重新登录即可，无需重抓 Cookie
+6. CLI 会话过期 → `bailian auth login --console` 重新登录即可，无需重抓 Cookie（实测会话约几小时失效，2026-08-29 13:58 登录 → 08-30 已过期）
+7. 会话失效**不报错在 `bailian auth status`**：它只读 `~/.bailian/config.json`，token 死了仍报「config 有 token」。判活只能看 `usage token-plan` 是否出数据
+
+### 一-b.1 错误文案分档（2026-08-30 修复「额度看不到但提示没用」）
+
+背景：会话过期是这类失败的唯一常见成因，而上游信封自带 hint 写 `Run \`bl auth login --console\``。本机 `bl` 是另一套同名翻译 CLI，用户照做必然失败（上面铁律 1 的同一个坑，只是从“我们调”变成“我们告知”）。
+
+现行为（`internal/repo/qwen_cli.go`）：
+
+| 信封内容 | 用户可见文案 |
+|:---|:---|
+| 会话类（`not logged in` / `notlogin` / `no console access token` / `has expired` / `session expired` / `login required` / `unauthorized` / `not authorised`） | `Bailian CLI 未登录或会话已过期（会话通常数小时失效）：运行 <真实 bin 路径> auth login --console 在浏览器中重新登录后重试` |
+| 其他信封错误（如 `BailianGateway.Workspace.NotAuthorised`） | `Bailian CLI 返回错误: <原文（含 hint）>` —— 不谎报成「登录一下就好」 |
+| 无信封、exit 非零 | `Bailian CLI 调用失败: <err>（<stderr 尾部，已洗 Node 噪音>）` |
+
+- `qwenCLIRewriteBin`：把上游文本里的 `bl <子命令>` 改写为探测到的 bin 路径（只读降级为 `bailian`，**绝不降级为 `bl`**）；正则要求后接已知子命令，所以 `unable`/`bailian`/含 `$` 的路径都不会误伤或弄坏
+- 会话类分档丢弃英文原文（处置动作唯一）；其他错误保留，便于上游改版时诊断
+- 反向验证已做：去掉 `qwenCLIRewriteBin` / 去掉 `qwenCLISessionExpired` / `--no-refresh` 不回填 `CLIEnabled`，对应测试均 FAIL
+- 同时修：`qwen --no-refresh` 不回填 `CLIEnabled`，导致装了 CLI 仍显示「需控制台 Cookie 或 Bailian CLI」（把用户推向不必要的 Cookie 拓取）
 
 ## 二、配额 RPC 契约
 
@@ -141,5 +159,5 @@ llm-api-check accounts add --type qwen --name X --api-key sk-sp-... \
 - 渲染：周期、调用模型数/成功次数、Input/Output/Total/Avg Tokens（千分位）、免费额度**只列已用过的模型**（剩余 <100%，全未用提示「免费额度未使用」）
 - 免费额度剩余百分比颜色沿用已用比例语义（ColorForPercent(100-剩余)）
 - 实现：`QwenCLI.runJSON` 抽取共用（Usage/Summary 同走：argv + 超时 + stderr 噪音过滤 + 信封识别）；app.RefreshQwenStats；main `--stats` flag（moveNoRefresh 扩展把 `--stats` 也提前，否则 `qwen 名称 --stats` exit 2）
-- 错误文案统一「Bailian CLI 不可用: …（运行 bailian auth login --console 登录后重试）」（Usage/Stats 共用）
+- 错误文案分三档（Usage/Stats 共用 `runJSON`）：会话失效 / 其他信封错误 / 无信封调用失败——见 §一-b.1（v1.3.0 旧文案「Bailian CLI 不可用: …（运行 bailian auth login --console 登录后重试）」已于 2026-08-30 替换，因为它把上游含 `bl` 的 hint 直接透给用户）
 - 实测（2026-08-29 重新登录后）：`qwen --stats` → 2 模型 · 14 次调用 · Total 14,785 tokens · qwen3.8-flash 免费额度 98.7%

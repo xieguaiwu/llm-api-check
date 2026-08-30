@@ -88,6 +88,12 @@ func TestQwenCLIHelperProcess(t *testing.T) {
 		os.Stdout.WriteString(`{"per1WeekPercentage":0.2,"per1WeekResetTime":1791000000000}`)
 	case "notloggedin":
 		os.Stdout.WriteString(`{"error":{"code":3,"message":"No console access token found.","hint":"Run bl auth login --console."}}`)
+	case "expired":
+		// 真实上游文案（2026-08-30 实测 exit 3 + stderr 信封）
+		os.Stdout.WriteString("{\"error\":{\"code\":3,\"message\":\"Console session is not logged in or has expired.\",\"hint\":\"Run `bl auth login --console` to sign in or refresh your console session.\"}}")
+	case "gateway-error":
+		// 非会话类错误：不得误报成「重新登录就好」，但 `bl` 仍须改写
+		os.Stdout.WriteString(`{"error":{"code":5,"message":"BailianGateway.Workspace.NotAuthorised","hint":"Run bl auth login --console."}}`)
 	case "stderr-exit1":
 		os.Stderr.WriteString("bailian: unknown command\n")
 		os.Exit(1)
@@ -145,6 +151,92 @@ func TestQwenCLIUsageNotLoggedIn(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "auth login --console") {
 		t.Errorf("错误应提示登录: %v", err)
+	}
+}
+
+// 会话过期类错误：给可直接复制的真实 bin 路径，不透传上游的 `bl` 指令
+// （本机 bl 是另一套同名翻译 CLI，照做必然失败）。
+func TestQwenCLIUsageExpiredGivesRealBinPath(t *testing.T) {
+	cli := helperCLI(t, "expired")
+	_, err := cli.Usage(models.QwenAccount{Region: "cn-beijing"})
+	if err == nil {
+		t.Fatal("会话过期应报错")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "未登录或会话已过期") {
+		t.Errorf("应报会话失效: %v", msg)
+	}
+	if !strings.Contains(msg, "bailian-test auth login --console") {
+		t.Errorf("应含探测到的 bin 路径: %v", msg)
+	}
+	if strings.Contains(msg, "bl auth") {
+		t.Errorf("不得出现裸 bl 指令: %v", msg)
+	}
+}
+
+// 非会话类错误：保留上游原文（避免误导向），但 bin 名仍须改写。
+func TestQwenCLIUsageOtherEnvelopeKeepsDetail(t *testing.T) {
+	cli := helperCLI(t, "gateway-error")
+	_, err := cli.Usage(models.QwenAccount{Region: "cn-beijing"})
+	if err == nil {
+		t.Fatal("网关错误应报错")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "Bailian CLI 返回错误") || !strings.Contains(msg, "NotAuthorised") {
+		t.Errorf("应保留上游错误原文: %v", msg)
+	}
+	if strings.Contains(msg, "未登录或会话已过期") {
+		t.Errorf("非会话错误不应说会话失效: %v", msg)
+	}
+	if strings.Contains(msg, "bl auth") || !strings.Contains(msg, "bailian-test auth") {
+		t.Errorf("hint 中的 bl 应改写为真实 bin: %v", msg)
+	}
+}
+
+// 无 bin 路径时退化到 bailian（绝不退到 bl）。
+func TestQwenCLIRewriteBinFallsBackToName(t *testing.T) {
+	got := qwenCLIRewriteBin("Run `bl auth login --console` to sign in.", "")
+	want := "Run `bailian auth login --console` to sign in."
+	if got != want {
+		t.Errorf("改写结果 = %q, want %q", got, want)
+	}
+	// 幂等且不误伤：已是 bailian / 单词内含 bl 都不动
+	for _, s := range []string{
+		"Run `bailian auth login --console`.",
+		"enable blurring in model",
+		"unable auth failed",
+	} {
+		if out := qwenCLIRewriteBin(s, "/usr/bin/bailian"); out != s {
+			t.Errorf("不应改写 %q → %q", s, out)
+		}
+	}
+	// 多个子命令都改写，且路径含特殊字符也不变样
+	if out := qwenCLIRewriteBin("bl usage token-plan; bl auth logout", "/x/y$b/z"); out != "/x/y$b/z usage token-plan; /x/y$b/z auth logout" {
+		t.Errorf("多命中改写结果不符: %q", out)
+	}
+}
+
+func TestQwenCLISessionExpiredClassifies(t *testing.T) {
+	hit := []string{
+		"Console session is not logged in or has expired.",
+		"No console access token found.",
+		"BailianGateway.Login.NotLogined（Run `bl auth login --console`）",
+		"token has expired",
+	}
+	for _, s := range hit {
+		if !qwenCLISessionExpired(s) {
+			t.Errorf("应归为会话失效: %q", s)
+		}
+	}
+	miss := []string{
+		"BailianGateway.Workspace.NotAuthorised",
+		"page_size 参数超限!",
+		"upstream timeout",
+	}
+	for _, s := range miss {
+		if qwenCLISessionExpired(s) {
+			t.Errorf("不应归为会话失效: %q", s)
+		}
 	}
 }
 
@@ -217,8 +309,9 @@ func TestQwenCLIUsageStderrWithWarnings(t *testing.T) {
 	if strings.Contains(err.Error(), "UNDICI") || strings.Contains(err.Error(), "trace-warnings") {
 		t.Errorf("错误不应含 Node 噪音: %v", err)
 	}
-	if !strings.Contains(err.Error(), "No console access token found") {
-		t.Errorf("错误应含真实错误消息: %v", err)
+	// 含 UNDICI 噪音的 stderr 信封仍要被识别并归到会话失效文案
+	if !strings.Contains(err.Error(), "未登录或会话已过期") {
+		t.Errorf("应识别出会话失效信封: %v", err)
 	}
 }
 

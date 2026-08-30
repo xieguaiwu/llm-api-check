@@ -1,5 +1,16 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-08-30 14:35）
+- **修复「qwen 额度看不到但提示没用」（会话失效文案缺陷）**
+  - 复现根因（实测，非推断）：`~/.bailian/config.json` 控制台会话于 08-29 13:58 写入，08-30 已过期 → `bailian usage token-plan` 回 exit 3 + 信封 `Console session is not logged in or has expired.`，hint 写 **`Run \`bl auth login --console\``**
+  - 🔴 **真缺陷**：旧文案把上游 hint 原样透给用户。本机 `bl` = `~/.local/bin/bl`（用户自研翻译 CLI，无 `auth` 子命令）→ **照提示做会调错程序**，正是本文件铁律 ①（禁 `bl`）的同型陷阱，只是从「我们调」变成「我们告知」
+  - 修（`internal/repo/qwen_cli.go`）：`runJSON` 错误分**三档**——① 会话失效（`not logged in`/`no console access token`/`has expired`/`notlogin`/`login required`/`unauthorized`/`not authorised`）→ 中文单行提示 + **探测到的 bin 绝对路径**（可直接粘贴）；② 其他信封错误 → `Bailian CLI 返回错误: <原文>`，不谎报「登录就好」；③ 无信封 exit 非零 → 原文洗 Node 噪音。新增 `qwenCLIRewriteBin`（正则 `(^|[\s\x60])(bl)(\s+auth|usage|…)` → 真实 bin；退化用 `bailian`，绝不退 `bl`；`ReplaceAllStringFunc` 避开 `$` 转义）
+  - 副修：`cmdQwen --no-refresh` 不回填 `CLIEnabled` → 装了 CLI 仍显示「需控制台 Cookie 或 Bailian CLI」，把用户推向不必要的 Cookie 抓取
+  - 文档：README/README_zh 新增「常见问题 / Troubleshooting」节（含 `bailian auth status` **不校验会话有效性**、只看 config 存了什么这一实测结论）；顺带补 README_zh 缺失的「Bailian CLI（配额首选通道）」凭据行（中英双语漂移）；契约见 docs/plans/2026-08-29-qwen-provider.md §一-b.1
+  - 质量门：gofmt 0 / vet 0 / 7 包 `go test -race` 全绿；用例 212 → 218（+6：会话分档×2、bl 改写×1、分类器×1、main 级 e2e×2）；**反向验证三做**（去掉 bl 改写 / 去掉会话判定 / --no-refresh 不回填 → 对应测试均 FAIL）
+  - 真机证据（新二进制已装 `~/.local/bin`，会话仍过期状态）：旧 `Bailian CLI 不可用: Console session is not logged in or has expired.（Run \`bl auth login --console\` …）` → 新 `Bailian CLI 未登录或会话已过期（会话通常数小时失效）：运行 /home/xieguiawu/.local/share/bailian-cli/bin/bailian auth login --console 在浏览器中重新登录后重试`
+  - ⚠️ **未端到端验证「重新登录后额度恢复」**：需用户在 Firefox 完成阿里云 OAuth（浏览器登录无法代办）；登录进程已在后台监听 127.0.0.1:43375
+
 ## 最后一次完成的工作（2026-08-29 18:50）
 - **provider=galaxy（智星云 AI Galaxy 算力云，v1.3.0）**：`llm-api-check galaxy` 看账户余额 + 租用的云主机实例状态（只读，无写操作）
   - 通道 = **官方 OpenAPI v2**（AccessKey + SecretKey + MD5 签名，`POST https://app.ai-galaxy.cn/openapi/v2/…`，表单体带 `apikey/timestamp/nonce/sign`）；**不走控制台 session**（会随登录过期，且无官方支持）
@@ -34,7 +45,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
   - ⚠️ 会话短寿命实测：OAuth 登录约几小时即过期（13:46 登录 14:0x 已报 Console session not logged in or has expired）→ 过期重跑 `bailian auth login --console` 即可（首次登录进程若卡住先 kill 再重开）
 
 ## 遗留问题 / 待办
-- [ ] **Bailian CLI 会话过期维护**：`~/.bailian/config.json` 会话过期后 `llm-api-check qwen` 会报 `No console access token found` → 重跑 `~/.local/share/bailian-cli/bin/bailian auth login --console`（浏览器 OAuth）。暂未做自动检测提示的差异化文案（现在是通用「调用失败」路径，2026-08-29 实测 exit 3 信封已识别并提示登录）
+- [x] ~~**Bailian CLI 会话过期维护**：差异化文案未做~~ → **2026-08-30 已做**：会话失效单独立档，给出可复制的 `bailian auth login --console`（绝对路径）；不透传上游 `bl` hint。运维动作不变：过期重跑 `~/.local/share/bailian-cli/bin/bailian auth login --console`（浏览器 OAuth；登录进程卡住先 kill 再重开）。⚠️ `bailian auth status` 不校验会话有效性，判活看 `bailian usage token-plan`
 - [ ] **国际区域（ap-southeast-1）无凭据、未实跑**：代码按公开契约实现（`QwenEndpointsFor` + CLI `--console-site international`，CLI 通道单测覆盖了 intl 参数）；启用前先验证 `/tool/user/info.json` 的 sec_token 字段名
 - [ ] **DeepSeek 平台 token / workspace ID + auth cookie 未配置**（config.fish 无）：DeepSeek 消费明细与 Zen billing 不可用。平台 token 需浏览器登录 platform.deepseek.com 后从 DevTools 抓；Zen 需 opencode.ai 的 workspace ID + auth cookie（`Fe26.2` 开头）
 - [ ] songjieshi/xieguaiwu 的 key 来自 config.fish 注释行（非当前生效），可能已过期（xieguaiwu 实测 M 100% 已限流属正常用量而非 key 失效）
@@ -65,8 +76,8 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 
 ## 知识图谱
 - graphify-out/: 存在（每次代码变更后 `graphify update .` 重建，no-LLM 零成本）
-- 319 节点 / 736 边 / 24 社区（v1.3.0 galaxy provider 后）
+- 683 节点 / 1914 边 / 23 社区（2026-08-30 bugfix 后重建；旧记录「319/736/24」为跳仓残留数字，与 GRAPH_REPORT 不一致，已以图谱为准）
 - 图谱以最新 commit 为准；若 `graphify-out/needs_update` 存在说明已陈旧，先 update 再依赖它回答
 
 ## 最后更新时间
-2026-08-29 18:50
+2026-08-30 14:35

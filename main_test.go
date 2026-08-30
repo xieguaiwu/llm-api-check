@@ -383,3 +383,70 @@ exit 0
 		}
 	}
 }
+
+// 会话过期时用户可见的错误文案：必须是中文可操作提示 + 真实 bin 路径，
+// 不得透传上游的 `bl auth login --console`（本机 bl 是另一套 CLI）。
+func TestQwenCLIExpiredSessionUserGuidance(t *testing.T) {
+	dir := withConfigDir(t)
+	fake := filepath.Join(dir, "fake-bailian")
+	// 真实上游形状：JSON 信封在 stderr、exit 3（2026-08-30 实测）
+	script := "#!/bin/sh\n"
+	script += "echo '{\"error\":{\"code\":3,\"message\":\"Console session is not logged in or has expired.\",\"hint\":\"Run `bl auth login --console` to sign in.\"}}' >&2\n"
+	script += "exit 3\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLM_API_CHECK_QWEN_CLI", "on")
+	t.Setenv("LLM_API_CHECK_BL_BIN", fake)
+
+	if code, _, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen",
+		"--name", "订阅号", "--api-key", "sk-sp-expired1234567890", "--region", "cn-beijing"); code != 0 {
+		t.Fatalf("add exit=%d err=%q", code, errOut)
+	}
+	code, out, errOut := runCLI(t, "", "qwen", "订阅号")
+	// 假 key 无法验证、配额也拉不到 → 无任何数据 → exit 1
+	if code != 1 {
+		t.Fatalf("期望 exit=1，实际 %d out=%q err=%q", code, out, errOut)
+	}
+	if !strings.Contains(out, "未登录或会话已过期") {
+		t.Errorf("应给出会话失效提示: %s", out)
+	}
+	if !strings.Contains(out, fake+" auth login --console") {
+		t.Errorf("应含可复制的真实登录命令 %q: %s", fake, out)
+	}
+	for _, bad := range []string{"bl auth", "Blah"} {
+		if strings.Contains(out, bad) || strings.Contains(errOut, bad) {
+			t.Errorf("输出不应含 %q: out=%s err=%s", bad, out, errOut)
+		}
+	}
+	// 网络失败不得把上游英文原文当主体提示
+	if strings.Contains(out, "to sign in") {
+		t.Errorf("不应透传英文原始 hint: %s", out)
+	}
+}
+
+// --no-refresh 时 CLI 已装但没数据：不应说「需控制台 Cookie 或 Bailian CLI」。
+func TestQwenNoRefreshStillReportsCLIEnabled(t *testing.T) {
+	dir := withConfigDir(t)
+	fake := filepath.Join(dir, "fake-bailian")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LLM_API_CHECK_QWEN_CLI", "on")
+	t.Setenv("LLM_API_CHECK_BL_BIN", fake)
+
+	if code, _, errOut := runCLI(t, "", "accounts", "add", "--type", "qwen",
+		"--name", "订阅号", "--api-key", "sk-sp-norefresh1234567890", "--region", "cn-beijing"); code != 0 {
+		t.Fatalf("add exit=%d err=%q", code, errOut)
+	}
+	code, out, errOut := runCLI(t, "", "qwen", "订阅号", "--no-refresh")
+	if code != 0 {
+		t.Fatalf("--no-refresh 不应发网络也不应报错: exit=%d out=%s err=%s", code, out, errOut)
+	}
+	if strings.Contains(out, "需控制台 Cookie") {
+		t.Errorf("CLI 已探测到时不应提示缺凭据: %s", out)
+	}
+	if !strings.Contains(out, "暂无数据") {
+		t.Errorf("应显示配额暂无数据: %s", out)
+	}
+}
