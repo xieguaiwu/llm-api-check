@@ -9,7 +9,8 @@
   - 文档：README/README_zh 新增「常见问题 / Troubleshooting」节（含 `bailian auth status` **不校验会话有效性**、只看 config 存了什么这一实测结论）；顺带补 README_zh 缺失的「Bailian CLI（配额首选通道）」凭据行（中英双语漂移）；契约见 docs/plans/2026-08-29-qwen-provider.md §一-b.1
   - 质量门：gofmt 0 / vet 0 / 7 包 `go test -race` 全绿；用例 212 → 218（+6：会话分档×2、bl 改写×1、分类器×1、main 级 e2e×2）；**反向验证三做**（去掉 bl 改写 / 去掉会话判定 / --no-refresh 不回填 → 对应测试均 FAIL）
   - 真机证据（新二进制已装 `~/.local/bin`，会话仍过期状态）：旧 `Bailian CLI 不可用: Console session is not logged in or has expired.（Run \`bl auth login --console\` …）` → 新 `Bailian CLI 未登录或会话已过期（会话通常数小时失效）：运行 /home/xieguiawu/.local/share/bailian-cli/bin/bailian auth login --console 在浏览器中重新登录后重试`
-  - ⚠️ **未端到端验证「重新登录后额度恢复」**：需用户在 Firefox 完成阿里云 OAuth（浏览器登录无法代办）；登录进程已在后台监听 127.0.0.1:43375
+  - ✅ **已端到端验证（2026-08-30 14:36，用户浏览器 OAuth 后）**：`llm-api-check qwen` → `7天 [█████████░] 85% · 130小时44分后重置`、exit 0、无错误行；`--stats` 同时正常（14 次调用 · Total 14,785 tokens · qwen3.8-max 免费额度 99.8%）。登录流程本身无变动（CLI 起本地回调 `127.0.0.1:43375`，Firefox 弹页）
+  - 📌 当日实测：Qwen Token Plan **7 天窗口已用 85%**（峰时段主力模型路由到 qwen3.8-max 会继续消耗）；5 小时窗口字段仍缺席（官方限时取消）
 
 ## 最后一次完成的工作（2026-08-29 18:50）
 - **provider=galaxy（智星云 AI Galaxy 算力云，v1.3.0）**：`llm-api-check galaxy` 看账户余额 + 租用的云主机实例状态（只读，无写操作）
