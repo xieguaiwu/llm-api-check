@@ -353,6 +353,59 @@ func ParseQwenModels(raw string) ([]string, error) {
 	return models, nil
 }
 
+// truncate rune 安全截断（防切断中文多字节，与 repo.truncate200 同型）
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
+// ── 白B.AI：网关模型清单（API Key 认证） ─────────────────────
+
+// ParseBaiModels 解析 GET /v1/models 响应（one-api 系信封：data 数组 + 顶层
+// success）。id 去重并按 id 排序；空清单/错误信封显式失败。
+func ParseBaiModels(raw string) ([]models.BaiModel, error) {
+	var payload struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			ID        string   `json:"id"`
+			OwnedBy   string   `json:"owned_by"`
+			Endpoints []string `json:"supported_endpoint_types"`
+		} `json:"data"`
+		// 403 等错误信封（无 error 键）：{"message":"…","success":false}
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, fmt.Errorf("BAI 模型清单 JSON 解析失败: %w", err)
+	}
+	// 刻意宽松：success=false 但 data 非空时仍接受数据——one-api 网关从未观测到
+	// 该形状（实测 403 错误信封不含 data 键，上方分支已覆盖），严格拒绝反而在
+	// 未验证形状上误报；若上游未来改版，此处是首个观察点。
+	if !payload.Success && len(payload.Data) == 0 {
+		if msg := strings.TrimSpace(payload.Message); msg != "" {
+			return nil, fmt.Errorf("BAI 网关返回错误: %s", truncate(msg, 200))
+		}
+		return nil, errors.New("未获取到 BAI 可用模型")
+	}
+	seen := map[string]bool{}
+	out := make([]models.BaiModel, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, models.BaiModel{ID: id, OwnedBy: strings.TrimSpace(m.OwnedBy), Endpoints: m.Endpoints})
+	}
+	if len(out) == 0 {
+		return nil, errors.New("未获取到 BAI 可用模型")
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 // ── Qwen Token Plan：控制台 RPC（Cookie 认证） ─────────────────
 //
 // 控制台网关信封形如 {code, data:{DataV2:{ret, data:{code, data:{...}}}}, successResponse}，

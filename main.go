@@ -36,9 +36,10 @@ const (
 	envQwenRegion  = "LLM_API_CHECK_QWEN_REGION"
 	envGalaxyAK    = "LLM_API_CHECK_GALAXY_ACCESS_KEY"
 	envGalaxySK    = "LLM_API_CHECK_GALAXY_SECRET_KEY"
+	envBaiAPIKey   = "LLM_API_CHECK_BAI_API_KEY"
 )
 
-const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan 与智星云算力云使用情况（复刻 Android 版 API Checkers）
+const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan、智星云算力云与白B.AI 使用情况（复刻 Android 版 API Checkers）
 
 用法:
   llm-api-check                            刷新全部账号并显示总览（等同 status）
@@ -47,8 +48,9 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   llm-api-check opencode [名称|ID]         OpenCode 账号详情（可过滤名字/id，缺省全部）
   llm-api-check qwen [名称|ID] [--stats]   Qwen 账号详情（--stats 附加 7 天用量分析与免费额度）
   llm-api-check galaxy [名称|ID] [--limit N]   智星云余额 + 云主机实例状态（--limit 列出实例数，默认 10）
+  llm-api-check bai [名称|ID]              白B.AI 账号详情：模型清单 + 免费通道状态（可过滤名字/id，缺省全部）
   llm-api-check accounts list              列出所有账号
-  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy --name 名称 [凭据 flags]
+  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
   llm-api-check accounts rename --id ID | --name 名称 --new-name 新名称
   llm-api-check config path                打印配置文件路径
@@ -71,6 +73,10 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   智星云:   --access-key / --secret-key
             环境变量 LLM_API_CHECK_GALAXY_ACCESS_KEY / LLM_API_CHECK_GALAXY_SECRET_KEY
             控制台「开放API → AccessKey管理」创建（需先完成实名认证）；看余额 + 实例状态与到期时间
+  BAI:      --api-key
+            环境变量 LLM_API_CHECK_BAI_API_KEY
+            白B.AI（api.b.ai）key，chat.b.ai 侧栏 API → Create API Key 创建；
+            平台仅开放推理路径，只看模型清单与免费通道状态（无配额数据可查）
 
 退出码: 0 成功；1 任一账号完全失败；2 用法错误
 `
@@ -114,6 +120,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdQwen(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "galaxy":
 		return cmdGalaxy(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
+	case "bai":
+		return cmdBai(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "accounts":
 		return cmdAccounts(rest[1:], stdin, stdout, stderr, jsonOut)
 	case "config":
@@ -172,6 +180,7 @@ func cmdStatus(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut
 			"accounts":         sliceOrEmpty(publicAccountResults(res.Accounts)),
 			"qwen":             sliceOrEmpty(publicQwenResults(res.Qwen)),
 			"galaxy":           sliceOrEmpty(publicGalaxyResults(res.Galaxy)),
+			"bai":              sliceOrEmpty(publicBaiResults(res.Bai)),
 			"last_updated":     unixMillisOrZero(res.LastUpdated),
 			"security_warning": sw,
 		})
@@ -196,6 +205,9 @@ func resultsFromAccounts(cfg *config.Config) app.Result {
 	for _, acc := range cfg.GalaxyAccounts {
 		res.Galaxy = append(res.Galaxy, app.GalaxyResult{Account: acc})
 	}
+	for _, acc := range cfg.BaiAccounts {
+		res.Bai = append(res.Bai, app.BaiResult{Account: acc})
+	}
 	return res
 }
 
@@ -218,6 +230,11 @@ func exitCodeForResults(res app.Result) int {
 	}
 	for _, r := range res.Galaxy {
 		if r.Error != "" && r.Balance == nil && r.Status == nil && len(r.Instances) == 0 {
+			return 1
+		}
+	}
+	for _, r := range res.Bai {
+		if r.Error != "" && r.Plan == nil {
 			return 1
 		}
 	}
@@ -558,6 +575,80 @@ func filterGalaxy(list []models.GalaxyAccount, q string) ([]models.GalaxyAccount
 	return out, len(out) > 0
 }
 
+// ── 白B.AI 详情 ──────────────────────────────────────────────
+
+func cmdBai(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, noColor bool) int {
+	fs := flag.NewFlagSet("bai", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	if err := fs.Parse(moveFlags(args)); err != nil {
+		fmt.Fprintln(stderr, "用法: llm-api-check bai [名称|ID] [--no-refresh]")
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "用法: llm-api-check bai [名称|ID] [--no-refresh]")
+		return 2
+	}
+	path := config.DefaultPath()
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 1
+	}
+	warnSecurity(stderr, noColor)
+	accounts := cfg.BaiAccounts
+	if fs.NArg() == 1 {
+		filtered, ok := filterBai(accounts, fs.Arg(0))
+		if !ok {
+			fmt.Fprintf(stderr, "账号不存在: %s\n", fs.Arg(0))
+			return 1
+		}
+		accounts = filtered
+	}
+	a := app.New(cfg)
+	results := make([]app.BaiResult, 0, len(accounts))
+	for _, acc := range accounts {
+		var r app.BaiResult
+		if *noRefresh {
+			r = app.BaiResult{Account: acc}
+		} else if r, err = a.RefreshBai(acc.ID); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		results = append(results, r)
+	}
+	res := app.Result{Bai: results}
+	if jsonOut {
+		if len(results) == 1 {
+			writeJSON(stdout, map[string]any{"bai": publicBaiResult(results[0])})
+		} else {
+			writeJSON(stdout, map[string]any{"bai": publicBaiResults(results)})
+		}
+		return exitCodeForResults(res)
+	}
+	c := colorizer(noColor)
+	var b strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(render.RenderBaiDetail(r, c))
+	}
+	fmt.Fprint(stdout, b.String())
+	return exitCodeForResults(res)
+}
+
+// filterBai 按 id 或 name 精确匹配（任一命中即包含）
+func filterBai(list []models.BaiAccount, q string) ([]models.BaiAccount, bool) {
+	var out []models.BaiAccount
+	for _, a := range list {
+		if a.ID == q || a.Name == q {
+			out = append(out, a)
+		}
+	}
+	return out, len(out) > 0
+}
+
 // ── accounts ──────────────────────────────────────────────────
 
 func cmdAccounts(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut bool) int {
@@ -593,6 +684,7 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 			"accounts":          sliceOrEmpty(publicAccounts(cfg.Accounts)),
 			"qwen_accounts":     sliceOrEmpty(publicQwenAccounts(cfg.QwenAccounts)),
 			"galaxy_accounts":   sliceOrEmpty(publicGalaxyAccounts(cfg.GalaxyAccounts)),
+			"bai_accounts":      sliceOrEmpty(publicBaiAccounts(cfg.BaiAccounts)),
 		})
 		return 0
 	}
@@ -628,13 +720,21 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		}
 		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
 	}
+	fmt.Fprintf(stdout, "白B.AI 账号 (%d):\n", len(cfg.BaiAccounts))
+	for _, a := range cfg.BaiAccounts {
+		ready := "未配置"
+		if strings.TrimSpace(a.ApiKey) != "" {
+			ready = "API Key 已配置"
+		}
+		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
+	}
 	return 0
 }
 
 func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut bool) int {
 	fs := flag.NewFlagSet("accounts add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	typ := fs.String("type", "", "账号类型: opencode|deepseek|qwen|galaxy")
+	typ := fs.String("type", "", "账号类型: opencode|deepseek|qwen|galaxy|bai")
 	name := fs.String("name", "", "账号名称")
 	goKey := fs.String("go-api-key", "", "OpenCode Go API Key")
 	wsID := fs.String("workspace-id", "", "OpenCode Workspace ID（可选）")
@@ -646,12 +746,12 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 	galaxyAK := fs.String("access-key", "", "智星云 AccessKey")
 	galaxySK := fs.String("secret-key", "", "智星云 SecretKey")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy --name 名称 [凭据 flags]")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai --name 名称 [凭据 flags]")
 		return 2
 	}
-	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" {
-		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen 或 galaxy")
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy --name 名称 [凭据 flags]")
+	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" && *typ != "bai" {
+		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen、galaxy 或 bai")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai --name 名称 [凭据 flags]")
 		return 2
 	}
 	if strings.TrimSpace(*name) == "" {
@@ -771,6 +871,30 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		}
 		return 0
 	}
+	// bai（白B.AI）：只用共享的 --api-key；放在 qwen 之前，qwen 是 fallthrough
+	if *typ == "bai" {
+		key, err := resolveSecret(*apiKey, "api-key", envBaiAPIKey, "BAI API Key: ", true, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
+		acc := models.BaiAccount{
+			ID:     config.NewID(),
+			Name:   strings.TrimSpace(*name),
+			ApiKey: key,
+		}
+		cfg.SaveBaiAccount(acc)
+		if err := cfg.Save(config.DefaultPath()); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		if jsonOut {
+			writeJSON(stdout, map[string]any{"bai_account": publicBaiAccount(acc)})
+		} else {
+			fmt.Fprintf(stdout, "已添加白B.AI 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+		}
+		return 0
+	}
 	// qwen
 	key, err := resolveSecret(*apiKey, "api-key", envQwenAPIKey, "Qwen API Key（sk-sp- 开头）: ", true, stdin, stdout)
 	if err != nil {
@@ -878,6 +1002,15 @@ func cmdAccountsRemove(args []string, stdout, stderr io.Writer, jsonOut bool) in
 		keptGalaxy = append(keptGalaxy, a)
 	}
 	cfg.GalaxyAccounts = keptGalaxy
+	var keptBai []models.BaiAccount
+	for _, a := range cfg.BaiAccounts {
+		if match(a.ID, a.Name) {
+			removed++
+			continue
+		}
+		keptBai = append(keptBai, a)
+	}
+	cfg.BaiAccounts = keptBai
 	if removed == 0 {
 		fmt.Fprintln(stderr, "错误: 未找到匹配的账号")
 		return 1
@@ -948,6 +1081,13 @@ func cmdAccountsRename(args []string, stdout, stderr io.Writer, jsonOut bool) in
 	}
 	for i := range cfg.GalaxyAccounts {
 		a := &cfg.GalaxyAccounts[i]
+		if match(a.ID, a.Name) {
+			a.Name = strings.TrimSpace(*newName)
+			renamed++
+		}
+	}
+	for i := range cfg.BaiAccounts {
+		a := &cfg.BaiAccounts[i]
 		if match(a.ID, a.Name) {
 			a.Name = strings.TrimSpace(*newName)
 			renamed++
@@ -1232,6 +1372,8 @@ func publicQwenResult(r app.QwenResult) map[string]any {
 }
 
 // joinText 合并两段错误文本（main 层轻量版，与 app.joinErrors 同语义）。
+// 按行去重：qwen --stats 时配额窗口与用量分析走同一个 CLI 会话，会话过期会产生
+// 逐字相同的错误（上层还可能已拼上 Plan 错误），不去重就在详情页里印两遍。
 func joinText(a, b string) string {
 	a = strings.TrimSpace(a)
 	b = strings.TrimSpace(b)
@@ -1241,7 +1383,18 @@ func joinText(a, b string) string {
 	if b == "" {
 		return a
 	}
-	return a + "\n" + b
+	lines := strings.Split(a, "\n")
+	seen := make(map[string]bool, len(lines))
+	for _, l := range lines {
+		seen[l] = true
+	}
+	for _, l := range strings.Split(b, "\n") {
+		if !seen[l] {
+			lines = append(lines, l)
+			seen[l] = true
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func publicDeepSeekAccounts(as []models.DeepSeekAccount) []map[string]any {
@@ -1272,6 +1425,44 @@ func publicGalaxyAccounts(as []models.GalaxyAccount) []map[string]any {
 	out := make([]map[string]any, 0, len(as))
 	for _, a := range as {
 		out = append(out, publicGalaxyAccount(a))
+	}
+	return out
+}
+
+// publicBaiAccount apiKey 当凭据掩码（与 DeepSeek/Qwen 同口径）
+func publicBaiAccount(a models.BaiAccount) map[string]any {
+	return map[string]any{
+		"id":     a.ID,
+		"name":   a.Name,
+		"apiKey": maskSecret(a.ApiKey),
+	}
+}
+
+func publicBaiResults(rs []app.BaiResult) []map[string]any {
+	out := make([]map[string]any, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, publicBaiResult(r))
+	}
+	return out
+}
+
+func publicBaiResult(r app.BaiResult) map[string]any {
+	m := map[string]any{
+		"account": publicBaiAccount(r.Account),
+	}
+	if r.Plan != nil {
+		m["plan"] = r.Plan
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	return m
+}
+
+func publicBaiAccounts(as []models.BaiAccount) []map[string]any {
+	out := make([]map[string]any, 0, len(as))
+	for _, a := range as {
+		out = append(out, publicBaiAccount(a))
 	}
 	return out
 }

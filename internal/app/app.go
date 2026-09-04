@@ -48,6 +48,14 @@ type QwenResult struct {
 	CLIInstallCmd string `json:"-"`
 }
 
+// BaiResult 单个白B.AI 账号的刷新结果。平台仅开放推理路径，无配额数据可拉，
+// v1 只有模型清单（API Key）。
+type BaiResult struct {
+	Account models.BaiAccount `json:"account"`
+	Plan    *models.BaiPlan   `json:"plan,omitempty"`
+	Error   string            `json:"error,omitempty"`
+}
+
 // GalaxyResult 单个智星云账号的刷新结果（对应 GalaxyUi）。
 // Balance 必需；Status/Instances/Cost 任一失败只影响该段（错误合并进 Error）。
 type GalaxyResult struct {
@@ -76,6 +84,7 @@ type Result struct {
 	Accounts    []AccountResult
 	Qwen        []QwenResult
 	Galaxy      []GalaxyResult
+	Bai         []BaiResult
 	LastUpdated time.Time
 }
 
@@ -85,6 +94,7 @@ type Repos struct {
 	OpenCode *repo.OpenCodeRepo
 	Qwen     *repo.QwenRepo
 	Galaxy   *repo.GalaxyRepo
+	Bai      *repo.BaiRepo
 }
 
 // GalaxyInstanceLimit 单次刷新展示的活跃实例上限（防止大账号拉穿）
@@ -107,6 +117,7 @@ func New(cfg *config.Config) *App {
 			OpenCode: repo.NewOpenCodeRepo(),
 			Qwen:     repo.NewQwenRepo(),
 			Galaxy:   repo.NewGalaxyRepo(),
+			Bai:      repo.NewBaiRepo(),
 		},
 		Cfg: cfg,
 	}
@@ -138,10 +149,12 @@ func (a *App) RefreshAll() (Result, error) {
 	accounts := append([]models.Account(nil), a.Cfg.Accounts...)
 	qwenAccounts := append([]models.QwenAccount(nil), a.Cfg.QwenAccounts...)
 	galaxyAccounts := append([]models.GalaxyAccount(nil), a.Cfg.GalaxyAccounts...)
+	baiAccounts := append([]models.BaiAccount(nil), a.Cfg.BaiAccounts...)
 	dsRes := make([]DeepSeekResult, len(dsAccounts))
 	accRes := make([]AccountResult, len(accounts))
 	qwenRes := make([]QwenResult, len(qwenAccounts))
 	galaxyRes := make([]GalaxyResult, len(galaxyAccounts))
+	baiRes := make([]BaiResult, len(baiAccounts))
 	var wg sync.WaitGroup
 	for i, acc := range dsAccounts {
 		wg.Add(1)
@@ -171,10 +184,17 @@ func (a *App) RefreshAll() (Result, error) {
 			galaxyRes[i] = a.refreshGalaxy(acc, GalaxyInstanceLimit)
 		}(i, acc)
 	}
+	for i, acc := range baiAccounts {
+		wg.Add(1)
+		go func(i int, acc models.BaiAccount) {
+			defer wg.Done()
+			baiRes[i] = a.refreshBai(acc)
+		}(i, acc)
+	}
 	wg.Wait()
 	now := time.Now()
 	a.Cfg.SetLastUpdate("all", now.UnixMilli())
-	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, LastUpdated: now}, nil
+	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, LastUpdated: now}, nil
 }
 
 // RefreshDeepSeek 按 id 刷新单个 DeepSeek 账号（对应 refreshDeepSeekNow）
@@ -379,6 +399,34 @@ func (a *App) refreshGalaxy(acc models.GalaxyAccount, limit int) GalaxyResult {
 		res.Cost = &cost
 	}
 	res.Error = joinErrors(balErr, cntErr, insErr, costErr)
+	return res
+}
+
+// RefreshBai 按 id 刷新单个白B.AI 账号（模型清单，API Key）。
+func (a *App) RefreshBai(id string) (BaiResult, error) {
+	var acc models.BaiAccount
+	found := false
+	for _, x := range a.Cfg.BaiAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return BaiResult{}, errors.New("账号不存在或已被删除")
+	}
+	return a.refreshBai(acc), nil
+}
+
+// refreshBai 拉模型清单；失败时保留账号 + 错误（上层据此判 exit 1）。
+func (a *App) refreshBai(acc models.BaiAccount) BaiResult {
+	res := BaiResult{Account: acc}
+	plan, err := a.Repos.Bai.Models(acc.ApiKey)
+	if err == nil {
+		res.Plan = &plan
+	}
+	res.Error = errMsg(err)
 	return res
 }
 

@@ -29,6 +29,7 @@ type Config struct {
 	Accounts         []models.Account         `json:"accounts"`
 	QwenAccounts     []models.QwenAccount     `json:"qwen_accounts"`
 	GalaxyAccounts   []models.GalaxyAccount   `json:"galaxy_accounts"`
+	BaiAccounts      []models.BaiAccount      `json:"bai_accounts"`
 	LastUpdate       map[string]int64         `json:"last_update"`
 }
 
@@ -202,6 +203,28 @@ func (c *Config) DeleteGalaxyAccount(id string) {
 		}
 	}
 	c.GalaxyAccounts = kept
+}
+
+// SaveBaiAccount 按 id upsert（同 SaveQwenAccount 逻辑）
+func (c *Config) SaveBaiAccount(a models.BaiAccount) {
+	for i, x := range c.BaiAccounts {
+		if x.ID == a.ID {
+			c.BaiAccounts[i] = a
+			return
+		}
+	}
+	c.BaiAccounts = append(c.BaiAccounts, a)
+}
+
+// DeleteBaiAccount 按 id 删除（同 DeleteQwenAccount 逻辑）
+func (c *Config) DeleteBaiAccount(id string) {
+	kept := c.BaiAccounts[:0]
+	for _, x := range c.BaiAccounts {
+		if x.ID != id {
+			kept = append(kept, x)
+		}
+	}
+	c.BaiAccounts = kept
 }
 
 // SetLastUpdate 记录最近更新时间（对应 SecureSettings.setLastUpdate）

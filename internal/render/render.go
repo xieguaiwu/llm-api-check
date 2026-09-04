@@ -154,7 +154,7 @@ func FormatCountdown(resetsAt string, now time.Time) string {
 
 // RenderOverview 总览：DeepSeek / OpenCode / Qwen / 智星云 四类账号卡片列表。
 func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
-	ds, accs, qwen, galaxy := res.DeepSeek, res.Accounts, res.Qwen, res.Galaxy
+	ds, accs, qwen, galaxy, bai := res.DeepSeek, res.Accounts, res.Qwen, res.Galaxy, res.Bai
 	lastUpdated := res.LastUpdated
 	var b strings.Builder
 	if lastUpdated.IsZero() {
@@ -162,7 +162,7 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	} else {
 		fmt.Fprintf(&b, "LLM API Check — 更新于 %s\n", lastUpdated.Format("15:04"))
 	}
-	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 {
+	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 {
 		b.WriteString("\n未配置任何账号，运行 llm-api-check accounts add --help 添加\n")
 		return b.String()
 	}
@@ -181,6 +181,10 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	for _, r := range galaxy {
 		fmt.Fprintf(&b, "\n智星云 (%s)\n", r.Account.Name)
 		writeGalaxyOverview(&b, r, now, c)
+	}
+	for _, r := range bai {
+		fmt.Fprintf(&b, "\n白B.AI (%s)\n", r.Account.Name)
+		writeBaiOverview(&b, r, c)
 	}
 	return b.String()
 }
@@ -863,6 +867,81 @@ func RenderQwenDetail(r app.QwenResult, now time.Time, c Colorizer) string {
 	}
 	if r.Error != "" {
 		b.WriteString(c.Red(r.Error) + "\n")
+	}
+	return b.String()
+}
+
+// ── 白B.AI 总览 + 详情 ───────────────────────────────────────
+
+func writeBaiOverview(b *strings.Builder, r app.BaiResult, c Colorizer) {
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type bai --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return
+	}
+	if r.Plan != nil && len(r.Plan.Models) > 0 {
+		missing := r.Plan.MissingFreeFlash()
+		fmt.Fprintf(b, "  模型 %d 个 · 免费通道 %d/%d\n",
+			len(r.Plan.Models), len(models.BaiFreeFlashModels)-len(missing), len(models.BaiFreeFlashModels))
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red("  "+r.Error) + "\n")
+	} else if r.Plan == nil {
+		b.WriteString(c.Gray("  暂无数据") + "\n")
+	}
+}
+
+// RenderBaiDetail 白B.AI 账号详情：模型清单 + 免费通道盯梢。
+// 平台仅开放推理路径，无配额/余额数据可拉（plan 文档 §二）。
+func RenderBaiDetail(r app.BaiResult, c Colorizer) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (BAI)\n", r.Account.Name)
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type bai --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red(r.Error) + "\n")
+		}
+		return b.String()
+	}
+	b.WriteString("API · 免费 0-Credits flash 通道\n")
+	if r.Plan != nil && len(r.Plan.Models) > 0 {
+		ids := make([]string, 0, len(r.Plan.Models))
+		for _, m := range r.Plan.Models {
+			ids = append(ids, m.ID)
+		}
+		fmt.Fprintf(&b, "  %-12s %d 个：%s\n", "模型", len(ids), strings.Join(ids, ", "))
+		missing := r.Plan.MissingFreeFlash()
+		if len(missing) == 0 {
+			b.WriteString("  " + c.Green("免费通道       ✓ "+strings.Join(models.BaiFreeFlashModels, " / ")) + "\n")
+		} else {
+			var have []string
+			for _, want := range models.BaiFreeFlashModels {
+				keep := true
+				for _, miss := range missing {
+					if miss == want {
+						keep = false
+						break
+					}
+				}
+				if keep {
+					have = append(have, want)
+				}
+			}
+			seg := "免费通道       "
+			if len(have) > 0 {
+				seg += "✓ " + strings.Join(have, " / ") + " · "
+			}
+			// 缺失段红色突出：免费通道下架直接影响 pi-subagent 默认模型源
+			seg += c.Red("⚠ 缺失：" + strings.Join(missing, "、") + "（pi-subagent 默认免费模型源受影响）")
+			b.WriteString("  " + seg + "\n")
+		}
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red(r.Error) + "\n")
+	} else if r.Plan == nil {
+		b.WriteString(c.Gray("  暂无数据") + "\n")
 	}
 	return b.String()
 }

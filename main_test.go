@@ -423,6 +423,15 @@ func TestQwenCLIExpiredSessionUserGuidance(t *testing.T) {
 	if strings.Contains(out, "to sign in") {
 		t.Errorf("不应透传英文原始 hint: %s", out)
 	}
+
+	// --stats：配额窗口与用量分析同源于一个失效会话 → 提示只能出现一次
+	code, out, errOut = runCLI(t, "", "qwen", "订阅号", "--stats")
+	if code != 1 {
+		t.Fatalf("qwen --stats 期望 exit=1，实际 %d out=%q err=%q", code, out, errOut)
+	}
+	if n := strings.Count(out+errOut, "未登录或会话已过期"); n != 1 {
+		t.Errorf("会话失效提示应只出现 1 次，实际 %d 次:\n%s\n%s", n, out, errOut)
+	}
 }
 
 // --no-refresh 时 CLI 已装但没数据：不应说「需控制台 Cookie 或 Bailian CLI」。
@@ -477,5 +486,21 @@ func TestQwenNoCLIShowsInstallGuidance(t *testing.T) {
 	_, out, errOut = runCLI(t, "", "qwen", "订阅号", "--stats")
 	if !strings.Contains(out, "未探测到") || !strings.Contains(out, "--prefix ~/.local/share/bailian-cli") {
 		t.Errorf("--stats 缺 CLI 时文案应含安装指引:\n%s\n%s", out, errOut)
+	}
+}
+
+// joinText 按行去重：重复行合并为一条，不同行全部保留且顺序不变。
+func TestJoinTextDedupesLines(t *testing.T) {
+	if got := joinText("", "b"); got != "b" {
+		t.Errorf("空首段应返回次段: %q", got)
+	}
+	if got := joinText("a", ""); got != "a" {
+		t.Errorf("空次段应返回首段: %q", got)
+	}
+	if got := joinText("a", "a"); got != "a" {
+		t.Errorf("相同文本应去重: %q", got)
+	}
+	if got := joinText("a\nb", "b\nc"); got != "a\nb\nc" {
+		t.Errorf("应按行去重并保留顺序: %q", got)
 	}
 }

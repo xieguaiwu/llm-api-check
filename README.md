@@ -2,7 +2,7 @@
 
 > [**中文版**](README_zh.md) | [**English**](#)
 
-A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history), OpenCode (Go plan windows + Zen billing), Qwen Token Plan (plan models + 5-hour / 7-day credit windows), and AI Galaxy 智星云 GPU cloud (account balance + rented instance status), with multi-account support. Ported from the Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker): same data-layer logic, terminal output instead of an app UI.
+A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history), OpenCode (Go plan windows + Zen billing), Qwen Token Plan (plan models + 5-hour / 7-day credit windows), AI Galaxy 智星云 GPU cloud (account balance + rented instance status), and B.AI 白B.AI free flash channel (model list + free-tier watch), with multi-account support. Ported from the Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker): same data-layer logic, terminal output instead of an app UI.
 
 ## Features
 
@@ -11,7 +11,8 @@ A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history),
 - **OpenCode Zen plan** — balance, monthly usage/limit, auto-reload settings (parsed from the billing page; requires workspace ID + auth cookie)
 - **Qwen Token Plan** — plan model list via the subscription gateway, plus 5-hour / 7-day credit windows with reset countdowns (quota comes from the official Bailian CLI when available, falling back to a console cookie; the quota API does not accept API keys)
 - **AI Galaxy (智星云)** — cash balance, compute vouchers and credit quota kept apart (never summed), plus rented GPU/CVM instances: status badge, GPU model/count, vCPU/memory, region, SSH endpoint, hourly price, auto-renew flag and an always-visible expiry countdown
-- **Multi-account** — unlimited DeepSeek, OpenCode, Qwen and AI Galaxy accounts, shown separately
+- **B.AI (白B.AI)** — free 0-Credits flash channel via api.b.ai: full model list (`/v1/models`), with a watch list for the known free-tier flash models — a missing one turns into a red warning because automated agents depend on them. The platform exposes no quota/balance endpoints to API keys (verified 2026-09-04), so there are no invented numbers
+- **Multi-account** — unlimited DeepSeek, OpenCode, Qwen, AI Galaxy and B.AI accounts, shown separately
 - Machine-readable `--json` output, `NO_COLOR` support
 - Zero third-party dependencies (Go stdlib only)
 
@@ -38,6 +39,8 @@ llm-api-check accounts add --type galaxy --name "GPU cloud" \
   --access-key <your-access-key> --secret-key <your-secret-key>
 llm-api-check galaxy                       # AI Galaxy balance + instance status
 llm-api-check galaxy --limit 5             # top 5 active instances
+llm-api-check accounts add --type bai --name "Free flash" --api-key sk-xxx
+llm-api-check bai                          # B.AI model list + free-tier watch
 ```
 
 Download a prebuilt binary from [Releases](https://github.com/xieguaiwu/llm-api-check/releases) (Linux and macOS, amd64 and arm64), verify it against `sha256sums.txt`, then put it on your `PATH`:
@@ -57,8 +60,9 @@ llm-api-check --version
 | `llm-api-check opencode [name\|ID] [--no-refresh]` | OpenCode account detail |
 | `llm-api-check qwen [name\|ID] [--no-refresh] [--stats]` | Qwen account detail (`--stats` adds 7-day token stats + free-tier quota) |
 | `llm-api-check galaxy [name\|ID] [--no-refresh] [--limit N]` | AI Galaxy balance + active instances (`--limit` how many, default 10, max 100) |
+| `llm-api-check bai [name\|ID] [--no-refresh]` | B.AI model list + free-tier flash watch |
 | `llm-api-check accounts list` | List all accounts |
-| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy --name NAME [credential flags]` | Add account |
+| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai --name NAME [credential flags]` | Add account |
 | `llm-api-check accounts remove --id ID \| --name NAME` | Remove account |
 | `llm-api-check accounts rename --id ID \| --name NAME --new-name NEW` | Rename account |
 | `llm-api-check config path` | Print config file path |
@@ -66,7 +70,7 @@ llm-api-check --version
 
 Global flags: `--json` (all output as JSON), `--no-color` (same as `NO_COLOR` env).
 
-Credential flags fall back in this order: flag → env var → TTY prompt (non-TTY errors out). Env vars: `LLM_API_CHECK_GO_API_KEY`, `LLM_API_CHECK_WORKSPACE_ID`, `LLM_API_CHECK_AUTH_COOKIE`, `LLM_API_CHECK_DEEPSEEK_API_KEY`, `LLM_API_CHECK_PLATFORM_TOKEN`, `LLM_API_CHECK_QWEN_API_KEY`, `LLM_API_CHECK_QWEN_COOKIE`, `LLM_API_CHECK_QWEN_REGION`, `LLM_API_CHECK_GALAXY_ACCESS_KEY`, `LLM_API_CHECK_GALAXY_SECRET_KEY`, `LLM_API_CHECK_BL_BIN` (Bailian CLI path), `LLM_API_CHECK_QWEN_CLI` (`off` disables the CLI quota channel).
+Credential flags fall back in this order: flag → env var → TTY prompt (non-TTY errors out). Env vars: `LLM_API_CHECK_GO_API_KEY`, `LLM_API_CHECK_WORKSPACE_ID`, `LLM_API_CHECK_AUTH_COOKIE`, `LLM_API_CHECK_DEEPSEEK_API_KEY`, `LLM_API_CHECK_PLATFORM_TOKEN`, `LLM_API_CHECK_QWEN_API_KEY`, `LLM_API_CHECK_QWEN_COOKIE`, `LLM_API_CHECK_QWEN_REGION`, `LLM_API_CHECK_GALAXY_ACCESS_KEY`, `LLM_API_CHECK_GALAXY_SECRET_KEY`, `LLM_API_CHECK_BAI_API_KEY`, `LLM_API_CHECK_BL_BIN` (Bailian CLI path), `LLM_API_CHECK_QWEN_CLI` (`off` disables the CLI quota channel).
 
 ## Where to get credentials
 
@@ -80,6 +84,7 @@ Credential flags fall back in this order: flag → env var → TTY prompt (non-T
 | Bailian CLI (preferred) | Install the official CLI: `npm install -g --prefix ~/.local/share/bailian-cli bailian-cli`, then log in once: `~/.local/share/bailian-cli/bin/bailian auth login --console`. The tool auto-detects it (or set `LLM_API_CHECK_BL_BIN`); CLI takes precedence over the cookie |
 | Qwen console cookie (fallback) | Sign in to `bailian.console.aliyun.com` → Token Plan page → DevTools → Network → any `data/api.json` request → copy the whole `Cookie` request header (you can paste it with the `Cookie:` prefix; the tool strips it) |
 | AI Galaxy AccessKey + SecretKey | gpu.ai-galaxy.cn console → 开放API → AccessKey管理 → create (requires real-name verification first). API signature is MD5 over sorted non-empty params plus `&secret=<SecretKey>` |
+| B.AI API key | chat.b.ai sidebar → API → Create API Key (`sk-…`). Inference-only key: quota/balance endpoints are blocked for API keys, so only the model list is available |
 
 Qwen quota is console-session data. The tool tries the official Bailian CLI first (`bailian usage token-plan`; set `LLM_API_CHECK_QWEN_CLI=off` to disable), then falls back to a console cookie. Without either it still validates the key and lists plan models, and says so instead of showing invented numbers.
 
@@ -116,6 +121,7 @@ Notes:
 | AI Galaxy balance | `POST https://app.ai-galaxy.cn/openapi/v2/account/get_main_account_info` | AccessKey + SecretKey signature |
 | AI Galaxy instances | `POST .../instance/get_instance_status_count`, `.../instance/get_instance_list` | AccessKey + SecretKey signature |
 | AI Galaxy spend | `POST .../billing/get_balance_change_list` | AccessKey + SecretKey signature |
+| B.AI models | `GET https://api.b.ai/v1/models` | API key (`Bearer sk-…`); one-api-style envelope `{data, success}` |
 
 ## Security
 

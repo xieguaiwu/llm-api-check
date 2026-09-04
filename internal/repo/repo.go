@@ -619,6 +619,47 @@ func (r *QwenRepo) getPage(rawURL, cookie, origin string, navigate bool) (string
 	return string(body), nil
 }
 
+// ── 白B.AI 仓库 ──────────────────────────────────────────────
+
+// BaiRepo 白B.AI（api.b.ai）数据仓库：模型清单（API Key）。
+// 平台仅开放推理路径（/v1/models 等），无余额/配额端点可查（实测 403）。
+type BaiRepo struct {
+	BaseURL string
+	Client  *http.Client
+}
+
+// NewBaiRepo 默认端点 + 15s 超时 client
+func NewBaiRepo() *BaiRepo {
+	return &BaiRepo{BaseURL: "https://api.b.ai", Client: defaultClient()}
+}
+
+func (r *BaiRepo) client() *http.Client {
+	if r.Client != nil {
+		return r.Client
+	}
+	return defaultClient()
+}
+
+// Models 拉取可用模型清单（API Key 认证）。
+// 401/403 统一口径：one-api 网关对 key 无效、令牌过期与额度用尽都回 401/403，
+// doGet 不区分状态码，文案须覆盖三种情况。
+func (r *BaiRepo) Models(apiKey string) (models.BaiPlan, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return models.BaiPlan{}, errors.New("未配置 API Key")
+	}
+	body, err := doGet(r.client(), r.BaseURL+"/v1/models",
+		map[string]string{"Authorization": "Bearer " + apiKey, "Accept": "application/json"},
+		"BAI API Key 无效、已过期或额度用尽，请到 chat.b.ai 核对")
+	if err != nil {
+		return models.BaiPlan{}, err
+	}
+	ms, err := parsers.ParseBaiModels(body)
+	if err != nil {
+		return models.BaiPlan{}, err
+	}
+	return models.BaiPlan{Models: ms}, nil
+}
+
 // joinErrors 合并多个错误为多行文本（与 app 包 joinErrors 语义一致，repo 内自持）
 func joinErrors(errs ...error) error {
 	var msgs []string

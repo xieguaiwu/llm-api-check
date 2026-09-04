@@ -125,6 +125,53 @@ func (a Account) HasZen() bool {
 	return strings.TrimSpace(a.WorkspaceId) != "" && strings.TrimSpace(a.AuthCookie) != ""
 }
 
+// ── 白B.AI（api.b.ai 免费通道） ───────────────────────────────
+
+// BaiAccount 白B.AI 账号。apiKey 为 chat.b.ai 侧栏创建的 sk- 密钥；
+// 平台只开放推理路径（/v1/models 等），无余额/配额端点可查（实测 403）。
+type BaiAccount struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	ApiKey string `json:"apiKey"`
+}
+
+// BaiModel 单个模型（/v1/models 列表项白名单）。
+type BaiModel struct {
+	ID        string   `json:"id"`
+	OwnedBy   string   `json:"owned_by"`
+	Endpoints []string `json:"supported_endpoint_types"`
+}
+
+// BaiPlan 模型清单（API Key 认证）。
+type BaiPlan struct {
+	Models []BaiModel `json:"models"`
+}
+
+// BaiFreeFlashModels 免费 0-Credits flash 通道盯梢清单——pi-subagent 默认免费
+// 模型源（bai/qwen3.8-flash、bai/deepseek-v4-flash）依赖它们在线。
+// 清单缺失时 CLI 提示，不参与断言（快照 2026-09-04）。
+var BaiFreeFlashModels = []string{
+	"deepseek-v4-flash",
+	"deepseek-v4-flash-vision-exp",
+	"glm-5.3-flash",
+	"qwen3.8-flash",
+}
+
+// MissingFreeFlash 返回免费通道清单中不在模型列表里的项。
+func (p BaiPlan) MissingFreeFlash() []string {
+	have := make(map[string]bool, len(p.Models))
+	for _, m := range p.Models {
+		have[m.ID] = true
+	}
+	var missing []string
+	for _, want := range BaiFreeFlashModels {
+		if !have[want] {
+			missing = append(missing, want)
+		}
+	}
+	return missing
+}
+
 // ── Qwen Token Plan（订阅） ────────────────────────────────────
 
 // QwenAccount Qwen 账号。apiKey 为 Token Plan 订阅密钥（sk-sp- 前缀）；
