@@ -1,5 +1,10 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-09-04 17:5x）
+- **provider=bai（白B.AI api.b.ai，commit 1df753b）**：免费 0-Credits flash 通道盯梢（qwen3.8-flash / deepseek-v4-flash / vision-exp / glm-5.3-flash，缺失红警——pi-subagent 默认免费模型源）。one-api 系网关（x-oneapi-request-id），**仅开放推理路径**（billing 403 原文「HTTP node only allows access to inference API paths」），v1 只有模型清单。凭据 = ~/.config/fish/config.fish L274 BAI_API_KEY（chat.b.ai 侧栏创建）。实测：直连已通（config.fish「必须走代理」注释已过时）、10 路并发未复现 429、假 key 401 `Invalid token`、max_tokens≤2 拒 400。`llm-api-check bai` / `accounts add --type bai`（env LLM_API_CHECK_BAI_API_KEY）；测试 222→236，反向验证三做，真机 47 模型+4/4 绿 ✓。契约 docs/plans/2026-09-04-bai-provider.md。⚠️ 同 commit 还含 joinText 按行去重修复（见下）。
+- **qwen provider 重新验证（全闭环）**：① API Key 通道实时 12 模型；② Bailian CLI 会话过期实测（config 停在 08-30）→ 错误文案/绝对路径/`bl` 改写防线全部按 08-30 修复生效；③ **发现并修掉 --stats 重复错误缺陷**：joinText 全串比对漏「上层已拼 Plan 错误」的行内重复 → 改按行去重（main.go joinText + TestJoinTextDedupesLines + e2e 计数断言，反向验证 FAIL 确认）；④ 用户浏览器 OAuth 重登后配额恢复：7天 96% · 8小时1分后重置（红 ≥90 正确）+ --stats 全通（45,351 tokens）；⑤ bailian-cli 1.18.1→1.20.0 漂移检查：输出字段名零变化（对比 bailian-cli-commands 包），升级安全暂不升。
+- **Android 对等实现待办**：pocket-llm-api-checker 同名 provider 未施工（bai）；Galaxy 的 Android 侧真机冒烟仍欠（见下）。
+
 ## 最后一次完成的工作（2026-08-30 15:0x）
 - **momus 审查轮收尾：3 个 P2 全修（审查结论本身是「通过、无阻塞」）**
   - ① 会话关键字集合收窄：删 `unauthorized` / `not authorised` / `not authorized`（权限类错误误归会话失效 = 让用户白跑一轮浏览器登录），补 `needlogin`（`BailianGateway.Login.NeedLogin` 是 cookie 路径已文档化的登录码，旧集合漏它）
@@ -38,7 +43,7 @@
 `~/Desktop/go-projects/pocket-llm-api-checker` 的同名 provider 正在并行施工（GalaxyRepo/GalaxyCard/GalaxyDetailScreen/SettingsScreen 录入 + 单测），契约以 Go 侧 plan 文档为准。真机冒烟与凭据录入由用户完成。
 
 ## 项目当前状态
-llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）** 与 **智星云 AI Galaxy（算力云余额 + 云主机实例状态）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——`llm-api-check qwen` 显示 `7天 41% · 155小时32分后重置`（2026-08-29 实测）；CLI 优先、控制台 Cookie 兜底。**
+llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）** 与 **白B.AI（免费 flash 通道模型清单 + 免费额度盯梢）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。BAI 平台仅开放推理路径（billing 403），无配额数据可拉，勿尝试给 bai 加余额/配额端点。**
 
 🔴 **Android 侧唯一权威 clone（2026-08-29 取证）= `~/Desktop/go-projects/pocket-llm-api-checker/`**（HEAD e1c1568，含 fastlane 元数据 + tag v1.0.0 + scripts/ 可复现构建 + docs/fdroid 草稿）。`~/Desktop/android-projects/api-checkers/` 是落后一提交的旧副本（HEAD cec6ef7，无 fastlane、无 tag），只做历史参考，**勿在其上开发**。
 
@@ -67,7 +72,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 
 ## 技术要点（下一位 Agent 必读）
 - **智星云 OpenAPI 铁律**：① 签名 = 非空参数字典序拼 `k=v&…` + 末尾 `&secret=<SecretKey>` → MD5 小写 hex，`sign` 进 body（**不入串**）；② HTTP 恒 200，错误在信封 `{success,code:"2000"}` 里，`code` 是**字符串**；③ `page_size` 上限 100（超限报 `page_size参数超限!`）；④ `status_type` 传非法值不报错、按不过滤处理，不能拿它做参数校验；⑤ 实例响应含明文口令（见上）；⑥ 到期时刻用 `Due_time-ServerTime` 折算；⑦ 平台错误码只有 "2000"（成功）/"4000"（客户端错误，message 说明原因）。详见 docs/plans/2026-08-29-ai-galaxy-provider.md
-- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）**
+- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）；BAI 模型 = `GET https://api.b.ai/v1/models`（API key，one-api 系信封 `{data:[{id,owned_by,supported_endpoint_types}],success}`）**
 - **Bailian CLI 通道铁律**：① 本机 `bl` 是用户自研翻译 CLI——探测与文档一律用 `bailian` 名/绝对路径，`exec.LookPath("bl")` 是被禁止的（会误调）；② `usage token-plan` 认证模式 Console，API key 无效；③ Node 的 UNDICI 警告在 stderr，必须过滤；④ exit 非零时 JSON 错误信封在 stderr（实测 exit 3）；⑤ CLI 会话存 `~/.bailian/config.json`（敏感文件）；⑥ 会话短寿命（几小时），过期重跑 `bailian auth login --console`；⑦ 实现文件 `internal/repo/qwen_cli.go`（QwenCLI.runJSON 共用 Usage/Summary 通道）
 - **Qwen 三个不能踩的坑**（详见 docs/plans/2026-08-29-qwen-provider.md）：① `cornerstoneParam` 绝不得硬编码 `switchAgent`（网关会绑死该工作区 → 他人账号全部 NotAuthorised）② 抓 `SEC_TOKEN` 必须带 `Sec-Fetch-*` 浏览器导航头 + 桌面 UA，否则 OneConsole shell 不渲染该 token ③ 登录失效仍回 HTTP 200，错误在信封 `data.errorCode` 里，不能只看状态码
 - **关键移植点**：ZenBilling 字符串字面量感知括号匹配（inStr/esc 状态机）、`(?:^|,)balance:` 正则、microcents÷1e8、cost 两月都无数据显式失败（不返回误导零数据）；QwenUsage 信封 BFS + 内嵌 JSON 字符串展开（深度上限 12）、`qwenPercent` 比例/百分数双域判定（>2 才当百分数）、空窗口重试 3 次而认证类错误不重试、CLI 单窗口响应独立判有（5 小时限时取消期间字段缺席）
@@ -90,4 +95,4 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - 图谱以最新 commit 为准；若 `graphify-out/needs_update` 存在说明已陈旧，先 update 再依赖它回答
 
 ## 最后更新时间
-2026-08-30 14:35
+2026-09-04 17:55

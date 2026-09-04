@@ -5,8 +5,8 @@
     "semantic_hash": ""
   },
   "internal/app/app.go": {
-    "mtime": 1788514589.8879545,
-    "ast_hash": "1968fd9632eb5d2bce8e261113c9aac9",
+    "mtime": 1788074027.3912587,
+    "ast_hash": "0c29562370c00434ded4f741da9f8480",
     "semantic_hash": ""
   },
   "internal/app/app_test.go": {
@@ -15,8 +15,8 @@
     "semantic_hash": ""
   },
   "internal/config/config.go": {
-    "mtime": 1788514557.794711,
-    "ast_hash": "0f494e17c090cd8816bf03ad8ee0ec0c",
+    "mtime": 1787999024.6955724,
+    "ast_hash": "959ed017ddef37e34971ece56341ef1f",
     "semantic_hash": ""
   },
   "internal/config/config_test.go": {
@@ -25,8 +25,8 @@
     "semantic_hash": ""
   },
   "internal/models/models.go": {
-    "mtime": 1788515181.3721106,
-    "ast_hash": "cb6a4f46332c5e085982da7930875d81",
+    "mtime": 1788000627.4291651,
+    "ast_hash": "3a8a0624927779468da0a78cf160bb98",
     "semantic_hash": ""
   },
   "internal/models/models_test.go": {
@@ -35,8 +35,8 @@
     "semantic_hash": ""
   },
   "internal/parsers/parsers.go": {
-    "mtime": 1788515182.4512281,
-    "ast_hash": "1395d76767cec2411a505fb78e90f769",
+    "mtime": 1788003661.8430834,
+    "ast_hash": "94d7445d3b70124022a7cfdbb01ca191",
     "semantic_hash": ""
   },
   "internal/parsers/parsers_test.go": {
@@ -45,8 +45,8 @@
     "semantic_hash": ""
   },
   "internal/render/render.go": {
-    "mtime": 1788514845.0468893,
-    "ast_hash": "285084a763d0b31c3151230c80c8cff3",
+    "mtime": 1788074382.2532008,
+    "ast_hash": "8567a3739441576a9584f8b152d4ca9d",
     "semantic_hash": ""
   },
   "internal/render/render_test.go": {
@@ -65,8 +65,8 @@
     "semantic_hash": ""
   },
   "internal/repo/repo.go": {
-    "mtime": 1788514544.7676125,
-    "ast_hash": "3ab30d4c17ece4b64831f9baa8e9ce80",
+    "mtime": 1788073785.055111,
+    "ast_hash": "78265357b1fd2e582c976a0a41277f5b",
     "semantic_hash": ""
   },
   "internal/repo/repo_test.go": {
@@ -75,13 +75,13 @@
     "semantic_hash": ""
   },
   "main.go": {
-    "mtime": 1788515182.0453167,
-    "ast_hash": "1b1ed3b7eb7582ecd45e3daa417319fe",
+    "mtime": 1788074027.3937862,
+    "ast_hash": "53f22e80650c2378525a65df272275a0",
     "semantic_hash": ""
   },
   "main_test.go": {
-    "mtime": 1788513132.693312,
-    "ast_hash": "22f03b55fb583b54605c595789c666ef",
+    "mtime": 1788074248.0002058,
+    "ast_hash": "862f86f213f5af55894ca7eb9165830e",
     "semantic_hash": ""
   },
   "scripts/build-dist.sh": {
@@ -160,13 +160,13 @@
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1788515284.4345188,
-    "ast_hash": "08fee6226dd099e9650fbdd3487d881b",
+    "mtime": 1788074456.84737,
+    "ast_hash": "2252e7e181a8f11e1ed8d78d135e159a",
     "semantic_hash": ""
   },
   "README_zh.md": {
-    "mtime": 1788515318.2037988,
-    "ast_hash": "cd07f6e8d813cb59120c718dccc96de1",
+    "mtime": 1788074456.847823,
+    "ast_hash": "8e93fbdea81679e9e33631e5104ce306",
     "semantic_hash": ""
   },
   "docs/plans/2026-08-18-llm-api-check-cli.md": {
@@ -247,36 +247,6 @@
   "docs/plans/2026-08-29-ai-galaxy-provider.md": {
     "mtime": 1788004027.856611,
     "ast_hash": "ec15f960adbca8dcadbd8f4b391178dd",
-    "semantic_hash": ""
-  },
-  "bai_main_test.go": {
-    "mtime": 1788515150.3164062,
-    "ast_hash": "ae8086604aff3473e1d07c4e4b479067",
-    "semantic_hash": ""
-  },
-  "internal/app/bai_test.go": {
-    "mtime": 1788514991.6840901,
-    "ast_hash": "3856f573667ea7321762fefeb4578513",
-    "semantic_hash": ""
-  },
-  "internal/parsers/bai_test.go": {
-    "mtime": 1788515086.7458787,
-    "ast_hash": "cc12b20e49592a28925b8da2e907b914",
-    "semantic_hash": ""
-  },
-  "internal/render/bai_test.go": {
-    "mtime": 1788515112.0250885,
-    "ast_hash": "2325bce05cc65804afb5826550711074",
-    "semantic_hash": ""
-  },
-  "internal/repo/bai_test.go": {
-    "mtime": 1788514965.7338748,
-    "ast_hash": "5eab74895fbd79dfa36f7884243cbacf",
-    "semantic_hash": ""
-  },
-  "docs/plans/2026-09-04-bai-provider.md": {
-    "mtime": 1788514444.23185,
-    "ast_hash": "d6552c4d8a9075fc8324ba50086017cb",
     "semantic_hash": ""
   }
 }

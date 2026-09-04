@@ -2,15 +2,14 @@
   "0": "render.go",
   "1": "parsers_test.go",
   "2": "main.go",
-  "3": "New",
-  "4": "QwenAccount",
+  "3": "QwenRepo",
+  "4": "qwen_cli_test.go",
   "5": "HandlerFunc",
-  "6": "Config",
+  "6": "NewWithRepos",
   "7": "parsers/galaxy_test.go",
   "8": "runCLI",
   "9": "llm-api-check",
   "10": "LLM API Check CLI Implementation Plan",
-  "11": "qwen_cli_test.go",
   "12": "二、契约（2026-08-29 真实凭据实测通过）",
   "13": "F-Droid 发布调查与安卓发表计划（2026-08-24）",
   "14": "Qwen Token Plan provider 设计（2026-08-29）",
@@ -21,7 +20,5 @@
   "19": "github.com/xieguiawu/llm-api-check",
   "20": "tty_darwin.go",
   "21": "tty_linux.go",
-  "22": "models.go",
-  "23": "BAI provider 设计（白B.AI · api.b.ai）—— 2026-09-04",
-  "24": "ParseBaiModels"
+  "22": "New"
 }
