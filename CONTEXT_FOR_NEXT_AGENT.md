@@ -119,7 +119,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - [ ] songjieshi/xieguaiwu 的 key 来自 config.fish 注释行（非当前生效），可能已过期（xieguaiwu 实测 M 100% 已限流属正常用量而非 key 失效）
 - [x] ~~P3 未修（非阻塞）：NewID panic 改返回错误、writeJSON stderr 注入、promptTTY bufio.Reader 复用、`--json --version` 文本输出~~ 仍未修（本轮只做了 momus 的 3 个 P2）；Qwen 额度绝对值（quota-config 接口的 `five_hour`/`weekly` credits）未接入，现只显示百分比（CodexBar 已接 quota-config，可参考）
 - [ ] Zen billing 解析依赖 opencode.ai 页面结构，改版需更新 `internal/parsers/parsers.go` 的 ParseZenBilling；Qwen 同理依赖百炼控制台 RPC（信封形状变化时改 `qwenFindObject` 目标键）或 bailian-cli 输出（字段变化时改 `qwenCLIErrorEnvelope`/`ParseQwenUsage`）
-- [ ] **发版 v1.3.0**（可选）：`VERSION=1.3.0 scripts/build-dist.sh` → tag v1.3.0 → Release（含 galaxy provider 与 moveFlags 修复说明；GitHub Release 仍停在 v1.1.0，v1.2.0 也未发）
+- [x] ~~**发版 v1.3.0**~~ → **2026-09-06 已发**：`VERSION=1.3.0 scripts/build-dist.sh`（四平台 tarball + sha256sums）→ tag v1.3.0 → Release https://github.com/xieguaiwu/llm-api-check/releases/tag/v1.3.0（覆盖 v1.2.0+v1.3.0 全部内容：galaxy provider、bai 积分、qwen --stats、moveFlags/joinText 修复）。**下载回验通过**：从 Release 拉回 linux_amd64 包 `sha256sum -c` OK、解包 `--version` → 1.3.0；v1.3.0 已接管 Latest 标记。main 与 tag 均已 push
 - [ ] **智星云可选增强**（未做，需要时再加）：`billing/get_instance_cost_summary` 单实例费用分解、`instance/get_instance_detail` 深看、`/store/*` 显卡价格与库存、自动续费开关状态细化、余额低于阈值告警（可接 belater 定时跑 `galaxy --json`）
 - [ ] 图形知识图谱 graphify-out/ 未生成（可选，`graphify update . --no-llm`）
 
