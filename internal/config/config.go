@@ -247,13 +247,13 @@ func (c *Config) LastUpdateAt(key string) time.Time {
 	return time.UnixMilli(t)
 }
 
-// NewID 生成 32 字符 hex 随机账号 id（等价 Android 版 UUID，零第三方依赖：
-// 16 字节 crypto/rand → hex 编码）。
-func NewID() string {
+// NewIDE 生成 32 字符 hex 随机账号 id（等价 Android 版 UUID，零第三方依赖：
+// 16 字节 crypto/rand → hex 编码）。crypto/rand 失败（熵源不可用）返回错误
+// 而非 panic——库层不夺走调用方的崩溃控制权（P3：旧 NewID panic 已废）。
+func NewIDE() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand 失败属于系统级异常（熵源不可用），无法继续
-		panic(fmt.Sprintf("生成随机 id 失败: %v", err))
+		return "", fmt.Errorf("生成随机 id 失败: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }

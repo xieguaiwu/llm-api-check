@@ -3,6 +3,7 @@ package render
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xieguiawu/llm-api-check/internal/app"
 	"github.com/xieguiawu/llm-api-check/internal/models"
@@ -40,11 +41,45 @@ func TestRenderBaiDetailMissingFlashWarns(t *testing.T) {
 	r := baiAllFlash()
 	r.Plan.Models = r.Plan.Models[:2] // 只留 deepseek 两项
 	got := RenderBaiDetail(r, Colorizer{Disabled: true})
-	if !strings.Contains(got, "✓ deepseek-v4-flash / deepseek-v4-flash-vision-exp · ") {
+	// 在的部分单独一行 ✓（无探活数据时维持旧语义）
+	if !strings.Contains(got, "✓ deepseek-v4-flash / deepseek-v4-flash-vision-exp") {
 		t.Errorf("应在的部分仍显示 ✓:\n%s", got)
 	}
 	if !strings.Contains(got, "⚠ 缺失：glm-5.3-flash、qwen3.8-flash（pi-subagent 默认免费模型源受影响）") {
 		t.Errorf("缺失应红色提示:\n%s", got)
+	}
+}
+
+// 探活故障模型：清单在但运行时挂 → 红色 ⚠ + 故障摘要；存活模型照常 ✓
+func TestRenderBaiFlashProbeDead(t *testing.T) {
+	r := baiAllFlash()
+	r.Plan.Probes = []models.BaiProbe{
+		{Model: "deepseek-v4-flash", Alive: false, Detail: "HTTP 503: pre_consume_token_quota_failed"},
+		{Model: "deepseek-v4-flash-vision-exp", Alive: true},
+		{Model: "glm-5.3-flash", Alive: true},
+		{Model: "qwen3.8-flash", Alive: true},
+	}
+	got := RenderBaiDetail(r, Colorizer{Disabled: true})
+	if !strings.Contains(got, "⚠ deepseek-v4-flash 运行时故障：HTTP 503: pre_consume_token_quota_failed") {
+		t.Errorf("探活故障应显示模型名与摘要:\n%s", got)
+	}
+	if !strings.Contains(got, "✓ glm-5.3-flash / qwen3.8-flash / deepseek-v4-flash-vision-exp") &&
+		!strings.Contains(got, "✓ deepseek-v4-flash-vision-exp / glm-5.3-flash / qwen3.8-flash") {
+		t.Errorf("存活模型应显示 ✓:\n%s", got)
+	}
+	// 总览：alive 计数扣故障 + 故障注记
+	ov := RenderOverview(app.Result{Bai: []app.BaiResult{r}}, time.Time{}, Colorizer{Disabled: true})
+	if !strings.Contains(ov, "免费通道 3/4（1 故障）") {
+		t.Errorf("总览应扣故障并注记:\n%s", ov)
+	}
+}
+
+// 未探活（--no-refresh）时总览维持清单在位计数
+func TestRenderBaiOverviewWithoutProbes(t *testing.T) {
+	r := baiAllFlash()
+	ov := RenderOverview(app.Result{Bai: []app.BaiResult{r}}, time.Time{}, Colorizer{Disabled: true})
+	if !strings.Contains(ov, "免费通道 4/4") || strings.Contains(ov, "故障") {
+		t.Errorf("无探活不应有故障注记:\n%s", ov)
 	}
 }
 
@@ -197,5 +232,101 @@ func TestRenderOverviewBaiPoints(t *testing.T) {
 	}
 	if strings.Contains(got2, "本月消耗") {
 		t.Errorf("HasMonthly=false 不应显示消耗:\n%s", got2)
+	}
+}
+
+func TestRenderBaiStatsSection(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	stats := models.BaiUsageStats{
+		RecordsFetched: 3,
+		Complete:       true,
+		WindowStart:    "2026-09-06T05:09:11.000Z",
+		WindowEnd:      "2026-09-06T05:28:30.000Z",
+		PerModel: []models.BaiModelUsage{
+			{Model: "glm-5.3-flash", Requests: 2, InputTokens: 400, OutputTokens: 40, TotalTokens: 440},
+			{Model: "qwen3.8-flash", Requests: 1, InputTokens: 2_500_000, OutputTokens: 10, TotalTokens: 2_500_010},
+		},
+		TotalRequests:   3,
+		TotalTokens:     2_500_450,
+		TotalCostPoints: 0,
+	}
+	r := baiAllFlash()
+	r.Stats = &stats
+	got := RenderBaiDetail(r, c)
+	for _, want := range []string{
+		"用量分析",
+		"窗口", "2026-09-06 ~ 2026-09-06",
+		"3 次", "2,500,450 tokens",
+		"glm-5.3-flash", "2 次 · in 400 / out 40 / total 440 tokens",
+		"qwen3.8-flash", "2,500,000",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stats 段缺 %q:\n%s", want, got)
+		}
+	}
+	// 完整数据不标截断
+	if strings.Contains(got, "数据不完整") {
+		t.Errorf("complete=true 不应标截断:\n%s", got)
+	}
+}
+
+func TestRenderBaiStatsTruncatedAndCost(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	stats := models.BaiUsageStats{
+		RecordsFetched:  1000,
+		Complete:        false,
+		WindowStart:     "2026-09-05T00:00:00.000Z",
+		WindowEnd:       "2026-09-06T05:28:30.000Z",
+		TotalRequests:   1000,
+		TotalTokens:     110000,
+		TotalCostPoints: 5_000_000,
+	}
+	r := baiAllFlash()
+	r.Stats = &stats
+	got := RenderBaiDetail(r, c)
+	if !strings.Contains(got, "数据不完整") {
+		t.Errorf("截断必须明示:\n%s", got)
+	}
+	if !strings.Contains(got, "5,000,000") || !strings.Contains(got, "≈ $5.00") {
+		t.Errorf("消耗积分与美元换算应显示:\n%s", got)
+	}
+	if !strings.Contains(got, "2026-09-05 ~ 2026-09-06") {
+		t.Errorf("跨日窗口应显示:\n%s", got)
+	}
+}
+
+func TestRenderBaiDetailWithoutStatsUnchanged(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	got := RenderBaiDetail(baiAllFlash(), c)
+	if strings.Contains(got, "用量分析") {
+		t.Errorf("无 Stats 不应显示用量分析段:\n%s", got)
+	}
+}
+
+// 过期部分黄色告警（口径用户定：只警过期 ≥100 万；余额维持 ≤0 红不设阈值）
+func TestRenderBaiExpiringWarn(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	// 超阈值：详情 + 总览都提醒
+	r := baiAllFlash()
+	r.Points = &models.BaiPoints{Balance: 27_166_591, Expiring: 7_166_591, MonthlySpent: 2_833_409, HasMonthly: true}
+	got := RenderBaiDetail(r, c)
+	if !strings.Contains(got, "过期提醒") || !strings.Contains(got, "7,166,591") || !strings.Contains(got, "不花就没了") {
+		t.Errorf("详情缺过期提醒:\n%s", got)
+	}
+	ov := RenderOverview(app.Result{Bai: []app.BaiResult{r}}, time.Time{}, c)
+	if !strings.Contains(ov, "即将过期，不花就没了") {
+		t.Errorf("总览缺过期提醒:\n%s", ov)
+	}
+	// 低于阈值：不提醒（免打扰）
+	r2 := baiAllFlash()
+	r2.Points = &models.BaiPoints{Balance: 900_000, Expiring: 900_000}
+	if got := RenderBaiDetail(r2, c); strings.Contains(got, "过期提醒") {
+		t.Errorf("低于阈值不应提醒:\n%s", got)
+	}
+	// 额度耗尽（≤0）时过期提醒退位——整行红色已是最高级
+	r3 := baiAllFlash()
+	r3.Points = &models.BaiPoints{Balance: 0, Expiring: 2_000_000}
+	if got := RenderBaiDetail(r3, c); strings.Contains(got, "过期提醒") {
+		t.Errorf("耗尽态不应再叠过期提醒:\n%s", got)
 	}
 }

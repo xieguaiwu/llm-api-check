@@ -188,3 +188,124 @@ func TestParseBaiMonthlySpent(t *testing.T) {
 
 // fmtInt 测试辅助：int64 → 十进制字符串（避免为断言引入 render 包）
 func fmtInt(v int64) string { return strconv.FormatInt(v, 10) }
+
+// usage.records 负载真实形状（2026-09-06 实测截取，superjson meta 忽略）
+const baiRecordsFixture = `{"result":{"data":{"json":{"data":[` +
+	`{"cache_tokens":{"cache_read_input_tokens":72064,"cache_creation_input_tokens":0},"cost_points":0,` +
+	`"created_at":"2026-09-06T05:27:37.000Z","duration_sec":20.219,"id":"api_CygR4X0iGOuP7BaN","image_usage":null,` +
+	`"input_tokens":73238,"model":"glm-5.3-flash","output_tokens":660,"request_id":"20260906x","source_type":"api",` +
+	`"total_tokens":73898,"router_difficulty":null},` +
+	`{"cost_points":"12","created_at":"2026-09-06T05:09:11.000Z","id":"api_2nd","input_tokens":2.5e3,` +
+	`"model":"qwen3.8-flash","output_tokens":10,"source_type":"api","total_tokens":2510}` +
+	`],"has_more":true,"next_cursor":"eyJ2Ijox","page":1,"pageSize":2}}}}`
+
+func TestParseBaiRecordsHappy(t *testing.T) {
+	recs, more, err := ParseBaiRecords(baiRecordsFixture)
+	if err != nil {
+		t.Fatalf("ParseBaiRecords: %v", err)
+	}
+	if !more {
+		t.Errorf("has_more=true 应透传")
+	}
+	if len(recs) != 2 {
+		t.Fatalf("应 2 条: %+v", recs)
+	}
+	r0 := recs[0]
+	if r0.ID != "api_CygR4X0iGOuP7BaN" || r0.Model != "glm-5.3-flash" || r0.SourceType != "api" {
+		t.Errorf("字段不符: %+v", r0)
+	}
+	if r0.InputTokens != 73238 || r0.OutputTokens != 660 || r0.TotalTokens != 73898 || r0.CostPoints != 0 {
+		t.Errorf("token 数不符: %+v", r0)
+	}
+	if r0.CreatedAt != "2026-09-06T05:27:37.000Z" {
+		t.Errorf("时间不符: %s", r0.CreatedAt)
+	}
+	// 宽容形状：字符串积分 + 浮点 token（rawInt64 通道）
+	r1 := recs[1]
+	if r1.CostPoints != 12 || r1.InputTokens != 2500 {
+		t.Errorf("宽容解析不符: %+v", r1)
+	}
+}
+
+func TestParseBaiRecordsHasMoreFalse(t *testing.T) {
+	raw := `{"result":{"data":{"json":{"data":[{"model":"m","created_at":"2026-09-06T05:00:00.000Z","input_tokens":1,"output_tokens":2,"total_tokens":3,"cost_points":0}],"has_more":false}}}}`
+	recs, more, err := ParseBaiRecords(raw)
+	if err != nil || more {
+		t.Fatalf("err=%v more=%v", err, more)
+	}
+	if len(recs) != 1 || recs[0].TotalTokens != 3 {
+		t.Errorf("记录不符: %+v", recs)
+	}
+}
+
+func TestParseBaiRecordsErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"UNAUTHORIZED", baiUnauthorizedFixture, "无效、已过期或额度用尽"},
+		{"非授权错误带原文", `{"error":{"json":{"message":"boom","data":{"code":"BAD"}}}}`, "BAI 用量明细 返回错误: boom"},
+		{"JSON 坏", `{not json`, "JSON 解析失败"},
+		{"负载缺 data", `{"result":{"data":{"json":{"has_more":false}}}}`, "响应缺少 data"},
+		{"data 为 null", `{"result":{"data":{"json":{"data":null,"has_more":false}}}}`, "响应缺少 data"},
+	}
+	for _, c := range cases {
+		_, _, err := ParseBaiRecords(c.raw)
+		if err == nil {
+			t.Errorf("%s: 期望错误", c.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: 错误文案缺 %q: %v", c.name, c.want, err)
+		}
+	}
+	// 空数组是合法零记录，不是错误
+	recs, more, err := ParseBaiRecords(`{"result":{"data":{"json":{"data":[],"has_more":false}}}}`)
+	if err != nil || more || len(recs) != 0 {
+		t.Errorf("空数组应为零记录: err=%v more=%v recs=%v", err, more, recs)
+	}
+}
+
+func TestSanitizeText(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{"干净文本原样", "BAI API Key 无效，余额不足", "BAI API Key 无效，余额不足"},
+		{"CSI 颜色序列剥离", "a\x1b[31m红\x1b[0mb", "a红b"},
+		{"OSC 标题 BEL 终止", "a\x1b]0;evil\x07b", "ab"},
+		{"OSC 标题 ST 终止", "a\x1b]2;t\x1b\\b", "ab"},
+		{"\\r 剥离（防光标回行首伪造输出）", "行一\r伪造行", "行一伪造行"},
+		{"\\n 与 \\t 保留（多行错误依赖）", "a\nb\tc", "a\nb\tc"},
+		{"DEL 剥离", "a\x7fb", "ab"},
+		{"C1 控制符剥离（U+009B）", "ab", "ab"},
+		{"无终止符 CSI 有界吞掉", "a\x1b[31", "a"},
+		{"尾部孤 ESC 丢弃", "a\x1b", "a"},
+		{"中文多字节不受影响", "余额不足（≈ $0.01）", "余额不足（≈ $0.01）"},
+		{"ESC 后中文正常", "\x1b[1m余额\x1b[m", "余额"},
+		{"注入攻击组合", "\x1b]0;pwned\x07额度已用尽\x1b[31m", "额度已用尽"},
+	}
+	for _, c := range cases {
+		if got := SanitizeText(c.in); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// 消毒必须接进错误出口：服务器消息带 ANSI 时，解析错误里不得出现转义序列
+func TestParseBaiErrorEnvelopeSanitized(t *testing.T) {
+	raw := `{"error":{"json":{"message":"bad \u001b[31mtoken\u001b[0m inject\u0007","data":{"code":"BAD"}}}}`
+	_, err := ParseBaiPoints(raw)
+	if err == nil {
+		t.Fatal("期望错误")
+	}
+	msg := err.Error()
+	for _, bad := range []string{"\x1b", "\x07"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("错误消息含控制字符 %q: %q", bad, msg)
+		}
+	}
+	if !strings.Contains(msg, "bad token inject") {
+		t.Errorf("正文应保留: %q", msg)
+	}
+}

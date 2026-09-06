@@ -1,5 +1,51 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-09-06 下午，本日第二轮：A-F 六任务）
+- **本轮范围**：用户指「根据 Coding/index.md 完成剩下工作」→ CONTEXT 待办全盘动工：
+  A bai --stats / B 全仓错误消毒 / C P3 四小修 / D 免费通道探活 / E bai 告警阈值 /
+  F Android bai 对等（切仓 pocket-llm-api-checker，commit 9d0c9c2）。资源评估
+  RISK=CRITICAL（defer_or_direct）→ 全程直接施工未派 subagent。
+- **A. bai --stats（usage.records）**：models.BaiRecord/BaiUsageStats +
+  AggregateBaiUsage（requests 降序/同数字典序，窗口取 min/max created_at）；
+  parsers.ParseBaiRecords（信封拆包重构为 baiEnvelopeOf 三端点共用；data 缺席=显式
+  失败，空数组=合法零记录）；repo.Records/Stats（串行 10 页×100=1000 条封顶，
+  has_more 自然终止 complete=true，中途页失败保部分+标中断页——不并行翻页：
+  新请求持续入队推移窗口有页间重复竞态）；app.RefreshBaiStats；render.renderBaiStats
+  （截断必标「数据不完整」）；cmdBai --stats（moveFlags 已认 --stats）+ publicBaiResult
+  stats 键。真机：1000 条 7.6s，glm/qwen/deepseek 三模型聚合，边界 09-05~09-06。
+- **B. 全仓错误文本消毒（momus P2 留档项兑现）**：parsers.SanitizeText 原语
+  （CSI/OSC/两字符转义字节态机 + 控制字符剥离，保留 \n\t，UTF-8 按字节处理，
+  序列有字节上限防无终止符拖死）；接入 6 处——BAI 信封×2、qwenErrorOf、
+  repo.truncate200（先消毒后截断，覆盖 doGet/doPost/galaxy 5 个 HTTP 错误体出口）、
+  qwenCLIErrorEnvelope message/hint、qwenCLIStderrTail（顺带修 08-30 留档的字节截断
+  P2 → rune 安全）。**教训**：先截断后消毒会把 ESC 序列拦腰切断留下残序列——
+  必须先消毒后截断（探活测试反向抓到该顺序缺陷）。
+- **C. P3 四小修**：①NewID→NewIDE (string, error)，cmdAccountsAdd 统一预生成 accID
+  （五处调用点收敛一处）②writeJSON 编码失败写 w 本身 error 信封 + os.Stderr 保底
+  ③promptTTY 进程级共享 bufio（stdinSourceFor，源变重建）——互动机连续 prompt
+  不再吞缓冲行④--json --version 出 JSON 信封。
+- **D. 免费通道探活**：models.BaiProbe + BaiPlan.Probes；repo.ProbeFreeFlash
+  （POST chat/completions max_tokens=8，200=alive / 401·403 归一认证文案 / 其他
+  带消毒摘要）；refreshBai 模型 lane 成功后自动探盯梢清单内存在模型（缺失项不探）；
+  render 免费通道四态（✓存活/✓未探/⚠运行时故障+摘要/✗缺失）+ 总览故障注记。
+  真机：4 路全绿（deepseek-v4-flash 今晨 503 已自愈——间歇故障只有真发推理才查得出，
+  正是探活的价值）；status 全链 6.7s。
+- **E. bai 告警阈值（口径=用户选「只警过期部分」）**：models.BaiExpiringWarnPoints=
+  1_000_000（≈$1，低于不扰）；详情「过期提醒 …不花就没了」黄色 + 总览注记；
+  耗尽态（≤0）红色已最高级不叠提醒；低于阈值不提醒。真机 7,166,086 触发正确。
+- **F. Android bai 对等**：pocket-llm-api-checker commit 9d0c9c2——数据层三件
+  （Models/Parsers/Repositories，aggregateBaiUsage 等口径逐条对齐）+ BaiUi/BaiCard/
+  BaiDetailScreen（导航 bai/{id}）/Settings 分区 + refreshBaiNow（探活+stats
+  best-effort，§12 调用点自查）+ sanitizeServerText。122 测试 0 失败，lintDebug 绿
+  （顺手修 themes.xml forceDarkAllowed 基线 error），assembleDebug 17.1MB。
+  ⚠️ 真机冒烟待用户（本机无 adb）；Android commit 未 push。
+- **质量门（Go 仓）**：gofmt 0 / vet 0 / 7 包 -race 全绿；用例 **258 → 291**；
+  **反向验证 11 做**（rawInt64 严格化 / data 缺席静默 / 翻页封顶拆除 /
+  中途失败改整体失败 / 聚合排序反转 / 截断标注拆除 / cmdBai stats 接线拆除 /
+  publicBaiResult stats 键拆除 / 消毒原语拆除×2 / 探活接线拆除——各自对应测例
+  FAIL）。新二进制已装 ~/.local/bin，真机冒烟：bai --stats / bai --json / bai /
+  status / --json --version 全通过。**未 commit**（见下方待办）。
+
 ## 最后一次完成的工作（2026-09-06 12:5x）
 - **bai 积分额度显示（推翻 09-04「配额不可得」结论）**：`llm-api-check bai` 现在显示
   `积分余额 27,166,591（≈ $27.17） · 其中 7,166,591 即将过期` + `本月消耗 2,833,409（≈ $2.83）`。
@@ -109,10 +155,10 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
   - ⚠️ 会话短寿命实测：OAuth 登录约几小时即过期（13:46 登录 14:0x 已报 Console session not logged in or has expired）→ 过期重跑 `bailian auth login --console` 即可（首次登录进程若卡住先 kill 再重开）
 
 ## 遗留问题 / 待办
-- [ ] **bai 可选增强（未做，数据已取证）**：`usage.records` 逐请求明细（model/tokens/cost_points/created_at/source_type）足以支撑 `bai --stats`（对齐 `qwen --stats`）；`order.listOrders` 可出充值/返佣流水。本轮只做额度显示，未接 records
-- [ ] **bai 额度告警闭环（未做）**：余额低到多少该报警没有平台依据（耗尽才真失败），现仅「≤0 红警」；若要阈值需先与用户确认口径
-- [ ] **Android 对等实现（bai）**：pocket-llm-api-checker 侧需同步「模型清单 + 积分额度」，契约以 Go plan §二-b 为准
-- [ ] **免费通道盯梢升级（未做）**：盯梢只查模型清单存在性，查不出运行时 503（2026-09-06 实测 `deepseek-v4-flash` 回 `pre_consume_token_quota_failed`、其余 flash 正常）——要盖住这类故障得加一次 max_tokens=8 探活（有成本，待定）
+- [x] ~~bai --stats~~ / ~~bai 告警阈值~~ / ~~Android 对等（bai）~~ / ~~免费通道探活~~ / ~~全仓错误消毒~~ / ~~P3 四小修~~ → **2026-09-06 下午 A-F 六任务全部完成**（见上）
+- [ ] **本轮 Go 侧改动未 commit**：A-E 五任务已过全部质量门（291 用例 + 反向验证 11 做 + 真机冒烟），等用户确认后提交（公开仓 push 须用户同意）
+- [ ] **Android 真机冒烟（bai）**：本机无 adb 设备，用户手机装 9d0c9c2 包后录入 sk- key 验证 bai 卡/详情页/探活红行；Android commit 同样未 push
+- [ ] **bai order.listOrders / records 逐条视图（未做）**：充值流水与逐请求明细列表 UI 未接（--stats 已覆盖聚合视图）；需要时再加
 - [x] ~~**Bailian CLI 会话过期维护**：差异化文案未做~~ → **2026-08-30 已做**：会话失效单独立档，给出可复制的 `bailian auth login --console`（绝对路径）；不透传上游 `bl` hint。运维动作不变：过期重跑 `~/.local/share/bailian-cli/bin/bailian auth login --console`（浏览器 OAuth；登录进程卡住先 kill 再重开）。⚠️ `bailian auth status` 不校验会话有效性，判活看 `bailian usage token-plan`
 - [ ] **国际区域（ap-southeast-1）无凭据、未实跑**：代码按公开契约实现（`QwenEndpointsFor` + CLI `--console-site international`，CLI 通道单测覆盖了 intl 参数）；启用前先验证 `/tool/user/info.json` 的 sec_token 字段名
 - [ ] **DeepSeek 平台 token / workspace ID + auth cookie 未配置**（config.fish 无）：DeepSeek 消费明细与 Zen billing 不可用。平台 token 需浏览器登录 platform.deepseek.com 后从 DevTools 抓；Zen 需 opencode.ai 的 workspace ID + auth cookie（`Fe26.2` 开头）
@@ -132,6 +178,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - **关键移植点**：ZenBilling 字符串字面量感知括号匹配（inStr/esc 状态机）、`(?:^|,)balance:` 正则、microcents÷1e8、cost 两月都无数据显式失败（不返回误导零数据）；QwenUsage 信封 BFS + 内嵌 JSON 字符串展开（深度上限 12）、`qwenPercent` 比例/百分数双域判定（>2 才当百分数）、空窗口重试 3 次而认证类错误不重试、CLI 单窗口响应独立判有（5 小时限时取消期间字段缺席）
 - **错误消息**与 Android 版逐字一致（对照表在 docs/plans/2026-08-18-llm-api-check-cli.md「错误消息对照表」节；Qwen 新错文见 docs/plans/2026-08-29-qwen-provider.md）
 - **安全**：凭据存 `~/.config/llm-api-check/config.json` chmod 0600（智星云 AccessKey 也算长期凭据——它能签名发起扣费请求，`--json` 同样掩码）（CLI 无 Keystore，文件权限替代 + 权限过宽警告）；凭据来源顺序 flag → 环境变量（`LLM_API_CHECK_*`）→ TTY 提示；`--json` 输出全部掩码凭据；Qwen 控制台 Cookie 含阿里云登录会话，当敏感文件对待；Bailian CLI 会话在 `~/.bailian/config.json`
+- **2026-09-06 下午新增要点**：①stats 翻页串行 10 页×100（并行翻页有页间重复竞态——新请求持续入队推移窗口）；②消毒铁律「先 SanitizeText 后 truncate」——顺序反了会把 ESC 序列拦腰切断；③探活只探盯梢清单内存在模型（缺失项再探是浪费）；④过期告警口径=只警 expiring ≥100 万（用户定），耗尽态红色已最高级不叠；⑤「平台不提供 X」的否定结论要逐子域取证（chat.b.ai 推翻 api.b.ai 403 外推，本轮 §八 records 再证）
 - **构建**：`go build -trimpath -ldflags="-s -w -X main.version=1.3.0" -o ~/.local/bin/llm-api-check .`；测试 `go test ./... -race`（7 包）；发版打包 `VERSION=x.y.z scripts/build-dist.sh`（四平台 tarball + sha256sums.txt → dist/，dist/ 不入库）
 - **渲染**：中文输出、ANSI 颜色（NO_COLOR/--no-color 禁用）、用量条 10 格；中英混排对齐用 `render.padTo`（按显示宽度，中文 2 列），不要用 `%-Ns`、倒计时「4小时20分后重置 / 52分钟后重置 / 即将重置」、颜色阈值 <70 蓝 / 70-89 黄 / ≥90 红、限流与配额用尽强制红且**「已限流」徽章与重置倒计时必须并存**（index.md §六 项目专属要求）
 - **本机环境**：密钥真值在 `~/.config/fish/config.fish`（非 dotfiles 符号链接、不入库）；该文件首行有 `if not status is-interactive; return; end` 守卫，`fish -c 'source …'` 取值会静默得空值——用 python 正则直读文件（见 System_Fix/dotfiles-sync-and-audit.md 附录 B.5）；订阅密钥与区域强绑定（北京 key 打新加坡端点 401，同 key 换区域即 200）；Bailian CLI 已装 `~/.local/share/bailian-cli/bin/bailian`（独立 prefix，不 shadow 自研 bl）
@@ -149,4 +196,4 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - 图谱以最新 commit 为准；若 `graphify-out/needs_update` 存在说明已陈旧，先 update 再依赖它回答
 
 ## 最后更新时间
-2026-09-06 12:5x
+2026-09-06 15:0x

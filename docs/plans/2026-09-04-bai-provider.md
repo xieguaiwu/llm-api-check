@@ -176,3 +176,43 @@ API · 免费 0-Credits flash 通道
   （§施工约束的时延算术、`RefreshBai` 注释、测例双重否定），1 条留档未修
   （tRPC 错误原文未消毒——与全仓同模式，须统一修而非单点修）。
   新二进制装 `~/.local/bin` + 真机四路冒烟（有效 key / 坏 key / --json / --no-refresh）。
+
+## 八、用量分析 --stats（usage.records，2026-09-06 真实 key 实测）
+
+### 取证（2026-09-06）
+
+`GET https://chat.b.ai/trpc/lambda/usage.records?input={"page":1,"pageSize":100}`
+（同一把 sk- key 作 Bearer）回 tRPC 信封 `result.data.json`：
+
+- `data[]`：逐请求明细。实测字段 `model` / `source_type`（"api"）/
+  `created_at`（ISO UTC）`input_tokens` / `output_tokens` / `total_tokens` /
+  `cache_tokens.cache_read_input_tokens` / `cost_points`（本账号全 0，免费通道）/
+  `duration_sec` / `request_id` / `id`；其余为 router_* / image_usage 等未用字段
+  （superjson `meta.values` 标 undefined，忽略）。
+- `has_more` + `next_cursor` + `page` / `pageSize` 回显：newest-first 排序
+  （实测 100 条 05:09→05:28 严格降序）。
+- 实测页延迟 ≈0.6 s（代理链路）；本账号产出速率 ≈300 请求/小时。
+
+### 契约与设计决策
+
+- **拉取上限**：串行翻页，`BaiStatsMaxPages = 10` 页 × `pageSize = 100` = 1000 条封顶；
+  `has_more=false` 提前停。10 页最坏 ≈6 s——--stats 是显式 opt-in，可接受
+  （同 §二-b 串行往返先例）。不用并行翻页：新请求持续入队会移页窗口，
+  并行抓取存在页间重复/遗漏竞态，串行诚实。
+- **截断诚实**：未拉全（has_more 仍 true）→ `Complete=false`，渲染标「数据不完整」；
+  数字只在拉到的范围内成立，不假称全量。
+- **聚合口径**：按 model 聚合 requests / input / output / total tokens / cost_points；
+  模型按 requests 降序、同名按字典序。窗口 WindowStart/WindowEnd 取聚合范围内
+  min/max created_at（ISO 字符串序即可，平台恒 Z 后缀同形状）。均值、cache、duration
+  渲染层派生或不展示（后续要再加）。
+- **宽容解析**：token / cost_points 数字走 `rawInt64`（int64/浮点/字符串三形状，
+  越界/Inf/NaN 拒为缺席→0）；未知字段一律忽略（白名单结构体，router_* 不接）。
+  `data` 键缺席 = 显式失败（不显示 0 条冒充统计）；空数组 = 合法零记录。
+- **input 参数不做校验假设**：page/pageSize 之外的字段平台忽略不报错（§二-b 已证），
+  CLI 只发 `page`+`pageSize` 两个键。
+- **错误口径**：401/UNAUTHORIZED → `ErrBaiAuth`（同两路共用）；stats 失败不抖掉
+  已有的 Plan/Points——错误 join 进 `r.Error`，退出码口径不变（任一路有数据即 0）。
+- **分层**：repo `Records(page)` 单页 + `Stats()` 翻页循环；聚合纯函数
+  `models.AggregateBaiUsage`（Android 对等实现可直接照抄口径）；app `RefreshBaiStats(id)`
+  对齐 `RefreshQwenStats`；渲染 `renderBaiStats` 对齐 `renderQwenStats`；
+  `--json` 增 `stats` 键（`publicBaiResult`），不暴露逐条记录（千条会淹终端）。

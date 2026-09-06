@@ -26,11 +26,18 @@ const browserUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 // 所有网络超时 15s（全局约束，等价 OkHttp connect/read/write 15s）
 const timeout = 15 * time.Second
 
-// truncate200 错误响应体截断 200 字符（rune 安全，防切断中文多字节，momus P2-2）
+// truncate200 错误响应体消毒 + 截断 200 字符（rune 安全，防切断中文多字节）。
+// 服务器响应体片段进终端前必经 SanitizeText：剥离 ANSI/控制字符（momus P2 统一修）。
+// 先消毒后截断：截断可能把 ESC 序列拦腰切断，留下无法识别的残序列。
 func truncate200(s string) string {
+	return parsers.SanitizeText(truncate(s, 200))
+}
+
+// truncate rune 安全截断（未消毒，入终端前须过 parsers.SanitizeText）
+func truncate(s string, n int) string {
 	r := []rune(s)
-	if len(r) > 200 {
-		return string(r[:200])
+	if len(r) > n {
+		return string(r[:n])
 	}
 	return s
 }
@@ -698,6 +705,116 @@ func (r *BaiRepo) Points(apiKey string) (models.BaiPoints, error) {
 		}
 	}
 	return pts, nil
+}
+
+// consoleBase 控制台地址（空值退默认，Points 与 Stats 共用）。
+func (r *BaiRepo) consoleBase() string {
+	if s := strings.TrimSpace(r.ConsoleURL); s != "" {
+		return s
+	}
+	return "https://chat.b.ai"
+}
+
+// baiStatsMaxPages / baiStatsPageSize usage.records 翻页参数与上限：
+// 串行 10 页 × 100 条 = 1000 条封顶（最坏 ≈6s，--stats 是显式 opt-in 可接受）；
+// 不并行翻页：新请求持续入队会推移窗口，并行抓取存在页间重复/遗漏竞态。
+const (
+	baiStatsMaxPages = 10
+	baiStatsPageSize = 100
+)
+
+// Records 拉取 usage.records 单页（page 从 1 起，每页 baiStatsPageSize 条）。
+// 返回记录与 has_more（是否还有下一页）。
+func (r *BaiRepo) Records(apiKey string, page int) ([]models.BaiRecord, bool, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, false, errors.New("未配置 API Key")
+	}
+	if page < 1 {
+		page = 1
+	}
+	input := fmt.Sprintf(`{"page":%d,"pageSize":%d}`, page, baiStatsPageSize)
+	body, err := doGet(r.client(), r.consoleBase()+"/trpc/lambda/usage.records?input="+url.QueryEscape(input),
+		baiHeaders(apiKey), parsers.ErrBaiAuth.Error())
+	if err != nil {
+		return nil, false, err
+	}
+	return parsers.ParseBaiRecords(body)
+}
+
+// Stats 翻页拉取 usage.records 并聚合为按模型统计（--stats）。
+// 停止条件：has_more=false 自然终止，或达 baiStatsMaxPages 封顶（Complete=false）。
+// 中途页失败：已拉到的页仍然返回（截断诚实），错误标注中断页。
+func (r *BaiRepo) Stats(apiKey string) (models.BaiUsageStats, error) {
+	var all []models.BaiRecord
+	for page := 1; page <= baiStatsMaxPages; page++ {
+		recs, more, err := r.Records(apiKey, page)
+		if err != nil {
+			if len(all) > 0 {
+				agg := models.AggregateBaiUsage(all)
+				agg.Complete = false
+				return agg, fmt.Errorf("用量明细在第 %d 页中断（已聚合前 %d 条）: %w", page, len(all), err)
+			}
+			return models.BaiUsageStats{}, err
+		}
+		all = append(all, recs...)
+		if !more {
+			agg := models.AggregateBaiUsage(all)
+			agg.Complete = true
+			return agg, nil
+		}
+	}
+	agg := models.AggregateBaiUsage(all)
+	agg.Complete = false
+	return agg, nil
+}
+
+// probeMaxTokens 探活请求的 max_tokens：足以让网关走完计费链路并吐出故障
+// （503 在请求阶段就回），同时把免费额度消耗压到最小（实测单次 ≈10 token）。
+const probeMaxTokens = 8
+
+// ProbeFreeFlash 对免费通道盯梢清单做运行时探活（POST /v1/chat/completions，
+// max_tokens=8）。返回按入参顺序对齐的结果；单模型失败不抖掉其余（Alive=false
+// + 消毒后的故障摘要），只有网络层彻底异常才返回错误。
+// 200 → Alive；4xx/5xx → 不 Alive（401/403 归一 ErrBaiAuth 文案）。
+func (r *BaiRepo) ProbeFreeFlash(apiKey string, modelIDs []string) ([]models.BaiProbe, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, errors.New("未配置 API Key")
+	}
+	out := make([]models.BaiProbe, 0, len(modelIDs))
+	for _, id := range modelIDs {
+		p := models.BaiProbe{Model: id}
+		payload := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":%d,"stream":false}`, id, probeMaxTokens)
+		req, err := http.NewRequest(http.MethodPost, r.BaseURL+"/v1/chat/completions", strings.NewReader(payload))
+		if err != nil {
+			return nil, fmt.Errorf("构造探活请求失败: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		resp, err := r.client().Do(req)
+		if err != nil {
+			p.Detail = fmt.Sprintf("网络异常: %v", err)
+			out = append(out, p)
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		switch {
+		case resp.StatusCode >= 200 && resp.StatusCode <= 299:
+			p.Alive = true
+		case resp.StatusCode == 401 || resp.StatusCode == 403:
+			p.Detail = parsers.ErrBaiAuth.Error()
+		default:
+			// 响应体是服务器可控文本：消毒 + 截断后再进错误摘要
+			p.Detail = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, parsers.SanitizeText(truncate(string(body), 120)))
+		}
+		if readErr != nil {
+			p.Alive = false
+			p.Detail = fmt.Sprintf("读取响应失败: %v", readErr)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // joinErrors 合并多个错误为多行文本（与 app 包 joinErrors 语义一致，repo 内自持）

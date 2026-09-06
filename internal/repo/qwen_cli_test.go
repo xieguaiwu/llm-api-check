@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xieguiawu/llm-api-check/internal/models"
 )
@@ -454,5 +455,40 @@ func TestDetectQwenCLIEnvBinMissing(t *testing.T) {
 	t.Setenv("LLM_API_CHECK_BL_BIN", "/nonexistent/bailian-"+time.Now().Format("150405"))
 	if cli, err := DetectQwenCLI(); err == nil {
 		t.Fatalf("不存在的 bin 不应命中: %+v", cli)
+	}
+}
+
+// 服务器可控文本消毒：CLI 信封 message/hint 与 stderr 尾都过 SanitizeText
+func TestQwenCLISanitizeServerText(t *testing.T) {
+	// 信封 message 带 ANSI 注入
+	got := qwenCLIErrorEnvelope(`{"error":{"code":3,"message":"bad \u001b[31mtoken\u001b[0m","hint":"run \u0007thing"}}`, "bailian")
+	for _, bad := range []string{"\x1b", "\x07"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("信封错误含控制字符 %q: %q", bad, got)
+		}
+	}
+	if !strings.Contains(got, "bad token") || !strings.Contains(got, "run thing") {
+		t.Errorf("正文应保留: %q", got)
+	}
+
+	// stderr 尾消毒 + rune 安全截尾（旧实现按字节切中文出乱码）；300 错 + inject = 306 rune > 300
+	long := strings.Repeat("错", 300) + " \x1b[31minject\x1b[0m"
+	tail := qwenCLIStderrTail(long + "\n(node:1) UNDICI 噪音\n")
+	if strings.Contains(tail, "\x1b") {
+		t.Errorf("stderr 尾含 ANSI: %q", tail)
+	}
+	if strings.Contains(tail, "UNDICI") {
+		t.Errorf("噪音应被过滤: %q", tail)
+	}
+	if !strings.Contains(tail, "…") {
+		t.Errorf("超长应带省略头: %q", tail)
+	}
+	// 300 rune 上限（+省略号）
+	if n := len([]rune(strings.TrimPrefix(tail, "…"))); n > 300 {
+		t.Errorf("截尾超限: %d rune", n)
+	}
+	// 不产生非法 UTF-8（旧字节截断会切出残缺多字节）
+	if !utf8.ValidString(tail) {
+		t.Errorf("截尾产生非法 UTF-8: %q", tail)
 	}
 }

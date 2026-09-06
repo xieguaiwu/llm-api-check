@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xieguiawu/llm-api-check/internal/models"
 )
@@ -363,6 +364,90 @@ func truncate(s string, n int) string {
 	return s
 }
 
+// SanitizeText 清洗服务器可控文本（错误消息、HTTP 响应体片段）——进终端与
+// --json 前必经。剥离 ANSI 转义序列（CSI / OSC / 两字符转义）与除 \n、\t 外
+// 的控制字符（含 \r、DEL、C1 区）：上游文本可携带 \x1b[31m 或 \r 伪造终端
+// 输出、打断行结构，也可让 --json.error 混入垃圾字节。多行错误依赖 \n 故
+// 保留；多字节 UTF-8 按字节态机处理，中文不受影响。momus 2026-09-06 P2：
+// 须全仓统一接入而非单点修，避免各 provider 消毒口径不一致。
+func SanitizeText(s string) string {
+	dirty := false
+	for _, r := range s {
+		if r == 0x1b || (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			dirty = true
+			break
+		}
+	}
+	if !dirty {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c != 0x1b {
+			r, size := utf8.DecodeRuneInString(s[i:])
+			if r == utf8.RuneError && size <= 1 {
+				i++ // 坏字节丢弃，不进输出
+				continue
+			}
+			if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+				i += size
+				continue
+			}
+			b.WriteString(s[i : i+size])
+			i += size
+			continue
+		}
+		// ESC 序列三型：CSI（ESC [ … 终止字节 0x40-0x7e）、OSC（ESC ] … BEL 或 ESC \）、
+		// 两字符转义。均有字节上限，防服务器发无终止符序列拖死清洗。
+		if i+1 >= len(s) {
+			break // 尾部孤 ESC 丢弃
+		}
+		switch s[i+1] {
+		case '[':
+			j := i + 2
+			for j < len(s) && j-i < 64 && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			if j < len(s) && s[j] >= 0x40 && s[j] <= 0x7e {
+				i = j + 1
+			} else {
+				i = j
+			}
+		case ']':
+			j := i + 2
+			end := -1
+			for j < len(s) && j-i < 256 {
+				if s[j] == 0x07 {
+					end = j + 1
+					break
+				}
+				if s[j] == 0x1b && j+1 < len(s) && s[j+1] == '\\' {
+					end = j + 2
+					break
+				}
+				j++
+			}
+			if end < 0 {
+				if j > len(s) {
+					j = len(s)
+				}
+				end = j
+			}
+			i = end
+		default:
+			i += 2
+			// ESC ( B / ESC ) 1 / ESC # 3 等三字符形态：中间字符再吃一个
+			if i-1 < len(s) && (s[i-1] == '(' || s[i-1] == ')' || s[i-1] == '#' || s[i-1] == '%') && i < len(s) {
+				i++
+			}
+		}
+	}
+	return b.String()
+}
+
 // ── 白B.AI：网关模型清单（API Key 认证） ─────────────────────
 
 // ParseBaiModels 解析 GET /v1/models 响应（one-api 系信封：data 数组 + 顶层
@@ -386,7 +471,7 @@ func ParseBaiModels(raw string) ([]models.BaiModel, error) {
 	// 未验证形状上误报；若上游未来改版，此处是首个观察点。
 	if !payload.Success && len(payload.Data) == 0 {
 		if msg := strings.TrimSpace(payload.Message); msg != "" {
-			return nil, fmt.Errorf("BAI 网关返回错误: %s", truncate(msg, 200))
+			return nil, fmt.Errorf("BAI 网关返回错误: %s", truncate(SanitizeText(msg), 200))
 		}
 		return nil, errors.New("未获取到 BAI 可用模型")
 	}
@@ -480,27 +565,91 @@ type baiPointsPayload struct {
 	MonthlySpent   json.RawMessage `json:"monthly_spent"`
 }
 
-// baiPayloadOf 拆 tRPC 信封并取出负载。错误信封优先：UNAUTHORIZED 归一到
-// ErrBaiAuth，其他错误带原文（截 200 字）。
-func baiPayloadOf(raw, proc string) (baiPointsPayload, error) {
+// baiEnvelopeOf 拆 tRPC 信封并返回负载原文。错误信封优先：UNAUTHORIZED 归一到
+// ErrBaiAuth，其他错误带原文（截 200 字）。points / summary / records 三端点共用。
+func baiEnvelopeOf(raw, proc string) (json.RawMessage, error) {
 	var env baiEnvelope
 	if err := json.Unmarshal([]byte(raw), &env); err != nil {
-		return baiPointsPayload{}, fmt.Errorf("BAI %s JSON 解析失败: %w", proc, err)
+		return nil, fmt.Errorf("BAI %s JSON 解析失败: %w", proc, err)
 	}
 	if msg := strings.TrimSpace(env.Error.JSON.Message); msg != "" {
 		if strings.EqualFold(strings.TrimSpace(env.Error.JSON.Data.Code), "UNAUTHORIZED") {
-			return baiPointsPayload{}, ErrBaiAuth
+			return nil, ErrBaiAuth
 		}
-		return baiPointsPayload{}, fmt.Errorf("BAI %s 返回错误: %s", proc, truncate(msg, 200))
+		return nil, fmt.Errorf("BAI %s 返回错误: %s", proc, truncate(SanitizeText(msg), 200))
 	}
 	if len(env.Result.Data.JSON) == 0 {
-		return baiPointsPayload{}, fmt.Errorf("未获取到 BAI %s", proc)
+		return nil, fmt.Errorf("未获取到 BAI %s", proc)
+	}
+	return env.Result.Data.JSON, nil
+}
+
+// baiPayloadOf 拆 tRPC 信封并取出积分额度负载。
+func baiPayloadOf(raw, proc string) (baiPointsPayload, error) {
+	payload, err := baiEnvelopeOf(raw, proc)
+	if err != nil {
+		return baiPointsPayload{}, err
 	}
 	var p baiPointsPayload
-	if err := json.Unmarshal(env.Result.Data.JSON, &p); err != nil {
+	if err := json.Unmarshal(payload, &p); err != nil {
 		return baiPointsPayload{}, fmt.Errorf("BAI %s 负载解析失败: %w", proc, err)
 	}
 	return p, nil
+}
+
+// baiRecordsRow usage.records 单条记录的白名单字段（其余 router_* / meta 未用字段
+// 由 JSON 白名单结构体天然忽略；数字形状宽容交给 rawInt64）。
+type baiRecordsRow struct {
+	ID           string          `json:"id"`
+	Model        string          `json:"model"`
+	SourceType   string          `json:"source_type"`
+	CreatedAt    string          `json:"created_at"`
+	InputTokens  json.RawMessage `json:"input_tokens"`
+	OutputTokens json.RawMessage `json:"output_tokens"`
+	TotalTokens  json.RawMessage `json:"total_tokens"`
+	CostPoints   json.RawMessage `json:"cost_points"`
+}
+
+// baiRecordsPayload usage.records 负载：data 数组 + 翻页游标。next_cursor 刻意不接
+// （page/pageSize 已足够，游标格式属于平台内部实现，不把它当契约）。
+type baiRecordsPayload struct {
+	Data    json.RawMessage `json:"data"`
+	HasMore bool            `json:"has_more"`
+}
+
+// ParseBaiRecords 解析 GET /trpc/lambda/usage.records：逐请求明细 + has_more。
+// data 键缺席 = 显式失败（不显示 0 条冒充统计）；空数组 = 合法零记录。
+func ParseBaiRecords(raw string) ([]models.BaiRecord, bool, error) {
+	payload, err := baiEnvelopeOf(raw, "用量明细")
+	if err != nil {
+		return nil, false, err
+	}
+	var p baiRecordsPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil, false, fmt.Errorf("BAI 用量明细负载解析失败: %w", err)
+	}
+	if len(p.Data) == 0 || strings.TrimSpace(string(p.Data)) == "null" {
+		return nil, false, errors.New("未获取到 BAI 用量明细（响应缺少 data）")
+	}
+	var rows []baiRecordsRow
+	if err := json.Unmarshal(p.Data, &rows); err != nil {
+		return nil, false, fmt.Errorf("BAI 用量明细记录解析失败: %w", err)
+	}
+	recs := make([]models.BaiRecord, 0, len(rows))
+	for _, r := range rows {
+		rec := models.BaiRecord{
+			ID:         r.ID,
+			Model:      r.Model,
+			SourceType: r.SourceType,
+			CreatedAt:  r.CreatedAt,
+		}
+		rec.InputTokens, _ = rawInt64(r.InputTokens)
+		rec.OutputTokens, _ = rawInt64(r.OutputTokens)
+		rec.TotalTokens, _ = rawInt64(r.TotalTokens)
+		rec.CostPoints, _ = rawInt64(r.CostPoints)
+		recs = append(recs, rec)
+	}
+	return recs, p.HasMore, nil
 }
 
 // ParseBaiPoints 解析 GET /trpc/lambda/usage.points。
@@ -608,7 +757,7 @@ func qwenErrorOf(raw string) error {
 		strings.Contains(low, "login") || strings.Contains(low, "unauthor") {
 		return errors.New("控制台 Cookie 已过期或无效，请更新控制台 Cookie")
 	}
-	return fmt.Errorf("Qwen 控制台接口错误：%s", code)
+	return fmt.Errorf("Qwen 控制台接口错误：%s", truncate(SanitizeText(code), 200))
 }
 
 // qwenNumber 宽容取数（数字或数字字符串）。

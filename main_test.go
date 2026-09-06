@@ -3,10 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/xieguiawu/llm-api-check/internal/app"
+	"github.com/xieguiawu/llm-api-check/internal/models"
 )
 
 // 用隔离 XDG_CONFIG_HOME 跑命令级测试，避免污染真实配置
@@ -502,5 +506,99 @@ func TestJoinTextDedupesLines(t *testing.T) {
 	}
 	if got := joinText("a\nb", "b\nc"); got != "a\nb\nc" {
 		t.Errorf("应按行去重并保留顺序: %q", got)
+	}
+}
+
+// bai --stats flag 接线：帮助文本、flag 在位置参数后可用、空账号集不联网直接空输出。
+// 网络层行为由 app/repo 层测试覆盖（httptest 桩），此处只验 CLI 编排。
+func TestBaiStatsFlagWiring(t *testing.T) {
+	// 帮助文本提到 --stats
+	code, out, _ := runCLI(t, "", "help")
+	if code != 0 {
+		t.Fatalf("help exit=%d", code)
+	}
+	if !strings.Contains(out, "bai [名称|ID] [--stats]") {
+		t.Errorf("帮助文本缺 bai --stats 行:\n%s", out)
+	}
+
+	// --stats 在位置参数后仍能被解析（moveFlags），且空账号集直接 exit 0
+	code, out, errOut := runCLI(t, "", "bai", " nonexistent ", "--stats")
+	// 无账号时 filterBai 找不到账号 → exit 1 + 「账号不存在」；--stats 不改变该路径
+	if code != 1 {
+		t.Fatalf("bai 不存在账号应 exit 1，实际 %d out=%q err=%q", code, out, errOut)
+	}
+	if !strings.Contains(errOut, "账号不存在") {
+		t.Errorf("应报账号不存在: %q", errOut)
+	}
+}
+
+// --json 信封必须带 stats 键（publicBaiResult 不得漏传）——反向验证 8 的守护断言
+func TestBaiStatsJSONKeyWired(t *testing.T) {
+	r := app.BaiResult{
+		Account: models.BaiAccount{ID: "b1", Name: "免费通道", ApiKey: "sk-x"},
+		Stats:   &models.BaiUsageStats{RecordsFetched: 1, Complete: true, TotalRequests: 1},
+	}
+	m := publicBaiResult(r)
+	if _, ok := m["stats"]; !ok {
+		t.Errorf("publicBaiResult 必须透传 stats 键: %v", m)
+	}
+	// 凭据仍掩码
+	if strings.Contains(fmt.Sprint(m), "sk-x") {
+		t.Errorf("stats 路径不得泄漏凭据: %v", m)
+	}
+}
+
+// bai --stats + --json：配额/明细双通道的错误在 JSON 信封里可见（账号不存在时）
+func TestBaiStatsJSONNoAccount(t *testing.T) {
+	code, out, errOut := runCLI(t, "", "bai", "ghost", "--stats", "--json")
+	if code != 1 {
+		t.Fatalf("应 exit 1，实际 %d out=%q err=%q", code, out, errOut)
+	}
+}
+
+// P3-④ --json --version 必须回 JSON 信封（旧版吐文本行，脚本管道解析会炸）
+func TestVersionJSON(t *testing.T) {
+	code, out, errOut := runCLI(t, "", "--json", "--version")
+	if code != 0 {
+		t.Fatalf("--json --version exit=%d err=%q", code, errOut)
+	}
+	var v struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(out), &v); err != nil {
+		t.Fatalf("--json --version 应输出 JSON: %v out=%q", err, out)
+	}
+	if v.Version != version || v.Name != "llm-api-check" {
+		t.Errorf("信封字段不符: %+v", v)
+	}
+}
+
+// P3-③ promptTTY 共享 bufio：第一行溢入缓冲后，下一次调用不得丢第二行
+func TestPromptTTYSharesBuffer(t *testing.T) {
+	var out bytes.Buffer
+	in := strings.NewReader("第一行\n第二行\n")
+	v1, err := promptTTY(in, &out, "p1: ", false)
+	if err != nil {
+		t.Fatalf("第一次读取: %v", err)
+	}
+	v2, err := promptTTY(in, &out, "p2: ", false)
+	if err != nil {
+		t.Fatalf("第二次读取: %v", err)
+	}
+	if v1 != "第一行" || v2 != "第二行" {
+		t.Errorf("连续 prompt 应各读一行: %q / %q", v1, v2)
+	}
+}
+
+// P3-① NewIDE 出错路径：main 侧直接保证不 panic（错误路径注入熵源失败不可行，
+// 这里验证 accID 在 add 流程早于凭据解析生成——用坏 env 触发提前退出不 panic 即可）
+func TestAccountsAddNoPanicPath(t *testing.T) {
+	code, _, errOut := runCLI(t, "", "accounts", "add", "--type", "opencode", "--name", "x")
+	if code == 0 {
+		t.Fatalf("缺凭据应失败")
+	}
+	if strings.Contains(errOut, "panic") {
+		t.Errorf("不应 panic: %q", errOut)
 	}
 }

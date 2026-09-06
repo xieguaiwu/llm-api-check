@@ -1,6 +1,7 @@
 package app
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -206,5 +207,125 @@ func TestRefreshAllIncludesBai(t *testing.T) {
 	}
 	if len(res.Bai) != 1 || res.Bai[0].Plan == nil || res.Bai[0].Points == nil {
 		t.Fatalf("RefreshAll 应收编 bai 账号两路数据: %+v", res.Bai)
+	}
+}
+
+func TestRefreshBaiStatsHappy(t *testing.T) {
+	pages := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/trpc/lambda/usage.records" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		pages++
+		// 两页后终止；每页 2 条 glm + 1 条 qwen
+		body := `{"result":{"data":{"json":{"data":[`
+		for i := 0; i < 3; i++ {
+			if i > 0 {
+				body += ","
+			}
+			m := "glm-5.3-flash"
+			if i == 2 {
+				m = "qwen3.8-flash"
+			}
+			body += `{"model":"` + m + `","created_at":"2026-09-06T05:0` + string(rune('0'+pages)) + `:00.000Z","input_tokens":100,"output_tokens":10,"total_tokens":110,"cost_points":0}`
+		}
+		body += `],"has_more":` + boolJSON(pages < 2) + `}}}}`
+		w.Write([]byte(body))
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{BaiAccounts: []models.BaiAccount{{ID: "b1", Name: "免费通道", ApiKey: "sk-bai1"}}}
+	res, err := newBaiApp(ts, cfg).RefreshBaiStats("b1")
+	if err != nil {
+		t.Fatalf("RefreshBaiStats: %v", err)
+	}
+	if res.Stats == nil {
+		t.Fatal("应有 Stats")
+	}
+	if !res.Stats.Complete || res.Stats.RecordsFetched != 6 {
+		t.Errorf("聚合不符: complete=%v fetched=%d", res.Stats.Complete, res.Stats.RecordsFetched)
+	}
+	if res.Stats.TotalTokens != 660 {
+		t.Errorf("token 合计不符: %d", res.Stats.TotalTokens)
+	}
+	if pages != 2 {
+		t.Errorf("应翻 2 页: %d", pages)
+	}
+}
+
+func boolJSON(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+func TestRefreshBaiStatsAccountNotFound(t *testing.T) {
+	var count atomic.Int32
+	ts := newBaiServer(t, baiAllOK(), &count)
+	cfg := &config.Config{BaiAccounts: []models.BaiAccount{{ID: "b1", Name: "免费通道", ApiKey: "sk-bai1"}}}
+	if _, err := newBaiApp(ts, cfg).RefreshBaiStats("nope"); err == nil || !strings.Contains(err.Error(), "账号不存在") {
+		t.Errorf("账号不存在应显式失败: %v", err)
+	}
+}
+
+func TestRefreshBaiStatsRepoNil(t *testing.T) {
+	cfg := &config.Config{BaiAccounts: []models.BaiAccount{{ID: "b1", Name: "免费通道", ApiKey: "sk-bai1"}}}
+	a := New(cfg)
+	a.Repos = nil
+	if _, err := a.RefreshBaiStats("b1"); err == nil || !strings.Contains(err.Error(), "仓库未初始化") {
+		t.Errorf("仓库未初始化应显式失败: %v", err)
+	}
+}
+
+// 探活接线：Models lane 成功后自动探活免费通道；失败模型进 Plan.Probes
+func TestRefreshBaiProbesAttached(t *testing.T) {
+	var probeCount atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Write([]byte(baiModelsResp)) // qwen3.8-flash + deepseek-v4-flash 都在盯梢清单
+		case "/trpc/lambda/usage.points":
+			w.Write([]byte(baiPointsResp))
+		case "/trpc/lambda/usage.summary":
+			w.Write([]byte(baiSummaryResp))
+		case "/v1/chat/completions":
+			probeCount.Add(1)
+			b, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(b), "deepseek-v4-flash") {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				w.Write([]byte(`{"error":{"message":"pre_consume_token_quota_failed"}}`))
+				return
+			}
+			w.Write([]byte(`{"choices":[]}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer ts.Close()
+
+	cfg := &config.Config{BaiAccounts: []models.BaiAccount{{ID: "b1", Name: "免费通道", ApiKey: "sk-bai1"}}}
+	res, err := newBaiApp(ts, cfg).RefreshBai("b1")
+	if err != nil {
+		t.Fatalf("RefreshBai: %v", err)
+	}
+	if res.Error != "" {
+		t.Fatalf("探活失败不应进账号级错误: %s", res.Error)
+	}
+	if res.Plan == nil || len(res.Plan.Probes) != 2 {
+		t.Fatalf("应探活清单内 2 个模型: %+v", res.Plan)
+	}
+	if probeCount.Load() != 2 {
+		t.Errorf("应发 2 次探活: %d", probeCount.Load())
+	}
+	// deepseek 挂 → dead；qwen 活 → alive
+	for _, p := range res.Plan.Probes {
+		if p.Model == "deepseek-v4-flash" && (p.Alive || !strings.Contains(p.Detail, "pre_consume")) {
+			t.Errorf("deepseek 应 dead 带摘要: %+v", p)
+		}
+		if p.Model == "qwen3.8-flash" && !p.Alive {
+			t.Errorf("qwen 应 alive: %+v", p)
+		}
 	}
 }

@@ -2,9 +2,11 @@ package repo
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -199,3 +201,267 @@ func TestBaiPointsDefaultConsoleURL(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// baiRecordsEnvelope 单页 records 响应（n 条记录，指定 has_more）
+func baiRecordsEnvelope(n int, more bool, startMin int) string {
+	var rows []string
+	for i := 0; i < n; i++ {
+		min := startMin + i
+		rows = append(rows, `{"id":"api_r`+strings.Repeat("x", 1)+`_`+fmtInt(min)+`","model":"glm-5.3-flash","created_at":"2026-09-06T05:`+twoDigit(min)+`:00.000Z","input_tokens":100,"output_tokens":10,"total_tokens":110,"cost_points":0,"source_type":"api"}`)
+	}
+	return `{"result":{"data":{"json":{"data":[` + strings.Join(rows, ",") + `],"has_more":` + itoaB(more) + `}}}}`
+}
+
+func fmtInt(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
+}
+func itoaB(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+func twoDigit(n int) string {
+	s := fmtInt(n)
+	if len(s) == 1 {
+		return "0" + s
+	}
+	return s
+}
+
+func TestBaiRecordsWireFormat(t *testing.T) {
+	var gotAuth, gotRawQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotRawQuery = r.URL.RawQuery
+		w.Write([]byte(baiRecordsEnvelope(1, false, 1)))
+	}))
+	defer ts.Close()
+
+	r := &BaiRepo{BaseURL: ts.URL, ConsoleURL: ts.URL}
+	recs, more, err := r.Records("sk-baitest123", 2)
+	if err != nil {
+		t.Fatalf("Records: %v", err)
+	}
+	if gotAuth != "Bearer sk-baitest123" {
+		t.Errorf("认证头不符: %q", gotAuth)
+	}
+	// input 参数必须含 page=2&pageSize=100（URL 编码后）
+	if !strings.Contains(gotRawQuery, "page") || !strings.Contains(gotRawQuery, "pageSize") {
+		t.Errorf("input 参数不符: %q", gotRawQuery)
+	}
+	if strings.Contains(gotRawQuery, "%7B%22page%22%3A1") {
+		t.Errorf("page 应为传入值 2: %q", gotRawQuery)
+	}
+	if len(recs) != 1 || more {
+		t.Errorf("返回不符: %d 条, more=%v", len(recs), more)
+	}
+}
+
+func TestBaiStatsPagesUntilDone(t *testing.T) {
+	pages := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		// 每页 2 条，第 3 页终止 → 应翻 3 页共 6 条
+		w.Write([]byte(baiRecordsEnvelope(2, pages < 3, pages)))
+	}))
+	defer ts.Close()
+
+	r := &BaiRepo{BaseURL: ts.URL, ConsoleURL: ts.URL}
+	s, err := r.Stats("sk-baitest123")
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if pages != 3 {
+		t.Errorf("应翻 3 页，实际 %d", pages)
+	}
+	if !s.Complete || s.RecordsFetched != 6 || s.TotalRequests != 6 {
+		t.Errorf("聚合不符: complete=%v fetched=%d total=%d", s.Complete, s.RecordsFetched, s.TotalRequests)
+	}
+	if len(s.PerModel) != 1 || s.PerModel[0].Model != "glm-5.3-flash" || s.PerModel[0].Requests != 6 {
+		t.Errorf("模型聚合不符: %+v", s.PerModel)
+	}
+	if s.TotalTokens != 660 {
+		t.Errorf("token 合计不符: %d", s.TotalTokens)
+	}
+}
+
+func TestBaiStatsTruncatesAtMaxPages(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 永远 has_more=true → 达上限截断
+		w.Write([]byte(baiRecordsEnvelope(100, true, 1)))
+	}))
+	defer ts.Close()
+
+	r := &BaiRepo{BaseURL: ts.URL, ConsoleURL: ts.URL}
+	s, err := r.Stats("sk-baitest123")
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if s.Complete {
+		t.Errorf("达上限应 Complete=false")
+	}
+	if s.RecordsFetched != baiStatsMaxPages*baiStatsPageSize {
+		t.Errorf("应拉满 %d 条，实际 %d", baiStatsMaxPages*baiStatsPageSize, s.RecordsFetched)
+	}
+}
+
+func TestBaiStatsMidwayFailureKeepsPartial(t *testing.T) {
+	pages := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		if pages == 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":{"json":{"message":"boom","data":{"code":"INTERNAL_SERVER_ERROR"}}}}`))
+			return
+		}
+		w.Write([]byte(baiRecordsEnvelope(2, pages < 3, pages)))
+	}))
+	defer ts.Close()
+
+	r := &BaiRepo{BaseURL: ts.URL, ConsoleURL: ts.URL}
+	s, err := r.Stats("sk-baitest123")
+	if err == nil {
+		t.Fatalf("中途页失败应返回错误")
+	}
+	if s.RecordsFetched != 2 || s.Complete {
+		t.Errorf("应保留第 1 页部分数据且标截断: fetched=%d complete=%v", s.RecordsFetched, s.Complete)
+	}
+	if !strings.Contains(err.Error(), "第 2 页") {
+		t.Errorf("错误应标注中断页: %v", err)
+	}
+}
+
+func TestBaiStatsFirstPageFailureIsFatal(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"error":{"json":{"message":"UNAUTHORIZED","data":{"code":"UNAUTHORIZED"}}}}`))
+	}))
+	defer ts.Close()
+
+	r := &BaiRepo{BaseURL: ts.URL, ConsoleURL: ts.URL}
+	_, err := r.Stats("sk-baitest123")
+	if err == nil || !strings.Contains(err.Error(), "无效、已过期或额度用尽") {
+		t.Errorf("首页失败应整体失败并归一认证文案: %v", err)
+	}
+}
+
+func TestBaiStatsEmptyKey(t *testing.T) {
+	r := &BaiRepo{BaseURL: "http://x", ConsoleURL: "http://x"}
+	if _, _, err := r.Records("  ", 1); err == nil || !strings.Contains(err.Error(), "未配置 API Key") {
+		t.Errorf("空 key 应显式失败: %v", err)
+	}
+}
+
+// 服务器响应体带 ANSI/控制字符 → doGet 错误消息必须已消毒（全仓统一 SanitizeText）
+func TestDoGetSanitizesHTTPErrorBody(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("boom \x1b[31mred\x1b[0m inject\rFAKE\x07"))
+	}))
+	defer ts.Close()
+
+	r := &BaiRepo{BaseURL: ts.URL, ConsoleURL: ts.URL}
+	// 401/403 走固定文案，500 带响应体片段 → 用 500 触发
+	body, err := doGet(r.client(), ts.URL+"/v1/models", map[string]string{}, "auth")
+	if err == nil {
+		t.Fatalf("期望错误，body=%q", body)
+	}
+	msg := err.Error()
+	for _, bad := range []string{"\x1b", "\r", "\x07"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("HTTP 错误消息含控制字符 %q: %q", bad, msg)
+		}
+	}
+	if !strings.Contains(msg, "boom red inject") {
+		t.Errorf("正文应保留: %q", msg)
+	}
+}
+
+// 探活 wire format + 状态码语义
+func TestBaiProbeFreeFlash(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	var auths []string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		auths = append(auths, r.Header.Get("Authorization"))
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if strings.Contains(string(b), "glm-5.3-flash") {
+			// 正常推理 200
+			w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{"message":{"role":"assistant","content":""}}],"usage":{"total_tokens":10}}`))
+			return
+		}
+		// deepseek 模拟运行时 503（2026-09-06 实测故障形状）
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":{"message":"pre_consume_token_quota_failed","type":"gateway"}}`))
+	}))
+	defer ts.Close()
+
+	r := &BaiRepo{BaseURL: ts.URL, ConsoleURL: ts.URL}
+	probes, err := r.ProbeFreeFlash("sk-baitest123", []string{"deepseek-v4-flash", "glm-5.3-flash"})
+	if err != nil {
+		t.Fatalf("ProbeFreeFlash: %v", err)
+	}
+	if len(probes) != 2 {
+		t.Fatalf("应 2 条: %+v", probes)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i, b := range bodies {
+		if !strings.Contains(b, `"max_tokens":8`) || !strings.Contains(b, `"stream":false`) {
+			t.Errorf("请求 %d 缺 max_tokens=8/stream=false: %s", i, b)
+		}
+		if auths[i] != "Bearer sk-baitest123" {
+			t.Errorf("请求 %d 认证头不符: %q", i, auths[i])
+		}
+	}
+	// deepseek 503 → dead + 摘要含上游 message
+	if probes[0].Alive {
+		t.Errorf("503 应不 Alive")
+	}
+	if !strings.Contains(probes[0].Detail, "HTTP 503") || !strings.Contains(probes[0].Detail, "pre_consume_token_quota_failed") {
+		t.Errorf("故障摘要应含状态码与上游消息: %q", probes[0].Detail)
+	}
+	// glm 200 → alive
+	if !probes[1].Alive || probes[1].Detail != "" {
+		t.Errorf("200 应 Alive 无摘要: %+v", probes[1])
+	}
+	// 结果按入参顺序
+	if probes[0].Model != "deepseek-v4-flash" || probes[1].Model != "glm-5.3-flash" {
+		t.Errorf("顺序应与入参一致: %+v", probes)
+	}
+}
+
+func TestBaiProbeAuthErrorAndEmptyKey(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":{"message":"Invalid token"}}`))
+	}))
+	defer ts.Close()
+
+	r := &BaiRepo{BaseURL: ts.URL, ConsoleURL: ts.URL}
+	probes, err := r.ProbeFreeFlash("sk-x", []string{"qwen3.8-flash"})
+	if err != nil {
+		t.Fatalf("ProbeFreeFlash: %v", err)
+	}
+	if probes[0].Alive || !strings.Contains(probes[0].Detail, "无效、已过期或额度用尽") {
+		t.Errorf("401 应归一认证文案: %+v", probes[0])
+	}
+	if _, err := r.ProbeFreeFlash("  ", []string{"m"}); err == nil {
+		t.Errorf("空 key 应显式失败")
+	}
+}

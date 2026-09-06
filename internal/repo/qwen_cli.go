@@ -257,9 +257,12 @@ func qwenCLIStderrTail(raw string) string {
 		}
 		kept = append(kept, t)
 	}
-	tail := strings.Join(kept, "\n")
-	if len(tail) > 300 {
-		tail = "…" + tail[len(tail)-300:]
+	tail := parsers.SanitizeText(strings.Join(kept, "\n"))
+	// rune 安全截尾（旧实现 tail[len-300:] 按字节切，中文会切出乱码）
+	r := []rune(tail)
+	if len(r) > 300 {
+		r = r[len(r)-300:]
+		tail = "…" + string(r)
 	}
 	return strings.TrimSpace(tail)
 }
@@ -274,9 +277,9 @@ func qwenCLIErrorEnvelope(raw, bin string) string {
 		} `json:"error"`
 	}
 	if json.Unmarshal([]byte(raw), &env) == nil && strings.TrimSpace(env.Error.Message) != "" {
-		msg := qwenCLIRewriteBin(strings.TrimSpace(env.Error.Message), bin)
+		msg := parsers.SanitizeText(qwenCLIRewriteBin(strings.TrimSpace(env.Error.Message), bin))
 		if hint := strings.TrimSpace(env.Error.Hint); hint != "" {
-			return msg + "（" + qwenCLIRewriteBin(hint, bin) + "）"
+			return msg + "（" + parsers.SanitizeText(qwenCLIRewriteBin(hint, bin)) + "）"
 		}
 		return msg
 	}

@@ -8,6 +8,7 @@ package models
 
 import (
 	"errors"
+	"sort"
 	"strings"
 )
 
@@ -154,6 +155,11 @@ type BaiPoints struct {
 	HasMonthly bool `json:"hasMonthly"`
 }
 
+// BaiExpiringWarnPoints 即将过期积分的黄色告警阈值（口径 2026-09-06 用户定：
+// 只警过期部分，不设余额阈值——平台对「偏低」无依据，但赠送池过期是确定性损失）。
+// 100 万积分 = $1 名义值，低于此值损失不值得打扰。
+const BaiExpiringWarnPoints = 1_000_000
+
 // BaiDollar 积分的名义美元等值（按 BaiPointsPerDollar 折算）。
 func BaiDollar(points int64) float64 { return float64(points) / float64(BaiPointsPerDollar) }
 
@@ -164,9 +170,20 @@ type BaiModel struct {
 	Endpoints []string `json:"supported_endpoint_types"`
 }
 
-// BaiPlan 模型清单（API Key 认证）。
+// BaiProbe 免费通道运行时探活结果：清单「在」≠ 运行时可用（2026-09-06 实测
+// deepseek-v4-flash 清单在但推理回 503 pre_consume_token_quota_failed，数小时后
+// 自愈——间歇故障只有真发一次推理才查得出）。
+type BaiProbe struct {
+	Model  string `json:"model"`
+	Alive  bool   `json:"alive"`
+	Detail string `json:"detail,omitempty"` // 故障摘要（已消毒截断）
+}
+
+// BaiPlan 模型清单（API Key 认证）。Probes 只覆盖免费通道盯梢清单里存在的
+// 模型（缺失项无谓再探），缺席 = 未探活（--no-refresh 或模型路失败）。
 type BaiPlan struct {
 	Models []BaiModel `json:"models"`
+	Probes []BaiProbe `json:"probes,omitempty"`
 }
 
 // BaiFreeFlashModels 免费 0-Credits flash 通道盯梢清单——pi-subagent 默认免费
@@ -192,6 +209,87 @@ func (p BaiPlan) MissingFreeFlash() []string {
 		}
 	}
 	return missing
+}
+
+// BaiRecord 单条推理记录（chat.b.ai tRPC usage.records，只读）。
+// 白名单字段：router_* / cache_tokens / duration_sec 等未用字段解析层直接忽略。
+type BaiRecord struct {
+	ID           string `json:"id,omitempty"`
+	Model        string `json:"model"`
+	SourceType   string `json:"sourceType,omitempty"`
+	CreatedAt    string `json:"createdAt"` // ISO UTC（平台恒 Z 后缀）
+	InputTokens  int64  `json:"inputTokens"`
+	OutputTokens int64  `json:"outputTokens"`
+	TotalTokens  int64  `json:"totalTokens"`
+	CostPoints   int64  `json:"costPoints"`
+}
+
+// BaiModelUsage 单模型聚合（--stats）。
+type BaiModelUsage struct {
+	Model        string `json:"model"`
+	Requests     int64  `json:"requests"`
+	InputTokens  int64  `json:"inputTokens"`
+	OutputTokens int64  `json:"outputTokens"`
+	TotalTokens  int64  `json:"totalTokens"`
+	CostPoints   int64  `json:"costPoints"`
+}
+
+// BaiUsageStats 用量分析聚合（usage.records 分页拉取后按模型聚合）。
+type BaiUsageStats struct {
+	// RecordsFetched 实际聚合的记录数（截断时 < 拉取上限语义见 Complete）。
+	RecordsFetched int `json:"recordsFetched"`
+	// Complete 是否拉全（has_more=false 自然终止）；false = 被页数上限截断，
+	// 数字只在拉到的范围内成立。
+	Complete bool `json:"complete"`
+	// WindowStart / WindowEnd 聚合范围内最早/最晚记录时间（ISO 原文）。
+	WindowStart string `json:"windowStart,omitempty"`
+	WindowEnd   string `json:"windowEnd,omitempty"`
+	// PerModel 按 Requests 降序、同数按字典序。
+	PerModel        []BaiModelUsage `json:"perModel"`
+	TotalRequests   int64           `json:"totalRequests"`
+	TotalTokens     int64           `json:"totalTokens"`
+	TotalCostPoints int64           `json:"totalCostPoints"`
+}
+
+// AggregateBaiUsage 把逐请求记录聚合为按模型统计（纯函数，Android 对等实现同口径）。
+func AggregateBaiUsage(recs []BaiRecord) BaiUsageStats {
+	s := BaiUsageStats{RecordsFetched: len(recs)}
+	idx := make(map[string]*BaiModelUsage)
+	var order []string
+	for _, r := range recs {
+		m, ok := idx[r.Model]
+		if !ok {
+			m = &BaiModelUsage{Model: r.Model}
+			idx[r.Model] = m
+			order = append(order, r.Model)
+		}
+		m.Requests++
+		m.InputTokens += r.InputTokens
+		m.OutputTokens += r.OutputTokens
+		m.TotalTokens += r.TotalTokens
+		m.CostPoints += r.CostPoints
+		s.TotalRequests++
+		s.TotalTokens += r.TotalTokens
+		s.TotalCostPoints += r.CostPoints
+		if r.CreatedAt != "" {
+			if s.WindowEnd == "" || r.CreatedAt > s.WindowEnd {
+				s.WindowEnd = r.CreatedAt
+			}
+			if s.WindowStart == "" || r.CreatedAt < s.WindowStart {
+				s.WindowStart = r.CreatedAt
+			}
+		}
+	}
+	for _, name := range order {
+		s.PerModel = append(s.PerModel, *idx[name])
+	}
+	sort.SliceStable(s.PerModel, func(i, j int) bool {
+		if s.PerModel[i].Requests != s.PerModel[j].Requests {
+			return s.PerModel[i].Requests > s.PerModel[j].Requests
+		}
+		return s.PerModel[i].Model < s.PerModel[j].Model
+	})
+	return s
 }
 
 // ── Qwen Token Plan（订阅） ────────────────────────────────────

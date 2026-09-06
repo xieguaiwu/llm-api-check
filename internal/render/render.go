@@ -890,11 +890,26 @@ func writeBaiOverview(b *strings.Builder, r app.BaiResult, c Colorizer) {
 			line = c.Red(line + " · 额度已耗尽")
 		}
 		b.WriteString("  " + line + "\n")
+		if r.Points.Expiring >= models.BaiExpiringWarnPoints && r.Points.Balance > 0 {
+			b.WriteString("  " + c.Yellow("其中 "+formatInt(r.Points.Expiring)+" 即将过期，不花就没了") + "\n")
+		}
 	}
 	if r.Plan != nil && len(r.Plan.Models) > 0 {
 		missing := r.Plan.MissingFreeFlash()
-		fmt.Fprintf(b, "  模型 %d 个 · 免费通道 %d/%d\n",
-			len(r.Plan.Models), len(models.BaiFreeFlashModels)-len(missing), len(models.BaiFreeFlashModels))
+		n := len(models.BaiFreeFlashModels) - len(missing)
+		note := ""
+		dead := 0
+		for _, p := range r.Plan.Probes {
+			if !p.Alive {
+				dead++
+			}
+		}
+		if len(r.Plan.Probes) > 0 && dead > 0 {
+			n -= dead
+			note = fmt.Sprintf("（%d 故障）", dead)
+		}
+		fmt.Fprintf(b, "  模型 %d 个 · 免费通道 %d/%d%s\n",
+			len(r.Plan.Models), n, len(models.BaiFreeFlashModels), note)
 	}
 	if r.Error != "" {
 		b.WriteString(c.Red("  "+r.Error) + "\n")
@@ -926,10 +941,20 @@ func RenderBaiDetail(r app.BaiResult, c Colorizer) string {
 	b.WriteString("API · 免费 0-Credits flash 通道\n")
 	if r.Points != nil {
 		b.WriteString("  " + renderBaiPoints(*r.Points, c) + "\n")
+		// 过期部分告警（口径 2026-09-06 用户定：只警过期部分，不设余额阈值）——
+		// 赠送池积分不花就白白损失，是免费通道用法下唯一有操作意义的提醒。
+		// 耗尽态（≤0）整行红色已是最高级，不叠过期提醒
+		if r.Points.Expiring >= models.BaiExpiringWarnPoints && r.Points.Balance > 0 {
+			b.WriteString("  " + c.Yellow(fmt.Sprintf("%s %s（%s）不花就没了",
+				baiLabel("过期提醒"), formatInt(r.Points.Expiring), baiDollarText(r.Points.Expiring))) + "\n")
+		}
 		if r.Points.HasMonthly {
 			fmt.Fprintf(&b, "  %s %s（%s）\n", baiLabel("本月消耗"),
 				formatInt(r.Points.MonthlySpent), baiDollarText(r.Points.MonthlySpent))
 		}
+	}
+	if r.Stats != nil {
+		renderBaiStats(&b, r.Stats, c)
 	}
 	if r.Plan != nil && len(r.Plan.Models) > 0 {
 		ids := make([]string, 0, len(r.Plan.Models))
@@ -937,31 +962,7 @@ func RenderBaiDetail(r app.BaiResult, c Colorizer) string {
 			ids = append(ids, m.ID)
 		}
 		fmt.Fprintf(&b, "  %s %d 个：%s\n", baiLabel("模型"), len(ids), strings.Join(ids, ", "))
-		missing := r.Plan.MissingFreeFlash()
-		if len(missing) == 0 {
-			b.WriteString("  " + c.Green(baiLabel("免费通道")+" ✓ "+strings.Join(models.BaiFreeFlashModels, " / ")) + "\n")
-		} else {
-			var have []string
-			for _, want := range models.BaiFreeFlashModels {
-				keep := true
-				for _, miss := range missing {
-					if miss == want {
-						keep = false
-						break
-					}
-				}
-				if keep {
-					have = append(have, want)
-				}
-			}
-			seg := baiLabel("免费通道") + " "
-			if len(have) > 0 {
-				seg += "✓ " + strings.Join(have, " / ") + " · "
-			}
-			// 缺失段红色突出：免费通道下架直接影响 pi-subagent 默认模型源
-			seg += c.Red("⚠ 缺失：" + strings.Join(missing, "、") + "（pi-subagent 默认免费模型源受影响）")
-			b.WriteString("  " + seg + "\n")
-		}
+		renderBaiFlashLane(&b, *r.Plan, c)
 	}
 	if r.Error != "" {
 		b.WriteString(c.Red(r.Error) + "\n")
@@ -969,6 +970,103 @@ func RenderBaiDetail(r app.BaiResult, c Colorizer) string {
 		b.WriteString(c.Gray("  暂无数据") + "\n")
 	}
 	return b.String()
+}
+
+// renderBaiStats 渲染用量分析段：窗口 + 总量 + 按模型统计（对齐 renderQwenStats）。
+// 窗口只显示日期部分（created_at 是 ISO UTC，跨日统计精确到日已够用）；
+// 截断时明确标注「数据不完整」——数字只在拉到的范围内成立，不假称全量。
+func renderBaiStats(b *strings.Builder, s *models.BaiUsageStats, c Colorizer) {
+	b.WriteString("  用量分析\n")
+	if s.WindowStart != "" {
+		fmt.Fprintf(b, "  %s %s ~ %s\n", baiLabel("窗口"), baiDay(s.WindowStart), baiDay(s.WindowEnd))
+	}
+	fmt.Fprintf(b, "  %s %d 次 · %s tokens\n", baiLabel("调用"),
+		s.TotalRequests, formatInt(s.TotalTokens))
+	if s.TotalCostPoints > 0 {
+		fmt.Fprintf(b, "  %s %s（%s）\n", baiLabel("消耗积分"),
+			formatInt(s.TotalCostPoints), baiDollarText(s.TotalCostPoints))
+	}
+	for _, m := range s.PerModel {
+		fmt.Fprintf(b, "  %s %d 次 · in %s / out %s / total %s tokens\n",
+			padTo(m.Model, 20), m.Requests,
+			formatInt(m.InputTokens), formatInt(m.OutputTokens), formatInt(m.TotalTokens))
+	}
+	if !s.Complete {
+		b.WriteString(c.Yellow("  数据不完整（达到拉取上限，统计只覆盖以上范围）") + "\n")
+	}
+}
+
+// baiDay ISO 时间戳取日期部分（YYYY-MM-DD）；非预期形状原样返回（不猜）。
+func baiDay(iso string) string {
+	if len(iso) >= 10 {
+		return iso[:10]
+	}
+	return iso
+}
+
+// renderBaiFlashLane 免费通道盯梢渲染，四态：
+//   - ✓ 清单在且探活通过（或未探活——无 Probes 时维持旧行为）
+//   - ⚠ 运行时故障（清单在但推理探活失败——间歇 503 只有真发请求才查得出）
+//   - ✗ 清单缺失（红色，下架直接影响 pi-subagent 默认模型源）
+//
+// 同一行聚合同状态模型；探活故障附消毒后的故障摘要。
+func renderBaiFlashLane(b *strings.Builder, plan models.BaiPlan, c Colorizer) {
+	missing := plan.MissingFreeFlash()
+	isMissing := func(id string) bool {
+		for _, m := range missing {
+			if m == id {
+				return true
+			}
+		}
+		return false
+	}
+	probeOf := make(map[string]models.BaiProbe, len(plan.Probes))
+	for _, p := range plan.Probes {
+		probeOf[p.Model] = p
+	}
+	var alive, dead, listed []string
+	deadDetail := map[string]string{}
+	for _, want := range models.BaiFreeFlashModels {
+		if isMissing(want) {
+			continue
+		}
+		if p, ok := probeOf[want]; ok {
+			if p.Alive {
+				alive = append(alive, want)
+			} else {
+				dead = append(dead, want)
+				deadDetail[want] = p.Detail
+			}
+			continue
+		}
+		listed = append(listed, want)
+	}
+	if len(alive) > 0 {
+		b.WriteString("  " + c.Green(baiLabel("免费通道")+" ✓ "+strings.Join(alive, " / ")) + "\n")
+	}
+	if len(listed) > 0 {
+		seg := baiLabel("免费通道") + " ✓ " + strings.Join(listed, " / ")
+		if len(alive) == 0 && len(dead) == 0 && len(missing) == 0 {
+			seg = baiLabel("免费通道") + " ✓ " + strings.Join(models.BaiFreeFlashModels, " / ")
+		}
+		b.WriteString("  " + c.Green(seg) + "\n")
+	}
+	for _, m := range dead {
+		detail := deadDetail[m]
+		if detail != "" {
+			detail = "：" + detail
+		}
+		b.WriteString("  " + c.Red(baiLabel("免费通道")+" ⚠ "+m+" 运行时故障"+detail) + "\n")
+	}
+	if len(missing) > 0 {
+		seg := baiLabel("免费通道") + " "
+		if len(listed) == 0 && len(alive) == 0 && len(dead) == 0 {
+			seg += "✓ 无 · "
+		}
+		// 缺失段红色突出：免费通道下架直接影响 pi-subagent 默认模型源
+		seg += c.Red("⚠ 缺失：" + strings.Join(missing, "、") + "（pi-subagent 默认免费模型源受影响）")
+		b.WriteString("  " + seg + "\n")
+	}
 }
 
 // renderBaiPoints 积分余额行：余额 ≤0 整行红色并提示后果（额度耗尽时推理直接失败）。

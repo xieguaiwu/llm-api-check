@@ -134,15 +134,19 @@ func TestLoadCorruptJSON(t *testing.T) {
 }
 
 func TestNewID(t *testing.T) {
-	id := NewID()
+	id, err := NewIDE()
+	if err != nil {
+		t.Fatalf("NewIDE: %v", err)
+	}
 	if len(id) != 32 {
 		t.Errorf("id 长度应为 32，got %d", len(id))
 	}
 	if _, err := hex.DecodeString(id); err != nil {
 		t.Errorf("id 应为合法 hex: %v", err)
 	}
-	if NewID() == id {
-		t.Error("两次 NewID 不应相同")
+	id2, _ := NewIDE()
+	if id2 == id {
+		t.Error("两次 NewIDE 不应相同")
 	}
 }
 

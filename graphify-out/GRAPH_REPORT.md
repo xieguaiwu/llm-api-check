@@ -1,24 +1,24 @@
 # Graph Report - LLM-api-check  (2026-09-06)
 
 ## Corpus Check
-- 55 files · ~51,919 words
+- 56 files · ~57,208 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 808 nodes · 2267 edges · 26 communities (22 shown, 4 thin omitted)
-- Extraction: 85% EXTRACTED · 15% INFERRED · 0% AMBIGUOUS · INFERRED: 344 edges (avg confidence: 0.8)
+- 872 nodes · 2480 edges · 30 communities (26 shown, 4 thin omitted)
+- Extraction: 85% EXTRACTED · 15% INFERRED · 0% AMBIGUOUS · INFERRED: 384 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `50c20139`
+- Built from commit: `ca0b715a`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - render.go
-- parsers_test.go
+- parsers.go
 - main.go
-- New
+- QwenRepo
 - qwen_cli_test.go
 - HandlerFunc
 - NewWithRepos
@@ -38,19 +38,23 @@
 - models.go
 - BAI provider 设计（白B.AI · api.b.ai）—— 2026-09-04
 - app/bai_test.go
-- render/bai_test.go
+- New
+- Config
+- .client
+- defaultClient
+- AggregateBaiUsage
 
 ## God Nodes (most connected - your core abstractions)
-1. `New()` - 49 edges
-2. `runCLI()` - 39 edges
+1. `New()` - 54 edges
+2. `runCLI()` - 43 edges
 3. `withConfigDir()` - 33 edges
 4. `baseTime()` - 29 edges
 5. `Config` - 26 edges
-6. `RenderGalaxyDetail()` - 24 edges
-7. `RenderQwenDetail()` - 24 edges
-8. `Colorizer` - 22 edges
-9. `QwenRepo` - 21 edges
-10. `NewWithRepos()` - 20 edges
+6. `Colorizer` - 24 edges
+7. `RenderGalaxyDetail()` - 24 edges
+8. `RenderQwenDetail()` - 24 edges
+9. `RenderBaiDetail()` - 23 edges
+10. `QwenRepo` - 21 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `TestBaiJSONPointsAndExitCode()` --calls--> `exitCodeForResults()`  [INFERRED]
@@ -67,27 +71,27 @@
 ## Import Cycles
 - None detected.
 
-## Communities (26 total, 4 thin omitted)
+## Communities (30 total, 4 thin omitted)
 
 ### Community 0 - "render.go"
-Cohesion: 0.07
-Nodes (84): Builder, galaxyResult(), T, TestGalaxyOverviewLowBalanceRed(), TestGalaxySpanShort(), TestGalaxyStatusColor(), TestGalaxyUnitPriceTrims(), TestPadToUsesDisplayWidth() (+76 more)
+Cohesion: 0.06
+Nodes (108): GalaxyResult, QwenResult, Builder, PlanDisplayName(), alignedLabelColumn(), baiAllFlash(), baiWithPoints(), T (+100 more)
 
-### Community 1 - "parsers_test.go"
-Cohesion: 0.08
-Nodes (65): AggregateCost(), baiPayloadOf(), clampPercent(), ExtractQwenSECToken(), RawMessage, Time, normalizeRefDate(), parseAmount() (+57 more)
+### Community 1 - "parsers.go"
+Cohesion: 0.06
+Nodes (89): fmtInt(), T, TestBaiPlanMissingFreeFlash(), TestParseBaiErrorEnvelopeSanitized(), TestParseBaiModelsEmptyData(), TestParseBaiModelsErrorEnvelope(), TestParseBaiModelsHappy(), TestParseBaiMonthlySpent() (+81 more)
 
 ### Community 2 - "main.go"
-Cohesion: 0.06
-Nodes (79): Config, checkPermissions(), DefaultPath(), Time, Load(), NewID(), T, TestDefaultPathHome() (+71 more)
-
-### Community 3 - "New"
 Cohesion: 0.09
-Nodes (38): New(), fmtInt(), T, TestBaiPlanMissingFreeFlash(), TestParseBaiModelsEmptyData(), TestParseBaiModelsErrorEnvelope(), TestParseBaiModelsHappy(), TestParseBaiMonthlySpent() (+30 more)
+Nodes (76): checkPermissions(), DefaultPath(), Load(), NewIDE(), T, TestDefaultPathHome(), TestDefaultPathXDG(), TestLoadCorruptJSON() (+68 more)
+
+### Community 3 - "QwenRepo"
+Cohesion: 0.18
+Nodes (12): cookieValue(), Duration, joinErrors(), normalizeCookieHeader(), QwenEndpointsFor(), qwenParamsJSON(), qwenTraceID(), TestCookieHelpers() (+4 more)
 
 ### Community 4 - "qwen_cli_test.go"
-Cohesion: 0.08
-Nodes (48): Cmd, Context, NormalizeQwenRegion(), QwenRegionDisplayName(), contains(), T, TestAccountHelpers(), TestAccountJSONTags() (+40 more)
+Cohesion: 0.07
+Nodes (50): Cmd, Context, NormalizeQwenRegion(), QwenRegionDisplayName(), contains(), T, TestAccountHelpers(), TestAccountJSONTags() (+42 more)
 
 ### Community 5 - "HandlerFunc"
 Cohesion: 0.10
@@ -98,12 +102,12 @@ Cohesion: 0.16
 Nodes (35): Repos, NewWithRepos(), Duration, Int32, Server, T, newTestServer(), qwenRepos() (+27 more)
 
 ### Community 7 - "parsers/galaxy_test.go"
-Cohesion: 0.07
-Nodes (56): AggregateGalaxyCost(), GalaxyDeadlineUnix(), galaxyMissingField(), GalaxyRFC3339(), GalaxySign(), GalaxyStatusActive(), GalaxyStatusText(), GalaxyStringToSign() (+48 more)
+Cohesion: 0.08
+Nodes (54): AggregateGalaxyCost(), GalaxyDeadlineUnix(), galaxyMissingField(), GalaxyRFC3339(), GalaxySign(), GalaxyStatusActive(), GalaxyStatusText(), GalaxyStringToSign() (+46 more)
 
 ### Community 8 - "runCLI"
-Cohesion: 0.13
-Nodes (45): T, TestBaiAccountsLifecycle(), TestBaiAddFromEnv(), TestBaiJSONPointsAndExitCode(), TestUsageTextMentionsBai(), galaxyEnv(), T, TestGalaxyAddAndListMasksSecrets() (+37 more)
+Cohesion: 0.12
+Nodes (51): T, TestBaiAccountsLifecycle(), TestBaiAddFromEnv(), TestBaiJSONPointsAndExitCode(), TestUsageTextMentionsBai(), galaxyEnv(), T, TestGalaxyAddAndListMasksSecrets() (+43 more)
 
 ### Community 9 - "llm-api-check"
 Cohesion: 0.09
@@ -114,8 +118,8 @@ Cohesion: 0.11
 Nodes (18): A. OpenCode Go usage（官方 API，API key 认证，无需 cookie）, Acceptance（验收标准）, B. OpenCode Zen billing（页面 scrape，workspaceId + auth cookie）, C. DeepSeek 余额（官方 API，API key 认证）, D. DeepSeek 消费明细（platform 页面 API，浏览器登录 token）, Global Constraints, LLM API Check CLI Implementation Plan, Task 1: 项目脚手架 + 数据模型 (+10 more)
 
 ### Community 11 - "repo/bai_test.go"
-Cohesion: 0.23
-Nodes (17): baiRepoAt(), Request, Server, T, newBaiConsole(), TestBaiModelsAuthErrors(), TestBaiModelsEmptyKey(), TestBaiModelsNonJSON200() (+9 more)
+Cohesion: 0.15
+Nodes (29): baiRecordsEnvelope(), baiRepoAt(), fmtInt(), Request, Server, T, itoaB(), newBaiConsole() (+21 more)
 
 ### Community 12 - "二、契约（2026-08-29 真实凭据实测通过）"
 Cohesion: 0.14
@@ -134,39 +138,55 @@ Cohesion: 0.13
 Nodes (13): 历史工作记录, 待办：Android 对等实现, 技术要点（下一位 Agent 必读）, 最后一次完成的工作（2026-08-29 14:10）, 最后一次完成的工作（2026-08-29 18:50）, 最后一次完成的工作（2026-08-30 14:35）, 最后一次完成的工作（2026-08-30 15:0x）, 最后一次完成的工作（2026-09-04 17:5x） (+5 more)
 
 ### Community 22 - "models.go"
-Cohesion: 0.09
-Nodes (33): AccountResult, App, BaiResult, DeepSeekResult, GalaxyResult, QwenResult, Result, errMsg() (+25 more)
+Cohesion: 0.10
+Nodes (26): BaiDollar(), goWindows(), BaiModel, BaiModelUsage, BaiPlan, BaiPoints, BaiProbe, BaiUsageStats (+18 more)
 
 ### Community 23 - "BAI provider 设计（白B.AI · api.b.ai）—— 2026-09-04"
-Cohesion: 0.15
-Nodes (12): BAI provider 设计（白B.AI · api.b.ai）—— 2026-09-04, 一、背景与需求, 七、测试与质量门, 三、数据模型（models）, 二-b、积分额度通道（chat.b.ai tRPC，2026-09-06 真实 key 实测）, 二、契约（2026-09-04 真实 key 实测）, 五、渲染, 六、CLI (+4 more)
+Cohesion: 0.12
+Nodes (15): BAI provider 设计（白B.AI · api.b.ai）—— 2026-09-04, 一、背景与需求, 七、测试与质量门, 三、数据模型（models）, 二-b、积分额度通道（chat.b.ai tRPC，2026-09-06 真实 key 实测）, 二、契约（2026-09-04 真实 key 实测）, 五、渲染, 八、用量分析 --stats（usage.records，2026-09-06 真实 key 实测） (+7 more)
 
 ### Community 24 - "app/bai_test.go"
-Cohesion: 0.36
-Nodes (14): baiStubResp, baiAllOK(), baiAllOK2(), Int32, Server, T, newBaiApp(), newBaiServer() (+6 more)
+Cohesion: 0.28
+Nodes (19): baiStubResp, baiAllOK(), baiAllOK2(), boolJSON(), Int32, Server, T, newBaiApp() (+11 more)
 
-### Community 25 - "render/bai_test.go"
-Cohesion: 0.36
-Nodes (12): alignedLabelColumn(), baiAllFlash(), baiWithPoints(), T, TestRenderBaiDetailAllFlashPresent(), TestRenderBaiDetailErrorAndEmpty(), TestRenderBaiDetailMissingFlashWarns(), TestRenderBaiDetailPoints() (+4 more)
+### Community 25 - "New"
+Cohesion: 0.22
+Nodes (11): AccountResult, App, BaiResult, DeepSeekResult, Result, errMsg(), Time, joinErrors() (+3 more)
+
+### Community 26 - "Config"
+Cohesion: 0.12
+Nodes (3): Config, Time, Account
+
+### Community 27 - ".client"
+Cohesion: 0.27
+Nodes (4): TestDoGetSanitizesHTTPErrorBody(), baiHeaders(), doGet(), BaiRepo
+
+### Community 28 - "defaultClient"
+Cohesion: 0.29
+Nodes (8): defaultClient(), Client, Time, NewDeepSeekRepo(), NewOpenCodeRepo(), NewQwenRepo(), DeepSeekRepo, OpenCodeRepo
+
+### Community 29 - "AggregateBaiUsage"
+Cohesion: 0.52
+Nodes (6): baiRec(), T, TestAggregateBaiUsage(), TestAggregateBaiUsageTiesAndEmpty(), AggregateBaiUsage(), BaiRecord
 
 ## Knowledge Gaps
-- **87 isolated node(s):** `github.com/xieguiawu/llm-api-check`, `build-dist.sh script`, `最后一次完成的工作（2026-09-06 12:5x）`, `最后一次完成的工作（2026-09-04 17:5x）`, `最后一次完成的工作（2026-08-30 15:0x）` (+82 more)
+- **89 isolated node(s):** `github.com/xieguiawu/llm-api-check`, `build-dist.sh script`, `最后一次完成的工作（2026-09-06 12:5x）`, `最后一次完成的工作（2026-09-04 17:5x）`, `最后一次完成的工作（2026-08-30 15:0x）` (+84 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `New()` connect `New` to `parsers_test.go`, `main.go`, `qwen_cli_test.go`, `NewWithRepos`, `parsers/galaxy_test.go`, `repo/bai_test.go`, `models.go`?**
-  _High betweenness centrality (0.309) - this node is a cross-community bridge._
+- **Why does `New()` connect `New` to `parsers.go`, `main.go`, `QwenRepo`, `qwen_cli_test.go`, `NewWithRepos`, `parsers/galaxy_test.go`, `repo/bai_test.go`, `app/bai_test.go`, `Config`, `.client`, `defaultClient`?**
+  _High betweenness centrality (0.315) - this node is a cross-community bridge._
 - **Why does `run()` connect `main.go` to `runCLI`?**
-  _High betweenness centrality (0.080) - this node is a cross-community bridge._
-- **Why does `runCLI()` connect `runCLI` to `main.go`?**
   _High betweenness centrality (0.078) - this node is a cross-community bridge._
-- **Are the 40 inferred relationships involving `New()` (e.g. with `NewGalaxyRepo()` and `NewBaiRepo()`) actually correct?**
-  _`New()` has 40 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 29 inferred relationships involving `HandlerFunc` (e.g. with `newTestServer()` and `qwenServer()`) actually correct?**
-  _`HandlerFunc` has 29 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `runCLI()` connect `runCLI` to `main.go`?**
+  _High betweenness centrality (0.077) - this node is a cross-community bridge._
+- **Are the 44 inferred relationships involving `New()` (e.g. with `NewGalaxyRepo()` and `NewBaiRepo()`) actually correct?**
+  _`New()` has 44 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 39 inferred relationships involving `HandlerFunc` (e.g. with `newTestServer()` and `qwenServer()`) actually correct?**
+  _`HandlerFunc` has 39 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 15 inferred relationships involving `runCLI()` (e.g. with `TestBaiAccountsLifecycle()` and `TestBaiAddFromEnv()`) actually correct?**
   _`runCLI()` has 15 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 12 inferred relationships involving `withConfigDir()` (e.g. with `TestBaiAccountsLifecycle()` and `TestBaiAddFromEnv()`) actually correct?**

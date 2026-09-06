@@ -51,10 +51,11 @@ type QwenResult struct {
 // BaiResult 单个白B.AI 账号的刷新结果。Plan = 模型清单（推理面），
 // Points = 积分额度（控制台 tRPC）；两路独立，任一路成功即有数据可显示。
 type BaiResult struct {
-	Account models.BaiAccount `json:"account"`
-	Plan    *models.BaiPlan   `json:"plan,omitempty"`
-	Points  *models.BaiPoints `json:"points,omitempty"`
-	Error   string            `json:"error,omitempty"`
+	Account models.BaiAccount     `json:"account"`
+	Plan    *models.BaiPlan       `json:"plan,omitempty"`
+	Points  *models.BaiPoints     `json:"points,omitempty"`
+	Stats   *models.BaiUsageStats `json:"stats,omitempty"`
+	Error   string                `json:"error,omitempty"`
 }
 
 // GalaxyResult 单个智星云账号的刷新结果（对应 GalaxyUi）。
@@ -403,6 +404,31 @@ func (a *App) refreshGalaxy(acc models.GalaxyAccount, limit int) GalaxyResult {
 	return res
 }
 
+// RefreshBaiStats 拉用量分析（usage.records 分页聚合，--stats 时才调）。
+// 对齐 RefreshQwenStats：stats 失败不影响详情主体，错误由调用方 join 进结果。
+func (a *App) RefreshBaiStats(id string) (BaiResult, error) {
+	var acc models.BaiAccount
+	found := false
+	for _, x := range a.Cfg.BaiAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return BaiResult{}, errors.New("账号不存在或已被删除")
+	}
+	if a.Repos == nil || a.Repos.Bai == nil {
+		return BaiResult{}, errors.New("BAI 仓库未初始化")
+	}
+	s, err := a.Repos.Bai.Stats(acc.ApiKey)
+	if err != nil {
+		return BaiResult{}, err
+	}
+	return BaiResult{Account: acc, Stats: &s}, nil
+}
+
 // RefreshBai 按 id 刷新单个白B.AI 账号（模型清单 + 积分额度，同一把 API Key）。
 func (a *App) RefreshBai(id string) (BaiResult, error) {
 	var acc models.BaiAccount
@@ -439,6 +465,28 @@ func (a *App) refreshBai(acc models.BaiAccount) BaiResult {
 	go func() {
 		defer wg.Done()
 		plan, planErr = a.Repos.Bai.Models(acc.ApiKey)
+		if planErr != nil {
+			return
+		}
+		// 免费通道运行时探活：清单「在」≠ 可用（503 间歇故障只有真发推理才查得出）。
+		// 只探清单内存在的盯梢模型，缺失项不浪费请求；探活失败不抖掉清单。
+		var present []string
+		missing := plan.MissingFreeFlash()
+		for _, want := range models.BaiFreeFlashModels {
+			skip := false
+			for _, m := range missing {
+				if m == want {
+					skip = true
+					break
+				}
+			}
+			if !skip {
+				present = append(present, want)
+			}
+		}
+		if probes, err := a.Repos.Bai.ProbeFreeFlash(acc.ApiKey, present); err == nil {
+			plan.Probes = probes
+		}
 	}()
 	go func() {
 		defer wg.Done()

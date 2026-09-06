@@ -48,7 +48,7 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   llm-api-check opencode [名称|ID]         OpenCode 账号详情（可过滤名字/id，缺省全部）
   llm-api-check qwen [名称|ID] [--stats]   Qwen 账号详情（--stats 附加 7 天用量分析与免费额度）
   llm-api-check galaxy [名称|ID] [--limit N]   智星云余额 + 云主机实例状态（--limit 列出实例数，默认 10）
-  llm-api-check bai [名称|ID]              白B.AI 账号详情：积分额度 + 模型清单 + 免费通道状态（可过滤名字/id，缺省全部）
+  llm-api-check bai [名称|ID] [--stats]    白B.AI 账号详情：积分额度 + 模型清单 + 免费通道状态（--stats 附加用量分析）
   llm-api-check accounts list              列出所有账号
   llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
@@ -106,7 +106,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	switch rest[0] {
 	case "--version", "-V", "version":
-		fmt.Fprintf(stdout, "llm-api-check %s\n", version)
+		if jsonOut {
+			writeJSON(stdout, map[string]any{"name": "llm-api-check", "version": version})
+		} else {
+			fmt.Fprintf(stdout, "llm-api-check %s\n", version)
+		}
 		return 0
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usageText)
@@ -582,12 +586,13 @@ func cmdBai(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, n
 	fs := flag.NewFlagSet("bai", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	stats := fs.Bool("stats", false, "显示用量分析（逐请求明细按模型聚合）")
 	if err := fs.Parse(moveFlags(args)); err != nil {
-		fmt.Fprintln(stderr, "用法: llm-api-check bai [名称|ID] [--no-refresh]")
+		fmt.Fprintln(stderr, "用法: llm-api-check bai [名称|ID] [--no-refresh] [--stats]")
 		return 2
 	}
 	if fs.NArg() > 1 {
-		fmt.Fprintln(stderr, "用法: llm-api-check bai [名称|ID] [--no-refresh]")
+		fmt.Fprintln(stderr, "用法: llm-api-check bai [名称|ID] [--no-refresh] [--stats]")
 		return 2
 	}
 	path := config.DefaultPath()
@@ -615,6 +620,14 @@ func cmdBai(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, n
 		} else if r, err = a.RefreshBai(acc.ID); err != nil {
 			fmt.Fprintf(stderr, "错误: %v\n", err)
 			return 1
+		}
+		if *stats && !*noRefresh {
+			sr, sErr := a.RefreshBaiStats(acc.ID)
+			if sErr != nil {
+				r.Error = joinText(r.Error, sErr.Error())
+			} else {
+				r.Stats = sr.Stats
+			}
 		}
 		results = append(results, r)
 	}
@@ -772,6 +785,13 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		name = &v
 	}
 
+	accID, err := config.NewIDE()
+	if err != nil {
+		// crypto/rand 失败（熵源不可用）属系统级异常，无法生成账号
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 1
+	}
+
 	cfg, err := config.Load(config.DefaultPath())
 	if err != nil {
 		fmt.Fprintf(stderr, "错误: %v\n", err)
@@ -794,7 +814,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 			return 2
 		}
 		acc := models.Account{
-			ID:          config.NewID(),
+			ID:          accID,
 			Name:        strings.TrimSpace(*name),
 			GoApiKey:    key,
 			WorkspaceId: ws,
@@ -825,7 +845,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 			return 2
 		}
 		acc := models.DeepSeekAccount{
-			ID:            config.NewID(),
+			ID:            accID,
 			Name:          strings.TrimSpace(*name),
 			ApiKey:        key,
 			PlatformToken: tok,
@@ -855,7 +875,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 			return 2
 		}
 		acc := models.GalaxyAccount{
-			ID:        config.NewID(),
+			ID:        accID,
 			Name:      strings.TrimSpace(*name),
 			AccessKey: ak,
 			SecretKey: sk,
@@ -880,7 +900,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 			return 2
 		}
 		acc := models.BaiAccount{
-			ID:     config.NewID(),
+			ID:     accID,
 			Name:   strings.TrimSpace(*name),
 			ApiKey: key,
 		}
@@ -918,7 +938,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		return 2
 	}
 	acc := models.QwenAccount{
-		ID:            config.NewID(),
+		ID:            accID,
 		Name:          strings.TrimSpace(*name),
 		ApiKey:        key,
 		ConsoleCookie: ck,
@@ -1157,6 +1177,22 @@ func resolveSecret(flagVal, flagName, envName, prompt string, required bool, std
 	return strings.TrimSpace(v), nil
 }
 
+// stdinSource 进程级共享 bufio.Reader + 其源：每次 NewReader 会新建 4K 缓冲，
+// 把上次溢入缓冲的下一行丢掉（互动机连续多个 prompt 时吞输入）。
+// 源变了（测试注入新 Reader）就重建。
+var stdinSource struct {
+	r   *bufio.Reader
+	src io.Reader
+}
+
+func stdinReaderFor(src io.Reader) *bufio.Reader {
+	if stdinSource.r == nil || stdinSource.src != src {
+		stdinSource.r = bufio.NewReader(src)
+		stdinSource.src = src
+	}
+	return stdinSource.r
+}
+
 // promptTTY 从 TTY 读取一行；secret 时尝试 stty -echo 关闭回显
 // （终端不支持 stty 时忽略——输入不回显需终端支持，可改用环境变量）。
 func promptTTY(stdin io.Reader, stdout io.Writer, prompt string, secret bool) (string, error) {
@@ -1175,7 +1211,7 @@ func promptTTY(stdin io.Reader, stdout io.Writer, prompt string, secret bool) (s
 			}
 		}
 	}
-	line, err := bufio.NewReader(stdin).ReadString('\n')
+	line, err := stdinReaderFor(stdin).ReadString('\n')
 	if restore != nil {
 		restore()
 		fmt.Fprintln(stdout)
@@ -1457,6 +1493,9 @@ func publicBaiResult(r app.BaiResult) map[string]any {
 	if r.Points != nil {
 		m["points"] = r.Points
 	}
+	if r.Stats != nil {
+		m["stats"] = r.Stats
+	}
 	if r.Error != "" {
 		m["error"] = r.Error
 	}
@@ -1483,6 +1522,10 @@ func writeJSON(w io.Writer, v any) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(v); err != nil {
+		// 错误写死全局 os.Stderr 会把测试注入的假 stderr 绕过；writeJSON 无
+		// stderr 参数（20 个调用点），编码失败唯一现实原因是 Writer 损坏，
+		// 静默会丢整个信封——折衷：写到 w 本身（同流降级）并保底 os.Stderr。
+		fmt.Fprintf(w, "{\"error\":\"JSON 输出失败: %s\"}\n", err)
 		fmt.Fprintf(os.Stderr, "JSON 输出失败: %v\n", err)
 	}
 }
