@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -404,6 +405,134 @@ func ParseBaiModels(raw string) ([]models.BaiModel, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// int64 与 float64 的交界：float64 恰好能表示 2^63，int64 只能装到 2^63-1，
+// 故上界用「严格小于」判定（越界的 float→int64 转换结果由实现定义，amd64 得 MinInt64）。
+const (
+	int64FloatUpper = 9223372036854775808.0  //  2^63
+	int64FloatLower = -9223372036854775808.0 // -2^63
+)
+
+// rawInt64 宽容解析 JSON 整数（int64 / 字符串 / 浮点三种形状）。
+// tRPC 负载由 JS 序列化，大整数理论上可能以 2.7e7 或 "27166591" 出现，
+// 严格模式会静默归零（同 rawInt 的 oracle 对照教训）。
+// 越界 / Inf / NaN 一律视为解析失败：放行会把垃圾值伪装成「额度已耗尽」红警。
+func rawInt64(r json.RawMessage) (int64, bool) {
+	if len(r) == 0 || strings.TrimSpace(string(r)) == "null" {
+		return 0, false
+	}
+	var i int64
+	if err := json.Unmarshal(r, &i); err == nil {
+		return i, true
+	}
+	// 非整数字面量：先试浮点（JS 侧 2.7e7 形状），再试字符串里的数字。
+	var f float64
+	if err := json.Unmarshal(r, &f); err != nil {
+		var s string
+		if json.Unmarshal(r, &s) != nil {
+			return 0, false
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil {
+			return 0, false
+		}
+		f = v
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) || f >= int64FloatUpper || f < int64FloatLower {
+		return 0, false
+	}
+	if f != math.Trunc(f) {
+		return 0, false
+	}
+	return int64(f), true
+}
+
+// ── 白B.AI 积分额度（chat.b.ai tRPC，API Key 认证） ────────────────
+
+// ErrBaiAuth BAI 凭据问题的统一口径：推理面（api.b.ai）401/403 与控制台
+// tRPC UNAUTHORIZED 共用同一文案，避免两路失败时用户读到两句同义不同词的提示。
+var ErrBaiAuth = errors.New("BAI API Key 无效、已过期或额度用尽，请到 chat.b.ai 核对")
+
+// baiEnvelope tRPC v11 单查询信封：成功 {"result":{"data":{"json":…}}}，
+// 失败 {"error":{"json":{"message":…, "data":{"code":"UNAUTHORIZED",…}}}}。
+type baiEnvelope struct {
+	Result struct {
+		Data struct {
+			JSON json.RawMessage `json:"json"`
+		} `json:"data"`
+	} `json:"result"`
+	Error struct {
+		JSON struct {
+			Message string `json:"message"`
+			Data    struct {
+				Code string `json:"code"`
+			} `json:"data"`
+		} `json:"json"`
+	} `json:"error"`
+}
+
+// baiPointsPayload usage.points / usage.summary 共用的字段集（两个端点都回
+// points_balance，summary 额外回 monthly_spent，points 额外回 points_expiring）。
+type baiPointsPayload struct {
+	PointsBalance  json.RawMessage `json:"points_balance"`
+	PointsExpiring json.RawMessage `json:"points_expiring"`
+	MonthlySpent   json.RawMessage `json:"monthly_spent"`
+}
+
+// baiPayloadOf 拆 tRPC 信封并取出负载。错误信封优先：UNAUTHORIZED 归一到
+// ErrBaiAuth，其他错误带原文（截 200 字）。
+func baiPayloadOf(raw, proc string) (baiPointsPayload, error) {
+	var env baiEnvelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return baiPointsPayload{}, fmt.Errorf("BAI %s JSON 解析失败: %w", proc, err)
+	}
+	if msg := strings.TrimSpace(env.Error.JSON.Message); msg != "" {
+		if strings.EqualFold(strings.TrimSpace(env.Error.JSON.Data.Code), "UNAUTHORIZED") {
+			return baiPointsPayload{}, ErrBaiAuth
+		}
+		return baiPointsPayload{}, fmt.Errorf("BAI %s 返回错误: %s", proc, truncate(msg, 200))
+	}
+	if len(env.Result.Data.JSON) == 0 {
+		return baiPointsPayload{}, fmt.Errorf("未获取到 BAI %s", proc)
+	}
+	var p baiPointsPayload
+	if err := json.Unmarshal(env.Result.Data.JSON, &p); err != nil {
+		return baiPointsPayload{}, fmt.Errorf("BAI %s 负载解析失败: %w", proc, err)
+	}
+	return p, nil
+}
+
+// ParseBaiPoints 解析 GET /trpc/lambda/usage.points。
+// points_balance 缺失视为失败（宁可不显示也不显示 0 误導用户「额度用尽」）；
+// points_expiring 缺席按 0 处理（无赠送额度时平台就不回该键）。
+func ParseBaiPoints(raw string) (models.BaiPoints, error) {
+	p, err := baiPayloadOf(raw, "积分额度")
+	if err != nil {
+		return models.BaiPoints{}, err
+	}
+	balance, ok := rawInt64(p.PointsBalance)
+	if !ok {
+		return models.BaiPoints{}, errors.New("未获取到 BAI 积分额度（响应缺少 points_balance）")
+	}
+	out := models.BaiPoints{Balance: balance}
+	if exp, ok := rawInt64(p.PointsExpiring); ok {
+		out.Expiring = exp
+	}
+	return out, nil
+}
+
+// ParseBaiMonthlySpent 解析 GET /trpc/lambda/usage.summary 的 monthly_spent（本月已消耗积分）。
+func ParseBaiMonthlySpent(raw string) (int64, error) {
+	p, err := baiPayloadOf(raw, "本月消耗")
+	if err != nil {
+		return 0, err
+	}
+	spent, ok := rawInt64(p.MonthlySpent)
+	if !ok {
+		return 0, errors.New("未获取到 BAI 本月消耗（响应缺少 monthly_spent）")
+	}
+	return spent, nil
 }
 
 // ── Qwen Token Plan：控制台 RPC（Cookie 认证） ─────────────────

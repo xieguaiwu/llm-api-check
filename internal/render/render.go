@@ -881,6 +881,16 @@ func writeBaiOverview(b *strings.Builder, r app.BaiResult, c Colorizer) {
 		}
 		return
 	}
+	if r.Points != nil {
+		line := "积分 " + formatInt(r.Points.Balance) + "（" + baiDollarText(r.Points.Balance) + "）"
+		if r.Points.HasMonthly {
+			line += " · 本月消耗 " + formatInt(r.Points.MonthlySpent)
+		}
+		if r.Points.Balance <= 0 {
+			line = c.Red(line + " · 额度已耗尽")
+		}
+		b.WriteString("  " + line + "\n")
+	}
 	if r.Plan != nil && len(r.Plan.Models) > 0 {
 		missing := r.Plan.MissingFreeFlash()
 		fmt.Fprintf(b, "  模型 %d 个 · 免费通道 %d/%d\n",
@@ -888,13 +898,21 @@ func writeBaiOverview(b *strings.Builder, r app.BaiResult, c Colorizer) {
 	}
 	if r.Error != "" {
 		b.WriteString(c.Red("  "+r.Error) + "\n")
-	} else if r.Plan == nil {
+	} else if r.Plan == nil && r.Points == nil {
 		b.WriteString(c.Gray("  暂无数据") + "\n")
 	}
 }
 
-// RenderBaiDetail 白B.AI 账号详情：模型清单 + 免费通道盯梢。
-// 平台仅开放推理路径，无配额/余额数据可拉（plan 文档 §二）。
+// baiDollarText 积分的名义美元等值（≈ 标记提醒它是换算值、不是账单金额）。
+func baiDollarText(points int64) string {
+	return "≈ $" + Fmt(models.BaiDollar(points))
+}
+
+// baiLabel 详情行标签列（按显示宽度对齐；%-Ns 对中文按字节/rune 计数都会错位）。
+func baiLabel(s string) string { return padTo(s, 8) }
+
+// RenderBaiDetail 白B.AI 账号详情：积分额度 + 模型清单 + 免费通道盯梢。
+// 积分走控制台 tRPC（chat.b.ai），模型走推理面（api.b.ai），两路独立可缺一路。
 func RenderBaiDetail(r app.BaiResult, c Colorizer) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (BAI)\n", r.Account.Name)
@@ -906,15 +924,22 @@ func RenderBaiDetail(r app.BaiResult, c Colorizer) string {
 		return b.String()
 	}
 	b.WriteString("API · 免费 0-Credits flash 通道\n")
+	if r.Points != nil {
+		b.WriteString("  " + renderBaiPoints(*r.Points, c) + "\n")
+		if r.Points.HasMonthly {
+			fmt.Fprintf(&b, "  %s %s（%s）\n", baiLabel("本月消耗"),
+				formatInt(r.Points.MonthlySpent), baiDollarText(r.Points.MonthlySpent))
+		}
+	}
 	if r.Plan != nil && len(r.Plan.Models) > 0 {
 		ids := make([]string, 0, len(r.Plan.Models))
 		for _, m := range r.Plan.Models {
 			ids = append(ids, m.ID)
 		}
-		fmt.Fprintf(&b, "  %-12s %d 个：%s\n", "模型", len(ids), strings.Join(ids, ", "))
+		fmt.Fprintf(&b, "  %s %d 个：%s\n", baiLabel("模型"), len(ids), strings.Join(ids, ", "))
 		missing := r.Plan.MissingFreeFlash()
 		if len(missing) == 0 {
-			b.WriteString("  " + c.Green("免费通道       ✓ "+strings.Join(models.BaiFreeFlashModels, " / ")) + "\n")
+			b.WriteString("  " + c.Green(baiLabel("免费通道")+" ✓ "+strings.Join(models.BaiFreeFlashModels, " / ")) + "\n")
 		} else {
 			var have []string
 			for _, want := range models.BaiFreeFlashModels {
@@ -929,7 +954,7 @@ func RenderBaiDetail(r app.BaiResult, c Colorizer) string {
 					have = append(have, want)
 				}
 			}
-			seg := "免费通道       "
+			seg := baiLabel("免费通道") + " "
 			if len(have) > 0 {
 				seg += "✓ " + strings.Join(have, " / ") + " · "
 			}
@@ -940,8 +965,20 @@ func RenderBaiDetail(r app.BaiResult, c Colorizer) string {
 	}
 	if r.Error != "" {
 		b.WriteString(c.Red(r.Error) + "\n")
-	} else if r.Plan == nil {
+	} else if r.Plan == nil && r.Points == nil {
 		b.WriteString(c.Gray("  暂无数据") + "\n")
 	}
 	return b.String()
+}
+
+// renderBaiPoints 积分余额行：余额 ≤0 整行红色并提示后果（额度耗尽时推理直接失败）。
+func renderBaiPoints(p models.BaiPoints, c Colorizer) string {
+	line := baiLabel("积分余额") + " " + formatInt(p.Balance) + "（" + baiDollarText(p.Balance) + "）"
+	if p.Expiring > 0 {
+		line += " · 其中 " + formatInt(p.Expiring) + " 即将过期"
+	}
+	if p.Balance <= 0 {
+		return c.Red(line + " · 额度已耗尽，推理请求会失败")
+	}
+	return line
 }

@@ -128,12 +128,34 @@ func (a Account) HasZen() bool {
 // ── 白B.AI（api.b.ai 免费通道） ───────────────────────────────
 
 // BaiAccount 白B.AI 账号。apiKey 为 chat.b.ai 侧栏创建的 sk- 密钥；
-// 平台只开放推理路径（/v1/models 等），无余额/配额端点可查（实测 403）。
+// 推理面（api.b.ai）只开放推理路径，积分额度走控制台 tRPC（chat.b.ai）。
 type BaiAccount struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	ApiKey string `json:"apiKey"`
 }
+
+// BaiPointsPerDollar 平台积分与美元的换算率。来源 basicConfig.getBasicConfig
+// 的 creditsPerDollar=1000000（2026-09-06 实测），并与 user.getRechargeBonusStat
+// 的 claimedAmountCents=1000 ↔ claimedAmountPoints=10000000 互证。
+const BaiPointsPerDollar = 1_000_000
+
+// BaiPoints 白B.AI 积分额度（chat.b.ai tRPC usage.points + usage.summary）。
+// 单位是平台积分（1 积分 = 1e-6 美元），不是元、也不是 token。
+type BaiPoints struct {
+	// Balance 当前可用积分（points_balance）。
+	Balance int64 `json:"balance"`
+	// Expiring 即将过期的积分（points_expiring），已含在 Balance 内。
+	// 控制台把它当 bonus（赠送额度）展示，故不叫「冻结」。
+	Expiring int64 `json:"expiring"`
+	// MonthlySpent 本月已消耗积分（usage.summary.monthly_spent）。
+	MonthlySpent int64 `json:"monthlySpent"`
+	// HasMonthly 标记 MonthlySpent 是否取到——summary 通道失败时不显示该行。
+	HasMonthly bool `json:"hasMonthly"`
+}
+
+// BaiDollar 积分的名义美元等值（按 BaiPointsPerDollar 折算）。
+func BaiDollar(points int64) float64 { return float64(points) / float64(BaiPointsPerDollar) }
 
 // BaiModel 单个模型（/v1/models 列表项白名单）。
 type BaiModel struct {

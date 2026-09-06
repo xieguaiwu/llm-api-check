@@ -2,7 +2,7 @@
 
 > [**English**](README.md) | [**中文版**](#)
 
-查看 LLM API 使用情况的终端 CLI——DeepSeek（余额 + 消费明细）、OpenCode（Go plan 三窗口 + Zen billing）、Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）、智星云 AI Galaxy 算力云（账户余额 + 云主机实例状态）与白B.AI 免费 flash 通道（模型清单 + 免费额度盯梢），支持多账号。复刻自 Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker)：数据层逻辑一致，输出改为终端文本/JSON 而非 App 界面。
+查看 LLM API 使用情况的终端 CLI——DeepSeek（余额 + 消费明细）、OpenCode（Go plan 三窗口 + Zen billing）、Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）、智星云 AI Galaxy 算力云（账户余额 + 云主机实例状态）与白B.AI（积分额度 + 免费 flash 通道盯梢），支持多账号。复刻自 Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker)：数据层逻辑一致，输出改为终端文本/JSON 而非 App 界面。
 
 ## 功能
 
@@ -11,7 +11,7 @@
 - **OpenCode Zen plan** — 余额、本月用量/限额、自动充值设置（从 billing 页面解析，需 workspace ID + auth cookie）
 - **Qwen Token Plan** — 订阅网关查套餐可用模型；百炼控制台查 5 小时/7 天 配额窗口与重置倒计时（配额接口不认 API Key，需控制台 Cookie）
 - **智星云 AI Galaxy** — 现金余额 / 算力券 / 信用额度分列不互相折算；租用的 GPU 与 CPU 云主机：状态徽章、显卡型号×数量、核数/内存、区域、SSH 地址端口、小时单价、自动续费标记，以及**恒显的到期倒计时**
-- **白B.AI** — api.b.ai 免费 0-Credits flash 通道：`/v1/models` 全量模型清单，并对已知免费 flash 模型盯梢——缺失即红色告警（自动化 agent 依赖它们）。平台不对 API key 开放配额/余额端点（2026-09-04 实测 403），因此不显示臆造数字
+- **白B.AI** — 积分额度走控制台 API（`usage.points` + `usage.summary`），再加 `/v1/models` 全量模型清单与已知免费 flash 模型盯梢——缺失即红色告警（自动化 agent 依赖它们）。额度按平台原始积分显示，附名义换算值 `≈ $`（1 000 000 积分 = $1，取自平台自己的 `creditsPerDollar`）；余额归零整行红色——积分耗尽后推理请求会直接失败
 - **多账号** — DeepSeek、OpenCode、Qwen、智星云、白B.AI 账号数量不限，各自独立展示
 - 机器可读 `--json` 输出、`NO_COLOR` 支持
 - 零第三方依赖（Go stdlib only）
@@ -40,7 +40,7 @@ llm-api-check accounts add --type galaxy --name "训练集群" \
 llm-api-check galaxy                       # 智星云余额 + 实例状态
 llm-api-check galaxy --limit 5             # 只看前 5 台活跃实例
 llm-api-check accounts add --type bai --name "免费通道" --api-key sk-xxx
-llm-api-check bai                          # 白B.AI 模型清单 + 免费通道盯梢
+llm-api-check bai                          # 白B.AI 积分额度 + 模型清单 + 免费通道盯梢
 ```
 
 可从 [Releases](https://github.com/xieguaiwu/llm-api-check/releases) 下载预编译二进制（Linux / macOS，amd64 / arm64），与 `sha256sums.txt` 对校后放入 `PATH`：
@@ -60,7 +60,7 @@ llm-api-check --version
 | `llm-api-check opencode [名称\|ID] [--no-refresh]` | OpenCode 账号详情 |
 | `llm-api-check qwen [名称\|ID] [--no-refresh] [--stats]` | Qwen 账号详情（`--stats` 附加 7 天 token 统计与免费额度） |
 | `llm-api-check galaxy [名称\|ID] [--no-refresh] [--limit N]` | 智星云余额 + 实例状态（`--limit` 列出实例数，默认 10，上限 100） |
-| `llm-api-check bai [名称\|ID] [--no-refresh]` | 白B.AI 模型清单 + 免费通道盯梢 |
+| `llm-api-check bai [名称\|ID] [--no-refresh]` | 白B.AI 积分额度、模型清单、免费通道盯梢 |
 | `llm-api-check accounts list` | 列出所有账号 |
 | `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai --name 名称 [凭据 flags]` | 添加账号 |
 | `llm-api-check accounts remove --id ID \| --name 名称` | 删除账号 |
@@ -84,7 +84,7 @@ llm-api-check --version
 | Bailian CLI（配额首选通道） | 安装官方 CLI：`npm install -g --prefix ~/.local/share/bailian-cli bailian-cli`，再登录一次：`~/.local/share/bailian-cli/bin/bailian auth login --console`。工具会自动探测（或设 `LLM_API_CHECK_BL_BIN` 指定路径）；CLI 优先于 Cookie |
 | Qwen 控制台 Cookie（兜底通道） | 登录 `bailian.console.aliyun.com` → Token Plan 页 → DevTools → Network → 任意 `data/api.json` 请求 → 复制整个 `Cookie` 请求头（连 `Cookie:` 前缀一起粘贴也可以，工具会自动剥除） |
 | 智星云 AccessKey + SecretKey | gpu.ai-galaxy.cn 控制台 → 开放API → AccessKey管理 → 创建（需先完成实名认证）。请求按「参数名字典序 + 末尾拼 `&secret=`，取 MD5」签名 |
-| 白B.AI API key | chat.b.ai 侧栏 → API → Create API Key（`sk-…`）。仅推理用途：配额/余额端点对 API key 封闭，只能看模型清单 |
+| 白B.AI API key | chat.b.ai 侧栏 → API → Create API Key（`sk-…`）。同一把 key：在 `api.b.ai` 读推理模型清单，在 `chat.b.ai` 读自己的积分额度 |
 
 Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证密钥并列出套餐模型，并明说缺什么，不会给出臆造的数字。
 
@@ -122,12 +122,14 @@ Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证�
 | 智星云实例状态 | `POST .../instance/get_instance_status_count`、`.../instance/get_instance_list` | AccessKey + SecretKey 签名 |
 | 智星云消费 | `POST .../billing/get_balance_change_list`（余额变更明细聚合今日 / 近 7 天） | AccessKey + SecretKey 签名 |
 | 白B.AI 模型 | `GET https://api.b.ai/v1/models` | API key（`Bearer sk-…`）；one-api 系信封 `{data, success}` |
+| 白B.AI 积分 | `GET https://chat.b.ai/trpc/lambda/usage.points` + `…/usage.summary` | 同一把 API key 作 Bearer（tRPC 信封 `{result:{data:{json}}}`）|
 
 ## 安全说明
 
 - 不硬编码、不提交任何凭据。全部密钥存于 `~/.config/llm-api-check/config.json`，创建时权限 `0600`。
 - Android 原版用 Keystore 加密凭据；CLI 无系统级 keystore，本工具用文件权限保护（与 `gh` / `aws` CLI 同模式）。配置文件权限过宽时会在 stderr 给出警告。
 - Zen billing 数据来自页面解析，若 opencode.ai 改版可能失效。Qwen 配额窗口来自百炼控制台 RPC，随控制台会话过期。
+- 白B.AI 积分额度走未文档化的控制台 API（`chat.b.ai/trpc/lambda/usage.*`）：它现在接受 API key，但控制台改版可能随时改过端点名。`api.b.ai` 本身仍只开放推理路径（其余 403）。
 - 智星云实例列表接口的响应体里带着实例 root/RDP/VNC 明文口令。解析层用显式白名单字段解码，这些口令不会进入数据类、`--json` 输出或终端渲染；工具也刻意不调用会回吐 SecretKey 的 `account/get_apikey_info`。
 - Qwen 控制台 Cookie 包含你的阿里云登录会话。请把配置文件当敏感文件对待，不再需要时用 `accounts remove` 删除该账号。
 

@@ -48,11 +48,12 @@ type QwenResult struct {
 	CLIInstallCmd string `json:"-"`
 }
 
-// BaiResult 单个白B.AI 账号的刷新结果。平台仅开放推理路径，无配额数据可拉，
-// v1 只有模型清单（API Key）。
+// BaiResult 单个白B.AI 账号的刷新结果。Plan = 模型清单（推理面），
+// Points = 积分额度（控制台 tRPC）；两路独立，任一路成功即有数据可显示。
 type BaiResult struct {
 	Account models.BaiAccount `json:"account"`
 	Plan    *models.BaiPlan   `json:"plan,omitempty"`
+	Points  *models.BaiPoints `json:"points,omitempty"`
 	Error   string            `json:"error,omitempty"`
 }
 
@@ -402,7 +403,7 @@ func (a *App) refreshGalaxy(acc models.GalaxyAccount, limit int) GalaxyResult {
 	return res
 }
 
-// RefreshBai 按 id 刷新单个白B.AI 账号（模型清单，API Key）。
+// RefreshBai 按 id 刷新单个白B.AI 账号（模型清单 + 积分额度，同一把 API Key）。
 func (a *App) RefreshBai(id string) (BaiResult, error) {
 	var acc models.BaiAccount
 	found := false
@@ -419,14 +420,38 @@ func (a *App) RefreshBai(id string) (BaiResult, error) {
 	return a.refreshBai(acc), nil
 }
 
-// refreshBai 拉模型清单；失败时保留账号 + 错误（上层据此判 exit 1）。
+// refreshBai 并发拉两路：模型清单（api.b.ai）+ 积分额度（chat.b.ai）。
+// 两路不同主机、同一把 key：一路失败不抖掉另一路已拿到的数据（同 refreshGalaxy）。
 func (a *App) refreshBai(acc models.BaiAccount) BaiResult {
 	res := BaiResult{Account: acc}
-	plan, err := a.Repos.Bai.Models(acc.ApiKey)
-	if err == nil {
+	if a.Repos == nil || a.Repos.Bai == nil {
+		res.Error = "BAI 仓库未初始化"
+		return res
+	}
+	var (
+		wg      sync.WaitGroup
+		plan    models.BaiPlan
+		planErr error
+		pts     models.BaiPoints
+		ptsErr  error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		plan, planErr = a.Repos.Bai.Models(acc.ApiKey)
+	}()
+	go func() {
+		defer wg.Done()
+		pts, ptsErr = a.Repos.Bai.Points(acc.ApiKey)
+	}()
+	wg.Wait()
+	if planErr == nil {
 		res.Plan = &plan
 	}
-	res.Error = errMsg(err)
+	if ptsErr == nil {
+		res.Points = &pts
+	}
+	res.Error = joinErrors(planErr, ptsErr)
 	return res
 }
 
@@ -438,13 +463,21 @@ func (a *App) LastUpdated() time.Time {
 	return a.Cfg.LastUpdateAt("all")
 }
 
-// joinErrors 合并错误消息（"\n" 连接，全部 nil → 空串）
+// joinErrors 合并错误消息（"\n" 连接，全部 nil → 空串）。
+// 同文本去重：多路共用一把凭据时，凭据错误会逐路重复（同 main.go joinText 的教训）。
 func joinErrors(errs ...error) string {
 	var msgs []string
+	seen := map[string]bool{}
 	for _, e := range errs {
-		if e != nil {
-			msgs = append(msgs, e.Error())
+		if e == nil {
+			continue
 		}
+		m := e.Error()
+		if seen[m] {
+			continue
+		}
+		seen[m] = true
+		msgs = append(msgs, m)
 	}
 	return strings.Join(msgs, "\n")
 }

@@ -621,16 +621,18 @@ func (r *QwenRepo) getPage(rawURL, cookie, origin string, navigate bool) (string
 
 // ── 白B.AI 仓库 ──────────────────────────────────────────────
 
-// BaiRepo 白B.AI（api.b.ai）数据仓库：模型清单（API Key）。
-// 平台仅开放推理路径（/v1/models 等），无余额/配额端点可查（实测 403）。
+// BaiRepo 白B.AI 数据仓库：模型清单走推理面（api.b.ai），积分额度走控制台
+// tRPC（chat.b.ai）。推理面只开放推理路径（其余路径实测 403），但同一把 sk-
+// key 在控制台 tRPC 上能直读自己的积分余额（2026-09-06 实测，plan 文档 §二-b）。
 type BaiRepo struct {
-	BaseURL string
-	Client  *http.Client
+	BaseURL    string // 推理面 https://api.b.ai
+	ConsoleURL string // 控制台 https://chat.b.ai（tRPC 入口）
+	Client     *http.Client
 }
 
 // NewBaiRepo 默认端点 + 15s 超时 client
 func NewBaiRepo() *BaiRepo {
-	return &BaiRepo{BaseURL: "https://api.b.ai", Client: defaultClient()}
+	return &BaiRepo{BaseURL: "https://api.b.ai", ConsoleURL: "https://chat.b.ai", Client: defaultClient()}
 }
 
 func (r *BaiRepo) client() *http.Client {
@@ -649,7 +651,7 @@ func (r *BaiRepo) Models(apiKey string) (models.BaiPlan, error) {
 	}
 	body, err := doGet(r.client(), r.BaseURL+"/v1/models",
 		map[string]string{"Authorization": "Bearer " + apiKey, "Accept": "application/json"},
-		"BAI API Key 无效、已过期或额度用尽，请到 chat.b.ai 核对")
+		parsers.ErrBaiAuth.Error())
 	if err != nil {
 		return models.BaiPlan{}, err
 	}
@@ -658,6 +660,44 @@ func (r *BaiRepo) Models(apiKey string) (models.BaiPlan, error) {
 		return models.BaiPlan{}, err
 	}
 	return models.BaiPlan{Models: ms}, nil
+}
+
+// baiHeaders 控制台 tRPC 认证头：与推理面同一把 sk- key（Bearer）。
+func baiHeaders(apiKey string) map[string]string {
+	return map[string]string{"Authorization": "Bearer " + apiKey, "Accept": "application/json"}
+}
+
+// Points 拉取积分额度：usage.points（余额 / 即将过期）为主，usage.summary
+// （本月消耗）为辅。两路都是只读查询，不传 input。
+//
+// 错误口径：主通道失败 → 返回错误（本月消耗无从谈起）；主成功、辅失败 →
+// 返回数据且 HasMonthly=false、不报错（消耗行不显示，属可选信息）。
+func (r *BaiRepo) Points(apiKey string) (models.BaiPoints, error) {
+	if strings.TrimSpace(apiKey) == "" {
+		return models.BaiPoints{}, errors.New("未配置 API Key")
+	}
+	base := r.ConsoleURL
+	if strings.TrimSpace(base) == "" {
+		base = "https://chat.b.ai"
+	}
+	body, err := doGet(r.client(), base+"/trpc/lambda/usage.points",
+		baiHeaders(apiKey), parsers.ErrBaiAuth.Error())
+	if err != nil {
+		return models.BaiPoints{}, err
+	}
+	pts, err := parsers.ParseBaiPoints(body)
+	if err != nil {
+		return models.BaiPoints{}, err
+	}
+	// 副通道：summary 失败不抖掉已拿到的余额（同 galaxy 逐路独立处理）。
+	if sumBody, err := doGet(r.client(), base+"/trpc/lambda/usage.summary",
+		baiHeaders(apiKey), parsers.ErrBaiAuth.Error()); err == nil {
+		if spent, err := parsers.ParseBaiMonthlySpent(sumBody); err == nil {
+			pts.MonthlySpent = spent
+			pts.HasMonthly = true
+		}
+	}
+	return pts, nil
 }
 
 // joinErrors 合并多个错误为多行文本（与 app 包 joinErrors 语义一致，repo 内自持）

@@ -48,7 +48,7 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   llm-api-check opencode [名称|ID]         OpenCode 账号详情（可过滤名字/id，缺省全部）
   llm-api-check qwen [名称|ID] [--stats]   Qwen 账号详情（--stats 附加 7 天用量分析与免费额度）
   llm-api-check galaxy [名称|ID] [--limit N]   智星云余额 + 云主机实例状态（--limit 列出实例数，默认 10）
-  llm-api-check bai [名称|ID]              白B.AI 账号详情：模型清单 + 免费通道状态（可过滤名字/id，缺省全部）
+  llm-api-check bai [名称|ID]              白B.AI 账号详情：积分额度 + 模型清单 + 免费通道状态（可过滤名字/id，缺省全部）
   llm-api-check accounts list              列出所有账号
   llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
@@ -75,8 +75,9 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
             控制台「开放API → AccessKey管理」创建（需先完成实名认证）；看余额 + 实例状态与到期时间
   BAI:      --api-key
             环境变量 LLM_API_CHECK_BAI_API_KEY
-            白B.AI（api.b.ai）key，chat.b.ai 侧栏 API → Create API Key 创建；
-            平台仅开放推理路径，只看模型清单与免费通道状态（无配额数据可查）
+            白B.AI key，chat.b.ai 侧栏 API → Create API Key 创建；
+            同一把 key 读两处：api.b.ai 推理模型清单、chat.b.ai 控制台积分额度
+            （chat.b.ai 本机直连超时，需代理，跟系统 HTTP(S)_PROXY）
 
 退出码: 0 成功；1 任一账号完全失败；2 用法错误
 `
@@ -234,7 +235,7 @@ func exitCodeForResults(res app.Result) int {
 		}
 	}
 	for _, r := range res.Bai {
-		if r.Error != "" && r.Plan == nil {
+		if r.Error != "" && r.Plan == nil && r.Points == nil {
 			return 1
 		}
 	}
@@ -1452,6 +1453,9 @@ func publicBaiResult(r app.BaiResult) map[string]any {
 	}
 	if r.Plan != nil {
 		m["plan"] = r.Plan
+	}
+	if r.Points != nil {
+		m["points"] = r.Points
 	}
 	if r.Error != "" {
 		m["error"] = r.Error

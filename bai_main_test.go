@@ -1,8 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/xieguiawu/llm-api-check/internal/app"
+	"github.com/xieguiawu/llm-api-check/internal/models"
 )
 
 // BAI 全链（hermetic，不联网）：add → list → 详情 --no-refresh → rename → remove。
@@ -89,4 +93,37 @@ func TestBaiAddFromEnv(t *testing.T) {
 	}
 	// 清理，防串扰其它用例
 	runCLI(t, "", "accounts", "remove", "--name", "环境变量号")
+}
+
+// --json 载荷与退出码：积分额度要出得来，且「有额度无清单」不算完全失败。
+func TestBaiJSONPointsAndExitCode(t *testing.T) {
+	res := app.BaiResult{
+		Account: models.BaiAccount{ID: "b1", Name: "免费通道", ApiKey: "sk-secretvalue1234"},
+		Points:  &models.BaiPoints{Balance: 27166591, Expiring: 7166591, MonthlySpent: 2833409, HasMonthly: true},
+	}
+	m := publicBaiResult(res)
+	p, ok := m["points"].(*models.BaiPoints)
+	if !ok || p == nil {
+		t.Fatalf("--json 应含 points: %+v", m)
+	}
+	if p.Balance != 27166591 || p.Expiring != 7166591 || p.MonthlySpent != 2833409 {
+		t.Errorf("points 数值不符: %+v", p)
+	}
+	if _, has := m["plan"]; has {
+		t.Errorf("Plan 为 nil 时不应出现 plan 键: %+v", m)
+	}
+	// 掩码不外泄：account 段走 publicBaiAccount
+	if acct, ok := m["account"].(map[string]any); !ok || strings.Contains(fmt.Sprint(acct), "sk-secretvalue1234") {
+		t.Errorf("--json 泄漏明文 key: %+v", m["account"])
+	}
+
+	// 退出码：有额度数据 → 0；两路皆空 + 错误 → 1
+	if got := exitCodeForResults(app.Result{Bai: []app.BaiResult{
+		{Account: res.Account, Points: res.Points, Error: "模型清单失败"}}}); got != 0 {
+		t.Errorf("额度已到手时部分失败不应 exit 1，实际 %d", got)
+	}
+	if got := exitCodeForResults(app.Result{Bai: []app.BaiResult{
+		{Account: res.Account, Error: "BAI API Key 无效"}}}); got != 1 {
+		t.Errorf("无任何数据且有错误应 exit 1，实际 %d", got)
+	}
 }

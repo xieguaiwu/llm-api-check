@@ -1,7 +1,56 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-09-06 12:5x）
+- **bai 积分额度显示（推翻 09-04「配额不可得」结论）**：`llm-api-check bai` 现在显示
+  `积分余额 27,166,591（≈ $27.17） · 其中 7,166,591 即将过期` + `本月消耗 2,833,409（≈ $2.83）`。
+  - 🔑 **通道**：`GET https://chat.b.ai/trpc/lambda/usage.points` 与 `…/usage.summary`，
+    **认证头就是同一把 `Authorization: Bearer sk-…`**（无需 Cookie/会话）。假 key/无头 → 401
+    tRPC 信封 `error.json.data.code=UNAUTHORIZED`。
+  - 🩹 **旧结论为何错**：09-04 只探了 `api.b.ai` 一个域名（那里确实只开放推理路径，403 原文可查）。
+    推理面与控制台是两个域名、两套网关——`chat.b.ai` 是 LobeChat 分支，自带 tRPC 数据 API。
+    **教训：「平台不提供 X」这类否定结论必须逐域名/逐子域取证，单域 403 不能外推。**
+  - 取证路径：页面 chunk → webpack 异步 chunk 表（`u.u=c=>…` + `{id:"hash"}`，89 个）→
+    chunk 193735 找到 `usage.points/summary/records` 与 `url:"/trpc/lambda"`。
+  - 单位：`1 积分 = 1e-6 USD`（`basicConfig.creditsPerDollar=1000000`，与
+    `getRechargeBonusStat` 1000 美分 ↔ 10 000 000 积分互证）。`points_expiring` = 赠送池余额
+    （购买积分不过期），逐笔对账成立：30 000 000 − 2 833 409 = 27 166 591 = balance，
+    10 000 000 − 2 833 409 = 7 166 591 = expiring。详见 docs/plans/2026-09-04-bai-provider.md §二-b。
+  - 施工：`BaiRepo` 新增 `ConsoleURL`；`Points()` 串接 points+summary（summary 失败不致命，
+    `HasMonthly=false`）；`app.refreshBai` 两路并发（模型路 api.b.ai / 额度路 chat.b.ai 不同主机）；
+    `parsers.ErrBaiAuth` 成两路共用常量 + `app.joinErrors` 整行去重（同 key 坏掉时只读一句）；
+    `rawInt64` 容忍整数/浮点/字符串三形状，`points_balance` 缺席 = 显式失败（不得显示 0 误報额度用尽）；
+    标签列统一 `baiLabel`=`padTo(s,8)`（旧 `%-12s` 配中文按字节补位，与硬编码空格行不同列）。
+  - 质量门：gofmt 0 / vet 0 / 7 包 `-race` 全绿；用例 **242 → 258**；**反向验证 10 做**
+    （删 tRPC 信封分支 / rawInt64 去容错 / summary 改致命×2 / 去错误去重 / 退出码漏 Points /
+    标签退回 %-12s / 「暂无数据」漏 Points / tRPC 路径写错——对应测例均 FAIL）；
+    新二进制已装 `~/.local/bin`，**真机四路冒烟**：有效 key（1.2s，额度+48 模型）/ 坏 key
+    （单行错误 + exit 1）/ `--json`（points 对象 + key 掩码）/ `--no-refresh`（6ms 不联网）。
+  - **momus 审查轮（2026-09-06）**：结论「无 P0」，7 项重点逐条裁定通过（并发无竞争、
+    joinErrors 去重对 DeepSeek/Qwen/Galaxy 无回归——全仓无「依赖重复错误」的断言、
+    退出码口径与 qwen/galaxy 同构、凭据不外泄、对齐与 rune 安全、三处文档逐字一致）。
+    - 🔴 **P1-1 已修（真缺陷，先复现再修）**：`rawInt64` 的浮点/字符串回退路径缺 int64
+      范围与 Inf 守卫——`1e30` / `9.3e18` / `"1e30"` / `"Inf"` 全部返回
+      `(-9223372036854775808, ok=true)`（float→int64 越界转换结果由实现定义，amd64 得 MinInt64；
+      `strconv.ParseFloat("Inf")` 还不报错）。后果正是本次要消灭的那类误导：垃圾值进 `Balance`
+      → 触发 `≤0` 红警「额度已耗尽，推理请求会失败」，把解析失败伪装成额度用尽。
+      修法：`math.IsNaN/IsInf` + `f >= 2^63 || f < -2^63` 拒为解析失败（`int64FloatUpper/Lower`
+      常量，上界严格小于因 float64 恰能量表示 2^63）；新增 `TestParseBaiPointsRejectsOutOfRange`
+      （8 个越界形状 + 2^53-1 边界内不得误拒 + expiring 越界按缺席处理），反向验证第 10 做。
+    - P2 已修 3 条：plan §施工约束「总时长不超模型路」算术错（额度路串行两次往返 ≈1.2s
+      才是主导，与冒烟 1.2s 自相矛盾）、`RefreshBai` 注释漏积分路、render 测例双重否定
+      `!Contains(...) == false` 拆成两条独立断言。
+    - P2 **未修（记此防忘）**：tRPC 错误原文只截断未消毒，服务器可控文本里的 ANSI/控制字符
+      会进终端与 `--json.error`。与 `ParseBaiModels`/galaxy/qwen 全部同模式——要修就全仓
+      一处统一修（新增 sanitize 原语 + 各 provider 接入），单点加固反而制造不一致。
+  - ⚠️ **`chat.b.ai` 本机直连超时**（`--noproxy '*'` 15s 无响应），`api.b.ai` 直连可通——
+    Go 默认 `ProxyFromEnvironment`，跟系统 `HTTPS_PROXY`（127.0.0.1:7897），无需特殊处理。
+  - 📌 附带观测（本轮未加功能）：`bai/deepseek-v4-flash` 推理当前回 **503
+    `pre_consume_token_quota_failed`**（网关侧 subscription billing-info 查询失败），
+    `glm-5.3-flash` / `qwen3.8-flash` 正常——上游通道故障，非本工具缺陷；免费通道盯梢只查
+    模型清单存在性，查不出这种运行时 503。
+
 ## 最后一次完成的工作（2026-09-04 17:5x）
-- **provider=bai（白B.AI api.b.ai，commit 1df753b）**：免费 0-Credits flash 通道盯梢（qwen3.8-flash / deepseek-v4-flash / vision-exp / glm-5.3-flash，缺失红警——pi-subagent 默认免费模型源）。one-api 系网关（x-oneapi-request-id），**仅开放推理路径**（billing 403 原文「HTTP node only allows access to inference API paths」），v1 只有模型清单。凭据 = ~/.config/fish/config.fish L274 BAI_API_KEY（chat.b.ai 侧栏创建）。实测：直连已通（config.fish「必须走代理」注释已过时）、10 路并发未复现 429、假 key 401 `Invalid token`、max_tokens≤2 拒 400。`llm-api-check bai` / `accounts add --type bai`（env LLM_API_CHECK_BAI_API_KEY）；测试 222→236，反向验证三做，真机 47 模型+4/4 绿 ✓。契约 docs/plans/2026-09-04-bai-provider.md。⚠️ 同 commit 还含 joinText 按行去重修复（见下）。
+- **provider=bai（白B.AI api.b.ai，commit 1df753b）**：免费 0-Credits flash 通道盯梢（qwen3.8-flash / deepseek-v4-flash / vision-exp / glm-5.3-flash，缺失红警——pi-subagent 默认免费模型源）。one-api 系网关（x-oneapi-request-id），**仅开放推理路径**（billing 403 原文「HTTP node only allows access to inference API paths」），v1 只有模型清单。⚠️ **该「无配额数据」结论已于 2026-09-06 推翻**（漏探 chat.b.ai 控制台域，见上方新记录），「仅开放推理路径」只对 api.b.ai 成立。凭据 = ~/.config/fish/config.fish L274 BAI_API_KEY（chat.b.ai 侧栏创建）。实测：直连已通（config.fish「必须走代理」注释已过时）、10 路并发未复现 429、假 key 401 `Invalid token`、max_tokens≤2 拒 400。`llm-api-check bai` / `accounts add --type bai`（env LLM_API_CHECK_BAI_API_KEY）；测试 222→236，反向验证三做，真机 47 模型+4/4 绿 ✓。契约 docs/plans/2026-09-04-bai-provider.md。⚠️ 同 commit 还含 joinText 按行去重修复（见下）。
 - **qwen provider 重新验证（全闭环）**：① API Key 通道实时 12 模型；② Bailian CLI 会话过期实测（config 停在 08-30）→ 错误文案/绝对路径/`bl` 改写防线全部按 08-30 修复生效；③ **发现并修掉 --stats 重复错误缺陷**：joinText 全串比对漏「上层已拼 Plan 错误」的行内重复 → 改按行去重（main.go joinText + TestJoinTextDedupesLines + e2e 计数断言，反向验证 FAIL 确认）；④ 用户浏览器 OAuth 重登后配额恢复：7天 96% · 8小时1分后重置（红 ≥90 正确）+ --stats 全通（45,351 tokens）；⑤ bailian-cli 1.18.1→1.20.0 漂移检查：输出字段名零变化（对比 bailian-cli-commands 包），升级安全暂不升。
 - **Android 对等实现待办**：pocket-llm-api-checker 同名 provider 未施工（bai）；Galaxy 的 Android 侧真机冒烟仍欠（见下）。
 
@@ -43,7 +92,7 @@
 `~/Desktop/go-projects/pocket-llm-api-checker` 的同名 provider 正在并行施工（GalaxyRepo/GalaxyCard/GalaxyDetailScreen/SettingsScreen 录入 + 单测），契约以 Go 侧 plan 文档为准。真机冒烟与凭据录入由用户完成。
 
 ## 项目当前状态
-llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）** 与 **白B.AI（免费 flash 通道模型清单 + 免费额度盯梢）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。BAI 平台仅开放推理路径（billing 403），无配额数据可拉，勿尝试给 bai 加余额/配额端点。**
+llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）** 与 **白B.AI（积分额度 + 免费 flash 通道模型清单）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。**BAI 积分额度已通（2026-09-06）：走 `chat.b.ai` 控制台 tRPC，同一把 sk- key 作 Bearer，无需 Cookie；`api.b.ai` 本身仍只开放推理路径（其余 403）——不要再拿 api.b.ai 的 403 当「bai 无额度数据」的依据。****
 
 🔴 **Android 侧唯一权威 clone（2026-08-29 取证）= `~/Desktop/go-projects/pocket-llm-api-checker/`**（HEAD e1c1568，含 fastlane 元数据 + tag v1.0.0 + scripts/ 可复现构建 + docs/fdroid 草稿）。`~/Desktop/android-projects/api-checkers/` 是落后一提交的旧副本（HEAD cec6ef7，无 fastlane、无 tag），只做历史参考，**勿在其上开发**。
 
@@ -60,6 +109,10 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
   - ⚠️ 会话短寿命实测：OAuth 登录约几小时即过期（13:46 登录 14:0x 已报 Console session not logged in or has expired）→ 过期重跑 `bailian auth login --console` 即可（首次登录进程若卡住先 kill 再重开）
 
 ## 遗留问题 / 待办
+- [ ] **bai 可选增强（未做，数据已取证）**：`usage.records` 逐请求明细（model/tokens/cost_points/created_at/source_type）足以支撑 `bai --stats`（对齐 `qwen --stats`）；`order.listOrders` 可出充值/返佣流水。本轮只做额度显示，未接 records
+- [ ] **bai 额度告警闭环（未做）**：余额低到多少该报警没有平台依据（耗尽才真失败），现仅「≤0 红警」；若要阈值需先与用户确认口径
+- [ ] **Android 对等实现（bai）**：pocket-llm-api-checker 侧需同步「模型清单 + 积分额度」，契约以 Go plan §二-b 为准
+- [ ] **免费通道盯梢升级（未做）**：盯梢只查模型清单存在性，查不出运行时 503（2026-09-06 实测 `deepseek-v4-flash` 回 `pre_consume_token_quota_failed`、其余 flash 正常）——要盖住这类故障得加一次 max_tokens=8 探活（有成本，待定）
 - [x] ~~**Bailian CLI 会话过期维护**：差异化文案未做~~ → **2026-08-30 已做**：会话失效单独立档，给出可复制的 `bailian auth login --console`（绝对路径）；不透传上游 `bl` hint。运维动作不变：过期重跑 `~/.local/share/bailian-cli/bin/bailian auth login --console`（浏览器 OAuth；登录进程卡住先 kill 再重开）。⚠️ `bailian auth status` 不校验会话有效性，判活看 `bailian usage token-plan`
 - [ ] **国际区域（ap-southeast-1）无凭据、未实跑**：代码按公开契约实现（`QwenEndpointsFor` + CLI `--console-site international`，CLI 通道单测覆盖了 intl 参数）；启用前先验证 `/tool/user/info.json` 的 sec_token 字段名
 - [ ] **DeepSeek 平台 token / workspace ID + auth cookie 未配置**（config.fish 无）：DeepSeek 消费明细与 Zen billing 不可用。平台 token 需浏览器登录 platform.deepseek.com 后从 DevTools 抓；Zen 需 opencode.ai 的 workspace ID + auth cookie（`Fe26.2` 开头）
@@ -71,8 +124,9 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - [ ] 图形知识图谱 graphify-out/ 未生成（可选，`graphify update . --no-llm`）
 
 ## 技术要点（下一位 Agent 必读）
+- **白B.AI 铁律**：① 两个域名两套网关——`api.b.ai` 只开放推理路径（`/v1/chat/completions|/v1/messages|/v1/responses|/v1/models|/v1/images/*`，其余 403），积分/额度在 `chat.b.ai` 控制台 tRPC；② 同一把 `sk-` key 两处通用（Bearer），无需浏览器 Cookie；③ `chat.b.ai` 本机直连超时、必须走代理（`api.b.ai` 直连可通）；④ tRPC 错误信封优先于状态码，`UNAUTHORIZED` 归一到 `parsers.ErrBaiAuth`，其他 code 带原文上抛；⑤ `points_balance` 缺席必须显式失败（显示 0 = 误報额度用尽）；⑥ 1 积分 = 1e-6 USD（`creditsPerDollar`），渲染用 `≈ $` 标记提醒是名义换算；⑦ `usage.records` 对未知过滤键与非法 `page` 一律忽略不报错，不能拿它做参数校验（同智星云 `status_type`）。详见 docs/plans/2026-09-04-bai-provider.md §二-b
 - **智星云 OpenAPI 铁律**：① 签名 = 非空参数字典序拼 `k=v&…` + 末尾 `&secret=<SecretKey>` → MD5 小写 hex，`sign` 进 body（**不入串**）；② HTTP 恒 200，错误在信封 `{success,code:"2000"}` 里，`code` 是**字符串**；③ `page_size` 上限 100（超限报 `page_size参数超限!`）；④ `status_type` 传非法值不报错、按不过滤处理，不能拿它做参数校验；⑤ 实例响应含明文口令（见上）；⑥ 到期时刻用 `Due_time-ServerTime` 折算；⑦ 平台错误码只有 "2000"（成功）/"4000"（客户端错误，message 说明原因）。详见 docs/plans/2026-08-29-ai-galaxy-provider.md
-- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）；BAI 模型 = `GET https://api.b.ai/v1/models`（API key，one-api 系信封 `{data:[{id,owned_by,supported_endpoint_types}],success}`）**
+- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）；BAI 模型 = `GET https://api.b.ai/v1/models`（API key，one-api 系信封 `{data:[{id,owned_by,supported_endpoint_types}],success}`）**；**BAI 积分 = `GET https://chat.b.ai/trpc/lambda/usage.points`（余额/即将过期）+ `…/usage.summary`（本月消耗），同一把 sk- key 作 Bearer，tRPC v11 信封 `{result:{data:{json:…}}}`，错误走 `{error:{json:{data:{code:"UNAUTHORIZED"}}}}`；只读 query，不接任何 mutate
 - **Bailian CLI 通道铁律**：① 本机 `bl` 是用户自研翻译 CLI——探测与文档一律用 `bailian` 名/绝对路径，`exec.LookPath("bl")` 是被禁止的（会误调）；② `usage token-plan` 认证模式 Console，API key 无效；③ Node 的 UNDICI 警告在 stderr，必须过滤；④ exit 非零时 JSON 错误信封在 stderr（实测 exit 3）；⑤ CLI 会话存 `~/.bailian/config.json`（敏感文件）；⑥ 会话短寿命（几小时），过期重跑 `bailian auth login --console`；⑦ 实现文件 `internal/repo/qwen_cli.go`（QwenCLI.runJSON 共用 Usage/Summary 通道）
 - **Qwen 三个不能踩的坑**（详见 docs/plans/2026-08-29-qwen-provider.md）：① `cornerstoneParam` 绝不得硬编码 `switchAgent`（网关会绑死该工作区 → 他人账号全部 NotAuthorised）② 抓 `SEC_TOKEN` 必须带 `Sec-Fetch-*` 浏览器导航头 + 桌面 UA，否则 OneConsole shell 不渲染该 token ③ 登录失效仍回 HTTP 200，错误在信封 `data.errorCode` 里，不能只看状态码
 - **关键移植点**：ZenBilling 字符串字面量感知括号匹配（inStr/esc 状态机）、`(?:^|,)balance:` 正则、microcents÷1e8、cost 两月都无数据显式失败（不返回误导零数据）；QwenUsage 信封 BFS + 内嵌 JSON 字符串展开（深度上限 12）、`qwenPercent` 比例/百分数双域判定（>2 才当百分数）、空窗口重试 3 次而认证类错误不重试、CLI 单窗口响应独立判有（5 小时限时取消期间字段缺席）
@@ -95,4 +149,4 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - 图谱以最新 commit 为准；若 `graphify-out/needs_update` 存在说明已陈旧，先 update 再依赖它回答
 
 ## 最后更新时间
-2026-09-04 17:55
+2026-09-06 12:5x
