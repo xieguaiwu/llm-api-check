@@ -899,3 +899,97 @@ func ExtractQwenSECToken(html string) string {
 	}
 	return strings.TrimSpace(m[1])
 }
+
+// ── GPTZero（AI 检测额度，GET /v2/users/me，x-api-key 认证） ────────
+
+// ErrGptzeroAuth GPTZero 凭据问题的统一口径。api.gptzero.me 对未带 key 回 401
+// {"error":"Require valid cookie"}、对坏 key 回 403 {"error":"API key has no owner",
+// "apiKey":"<原样回显>"}——回显里带 key，因此错误在 doGet 层归一，原文不上抛。
+var ErrGptzeroAuth = errors.New("GPTZero API Key 无效或已过期，请到 app.gptzero.me 的 API 订阅页核对")
+
+// gptzeroTopPayload 信封外层：data 以 RawMessage 拆出，才能区分「缺 data」与
+// 「data 内字段缺席」（直接 Unmarshal 嵌套结构体会把缺 data 静默变零值）。
+type gptzeroTopPayload struct {
+	Data json.RawMessage `json:"data"`
+}
+
+// gptzeroDataPayload GET /v2/users/me data 白名单字段。刻意不接 api_key 字段：
+// 响应含明文 key，白名单结构体天然丢弃它（渲染层与 --json 都不可能带出）。
+type gptzeroDataPayload struct {
+	Email              string          `json:"email"`
+	Plan               string          `json:"plan"`
+	CharLimit          json.RawMessage `json:"char_limit"`
+	MonthlyInputWords  json.RawMessage `json:"monthly_input_words"`
+	MonthlyInputChars  json.RawMessage `json:"monthly_input_chars"`
+	MonthlyInputDocs   json.RawMessage `json:"monthly_input_documents"`
+	AllTimeInputWords  json.RawMessage `json:"all_time_input_words"`
+	AllTimeInputChars  json.RawMessage `json:"all_time_input_chars"`
+	AllTimeInputDocs   json.RawMessage `json:"all_time_input_documents"`
+	LastTimeUsageReset string          `json:"last_time_usage_reset"`
+	FullPlan           struct {
+		Name             string          `json:"name"`
+		DurationType     string          `json:"duration_type"`
+		WordLimit        json.RawMessage `json:"word_limit"`
+		OverageWordLimit json.RawMessage `json:"overage_word_limit"`
+		PriceData        struct {
+			UnitAmount json.RawMessage `json:"unit_amount"`
+		} `json:"priceData"`
+	} `json:"full_plan"`
+}
+
+// gptzeroCountersOf 三元组装配：words/chars/documents 任一缺席按 0 计
+// （缺席语义是「平台没回该键」而非「没用量」，只有 words 才是计费口径必须项，
+// 由调用方单独判）。
+func gptzeroCountersOf(words, chars, docs json.RawMessage) models.GptzeroCounters {
+	var c models.GptzeroCounters
+	c.Words, _ = rawInt64(words)
+	c.Chars, _ = rawInt64(chars)
+	c.Documents, _ = rawInt64(docs)
+	return c
+}
+
+// int64Of 可选整数：缺席/非法 → 0（仅用于非必须项，必须项由调用方判 ok）。
+func int64Of(r json.RawMessage) int64 {
+	v, _ := rawInt64(r)
+	return v
+}
+
+// ParseGptzeroUsage 解析 GET /v2/users/me 响应为额度快照。
+// data 缺席 / monthly_input_words 缺席 / full_plan.word_limit 缺席 = 显式失败：
+// 额度显示 0 会让用户误以为「没用量/没额度」，宁可不显示。
+func ParseGptzeroUsage(raw string) (models.GptzeroUsage, error) {
+	var top gptzeroTopPayload
+	if err := json.Unmarshal([]byte(raw), &top); err != nil {
+		return models.GptzeroUsage{}, fmt.Errorf("GPTZero 响应 JSON 解析失败: %w", err)
+	}
+	if len(top.Data) == 0 || strings.TrimSpace(string(top.Data)) == "null" {
+		return models.GptzeroUsage{}, errors.New("未获取到 GPTZero 账号数据（响应缺少 data）")
+	}
+	var d gptzeroDataPayload
+	if err := json.Unmarshal(top.Data, &d); err != nil {
+		return models.GptzeroUsage{}, fmt.Errorf("GPTZero 账号数据解析失败: %w", err)
+	}
+	if _, ok := rawInt64(d.MonthlyInputWords); !ok {
+		return models.GptzeroUsage{}, errors.New("未获取到 GPTZero 月度用量（响应缺少 monthly_input_words）")
+	}
+	limit, ok := rawInt64(d.FullPlan.WordLimit)
+	if !ok {
+		return models.GptzeroUsage{}, errors.New("未获取到 GPTZero 套餐词数上限（响应缺少 full_plan.word_limit）")
+	}
+	out := models.GptzeroUsage{
+		Email:     SanitizeText(strings.TrimSpace(d.Email)),
+		PlanName:  SanitizeText(strings.TrimSpace(d.Plan)),
+		Monthly:   gptzeroCountersOf(d.MonthlyInputWords, d.MonthlyInputChars, d.MonthlyInputDocs),
+		AllTime:   gptzeroCountersOf(d.AllTimeInputWords, d.AllTimeInputChars, d.AllTimeInputDocs),
+		CharLimit: int64Of(d.CharLimit),
+		LastReset: strings.TrimSpace(d.LastTimeUsageReset),
+	}
+	out.Plan = models.GptzeroPlan{
+		Name:         SanitizeText(strings.TrimSpace(d.FullPlan.Name)),
+		DurationType: SanitizeText(strings.TrimSpace(d.FullPlan.DurationType)),
+		WordLimit:    limit,
+	}
+	out.Plan.OverageWordLimit, _ = rawInt64(d.FullPlan.OverageWordLimit)
+	out.Plan.PriceCents, _ = rawInt64(d.FullPlan.PriceData.UnitAmount)
+	return out, nil
+}

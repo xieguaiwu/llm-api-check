@@ -2,7 +2,7 @@
   "0": "render.go",
   "1": "parsers.go",
   "2": "main.go",
-  "3": "New",
+  "3": "QwenRepo",
   "4": "qwen_cli_test.go",
   "5": "HandlerFunc",
   "6": "NewWithRepos",
@@ -24,7 +24,9 @@
   "22": "models.go",
   "23": "BAI provider 设计（白B.AI · api.b.ai）—— 2026-09-04",
   "24": "app/bai_test.go",
-  "25": "RenderBaiDetail",
-  "26": "ParseGptzeroUsage",
-  "27": "GPTZero provider 设计（AI 检测额度）—— 2026-09-07"
+  "25": "New",
+  "26": "Config",
+  "27": ".client",
+  "28": "defaultClient",
+  "29": "AggregateBaiUsage"
 }

@@ -241,6 +241,10 @@ func TestStatusJSONIncludesQwenSection(t *testing.T) {
 	if !ok || len(q) != 0 {
 		t.Errorf("qwen 字段应为空数组: %v", parsed["qwen"])
 	}
+	gz, ok := parsed["gptzero"].([]any)
+	if !ok || len(gz) != 0 {
+		t.Errorf("gptzero 字段应为空数组: %v", parsed["gptzero"])
+	}
 }
 
 func TestQwenDetailNoRefreshAndFilter(t *testing.T) {

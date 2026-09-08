@@ -1,5 +1,33 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-09-07 凌晨：provider=gptzero）
+- **provider=gptzero（GPTZero AI 检测额度）**：`llm-api-check gptzero` 看月度词数额度
+  （论文扫 AI 率的配额盯梢），单端点只读，真实 key 真机全链通。
+  - 🔑 **通道**：`GET https://api.gptzero.me/v2/users/me`，头 **`x-api-key`**（非 Bearer），
+    key 为 32 位 hex（app.gptzero.me 登录 → API 订阅页创建）。直连可通无需代理；
+    请求必须带浏览器 UA（历史教训：Python urllib 裸 UA 被 Cloudflare 403 error 1010）。
+  - **额度语义**：计费单位是**词**。`monthly_input_words`（已用，实测 587）/
+    `full_plan.word_limit`（内含 300000）/ `full_plan.overage_word_limit`（超额上限 1000000，
+    官方口径 300k+0.7M=1M 总顶，不加总）/ `priceData.unit_amount`=4500 美分=$45/月 /
+    `last_time_usage_reset`=周期起点（重置≈+1 月，渲染标 ≈）/ `char_limit`=150000 是
+    **单文档**上限（非月度）。实测快照：587/300000 词、历史 1,675,389 词 861 文档。
+  - **错误语义（实测）**：无 key→401 `{"error":"Require valid cookie"}`；坏 key→403
+    `{"error":"API key has no owner","apiKey":"<原样回显>"}`——**回显带 key**，doGet 层
+    归一 `parsers.ErrGptzeroAuth`，原文不上抛；404 Express `Cannot GET` HTML。
+  - 施工：models 四型（GptzeroAccount/Counters/Plan/Usage + GptzeroPercentUsed，
+    limit≤0→-1 不画条）；parsers.ParseGptzeroUsage 两段拆包（缺 data/缺
+    monthly_input_words/缺 full_plan.word_limit 显式失败，不得显示 0 误报）；
+    **白名单不接 api_key 字段（响应含明文 key）**；repo.GptzeroRepo（x-api-key+
+    浏览器 UA）；app 单 lane + RefreshAll 并发；render 详情/总览（超额 ≥100% 红标
+    「已进入超额计费区」）；main cmdGptzero + accounts add/list/remove/rename 全接。
+  - 质量：gofmt 0 / vet 0 / 7 包 -race 全绿；用例 **291→322**（gptzero 31 个：
+    parsers 8/repo 5/app 5/render 7/main 6）；**反向验证 7 做**（缺 data 检查 /
+    月用量必须项 / UA 头 / 403 归一 / 超额红标 / LastReset 守卫 / status json 键——
+    拆除后对应测例全 FAIL）。README/README_zh 六处双语同步；契约
+    docs/plans/2026-09-07-gptzero-provider.md。真机：gptzero / --json 掩码 /
+    --no-refresh / 过滤 / 坏 key exit 1 / accounts 全生命周期 / status 总览全通过。
+  - 真实 config 已录账号「论文扫」（真 key）；**未 commit**（同上轮 A-F 惯例，等用户确认）。
+
 ## 最后一次完成的工作（2026-09-06 下午，本日第二轮：A-F 六任务）
 - **本轮范围**：用户指「根据 Coding/index.md 完成剩下工作」→ CONTEXT 待办全盘动工：
   A bai --stats / B 全仓错误消毒 / C P3 四小修 / D 免费通道探活 / E bai 告警阈值 /
@@ -138,7 +166,7 @@
 `~/Desktop/go-projects/pocket-llm-api-checker` 的同名 provider 正在并行施工（GalaxyRepo/GalaxyCard/GalaxyDetailScreen/SettingsScreen 录入 + 单测），契约以 Go 侧 plan 文档为准。真机冒烟与凭据录入由用户完成。
 
 ## 项目当前状态
-llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）** 与 **白B.AI（积分额度 + 免费 flash 通道模型清单）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。**BAI 积分额度已通（2026-09-06）：走 `chat.b.ai` 控制台 tRPC，同一把 sk- key 作 Bearer，无需 Cookie；`api.b.ai` 本身仍只开放推理路径（其余 403）——不要再拿 api.b.ai 的 403 当「bai 无额度数据」的依据。****
+llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）**、**白B.AI（积分额度 + 免费 flash 通道模型清单）** 与 **GPTZero（AI 检测月度词数额度，2026-09-07 新增）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。**BAI 积分额度已通（2026-09-06）：走 `chat.b.ai` 控制台 tRPC，同一把 sk- key 作 Bearer，无需 Cookie；`api.b.ai` 本身仍只开放推理路径（其余 403）——不要再拿 api.b.ai 的 403 当「bai 无额度数据」的依据。**GPTZero 已通（2026-09-07）：`GET /v2/users/me` x-api-key 认证，计费单位是词。****
 
 🔴 **Android 侧唯一权威 clone（2026-08-29 取证）= `~/Desktop/go-projects/pocket-llm-api-checker/`**（HEAD e1c1568，含 fastlane 元数据 + tag v1.0.0 + scripts/ 可复现构建 + docs/fdroid 草稿）。`~/Desktop/android-projects/api-checkers/` 是落后一提交的旧副本（HEAD cec6ef7，无 fastlane、无 tag），只做历史参考，**勿在其上开发**。
 
@@ -155,8 +183,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
   - ⚠️ 会话短寿命实测：OAuth 登录约几小时即过期（13:46 登录 14:0x 已报 Console session not logged in or has expired）→ 过期重跑 `bailian auth login --console` 即可（首次登录进程若卡住先 kill 再重开）
 
 ## 遗留问题 / 待办
-- [x] ~~bai --stats~~ / ~~bai 告警阈值~~ / ~~Android 对等（bai）~~ / ~~免费通道探活~~ / ~~全仓错误消毒~~ / ~~P3 四小修~~ → **2026-09-06 下午 A-F 六任务全部完成**（见上）
-- [ ] **本轮 Go 侧改动未 commit**：A-E 五任务已过全部质量门（291 用例 + 反向验证 11 做 + 真机冒烟），等用户确认后提交（公开仓 push 须用户同意）
+- [ ] **两轮改动未 commit**（2026-09-06 A-F 五任务 + 2026-09-07 gptzero）：均过全部质量门，等用户确认后提交（公开仓 push 须用户同意）
 - [ ] **Android 真机冒烟（bai）**：本机无 adb 设备，用户手机装 9d0c9c2 包后录入 sk- key 验证 bai 卡/详情页/探活红行；Android commit 同样未 push
 - [ ] **bai order.listOrders / records 逐条视图（未做）**：充值流水与逐请求明细列表 UI 未接（--stats 已覆盖聚合视图）；需要时再加
 - [x] ~~**Bailian CLI 会话过期维护**：差异化文案未做~~ → **2026-08-30 已做**：会话失效单独立档，给出可复制的 `bailian auth login --console`（绝对路径）；不透传上游 `bl` hint。运维动作不变：过期重跑 `~/.local/share/bailian-cli/bin/bailian auth login --console`（浏览器 OAuth；登录进程卡住先 kill 再重开）。⚠️ `bailian auth status` 不校验会话有效性，判活看 `bailian usage token-plan`
@@ -172,7 +199,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 ## 技术要点（下一位 Agent 必读）
 - **白B.AI 铁律**：① 两个域名两套网关——`api.b.ai` 只开放推理路径（`/v1/chat/completions|/v1/messages|/v1/responses|/v1/models|/v1/images/*`，其余 403），积分/额度在 `chat.b.ai` 控制台 tRPC；② 同一把 `sk-` key 两处通用（Bearer），无需浏览器 Cookie；③ `chat.b.ai` 本机直连超时、必须走代理（`api.b.ai` 直连可通）；④ tRPC 错误信封优先于状态码，`UNAUTHORIZED` 归一到 `parsers.ErrBaiAuth`，其他 code 带原文上抛；⑤ `points_balance` 缺席必须显式失败（显示 0 = 误報额度用尽）；⑥ 1 积分 = 1e-6 USD（`creditsPerDollar`），渲染用 `≈ $` 标记提醒是名义换算；⑦ `usage.records` 对未知过滤键与非法 `page` 一律忽略不报错，不能拿它做参数校验（同智星云 `status_type`）。详见 docs/plans/2026-09-04-bai-provider.md §二-b
 - **智星云 OpenAPI 铁律**：① 签名 = 非空参数字典序拼 `k=v&…` + 末尾 `&secret=<SecretKey>` → MD5 小写 hex，`sign` 进 body（**不入串**）；② HTTP 恒 200，错误在信封 `{success,code:"2000"}` 里，`code` 是**字符串**；③ `page_size` 上限 100（超限报 `page_size参数超限!`）；④ `status_type` 传非法值不报错、按不过滤处理，不能拿它做参数校验；⑤ 实例响应含明文口令（见上）；⑥ 到期时刻用 `Due_time-ServerTime` 折算；⑦ 平台错误码只有 "2000"（成功）/"4000"（客户端错误，message 说明原因）。详见 docs/plans/2026-08-29-ai-galaxy-provider.md
-- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）；BAI 模型 = `GET https://api.b.ai/v1/models`（API key，one-api 系信封 `{data:[{id,owned_by,supported_endpoint_types}],success}`）**；**BAI 积分 = `GET https://chat.b.ai/trpc/lambda/usage.points`（余额/即将过期）+ `…/usage.summary`（本月消耗），同一把 sk- key 作 Bearer，tRPC v11 信封 `{result:{data:{json:…}}}`，错误走 `{error:{json:{data:{code:"UNAUTHORIZED"}}}}`；只读 query，不接任何 mutate
+- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）；BAI 模型 = `GET https://api.b.ai/v1/models`（API key，one-api 系信封 `{data:[{id,owned_by,supported_endpoint_types}],success}`）**；**BAI 积分 = `GET https://chat.b.ai/trpc/lambda/usage.points`（余额/即将过期）+ `…/usage.summary`（本月消耗），同一把 sk- key 作 Bearer，tRPC v11 信封 `{result:{data:{json:…}}}`，错误走 `{error:{json:{data:{code:"UNAUTHORIZED"}}}}`；只读 query，不接任何 mutate；**GPTZero = `GET https://api.gptzero.me/v2/users/me`（x-api-key 头，信封 `{data:{…}}` 含明文 api_key 字段必须白名单丢弃；计费单位词；坏 key 403 回显 key）**
 - **Bailian CLI 通道铁律**：① 本机 `bl` 是用户自研翻译 CLI——探测与文档一律用 `bailian` 名/绝对路径，`exec.LookPath("bl")` 是被禁止的（会误调）；② `usage token-plan` 认证模式 Console，API key 无效；③ Node 的 UNDICI 警告在 stderr，必须过滤；④ exit 非零时 JSON 错误信封在 stderr（实测 exit 3）；⑤ CLI 会话存 `~/.bailian/config.json`（敏感文件）；⑥ 会话短寿命（几小时），过期重跑 `bailian auth login --console`；⑦ 实现文件 `internal/repo/qwen_cli.go`（QwenCLI.runJSON 共用 Usage/Summary 通道）
 - **Qwen 三个不能踩的坑**（详见 docs/plans/2026-08-29-qwen-provider.md）：① `cornerstoneParam` 绝不得硬编码 `switchAgent`（网关会绑死该工作区 → 他人账号全部 NotAuthorised）② 抓 `SEC_TOKEN` 必须带 `Sec-Fetch-*` 浏览器导航头 + 桌面 UA，否则 OneConsole shell 不渲染该 token ③ 登录失效仍回 HTTP 200，错误在信封 `data.errorCode` 里，不能只看状态码
 - **关键移植点**：ZenBilling 字符串字面量感知括号匹配（inStr/esc 状态机）、`(?:^|,)balance:` 正则、microcents÷1e8、cost 两月都无数据显式失败（不返回误导零数据）；QwenUsage 信封 BFS + 内嵌 JSON 字符串展开（深度上限 12）、`qwenPercent` 比例/百分数双域判定（>2 才当百分数）、空窗口重试 3 次而认证类错误不重试、CLI 单窗口响应独立判有（5 小时限时取消期间字段缺席）
@@ -196,4 +223,4 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - 图谱以最新 commit 为准；若 `graphify-out/needs_update` 存在说明已陈旧，先 update 再依赖它回答
 
 ## 最后更新时间
-2026-09-06 15:0x
+2026-09-07 01:1x

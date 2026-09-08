@@ -162,7 +162,7 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	} else {
 		fmt.Fprintf(&b, "LLM API Check — 更新于 %s\n", lastUpdated.Format("15:04"))
 	}
-	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 {
+	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 && len(res.Gptzero) == 0 {
 		b.WriteString("\n未配置任何账号，运行 llm-api-check accounts add --help 添加\n")
 		return b.String()
 	}
@@ -185,6 +185,10 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	for _, r := range bai {
 		fmt.Fprintf(&b, "\n白B.AI (%s)\n", r.Account.Name)
 		writeBaiOverview(&b, r, c)
+	}
+	for _, r := range res.Gptzero {
+		fmt.Fprintf(&b, "\nGPTZero (%s)\n", r.Account.Name)
+		writeGptzeroOverview(&b, r, c)
 	}
 	return b.String()
 }
@@ -1079,4 +1083,115 @@ func renderBaiPoints(p models.BaiPoints, c Colorizer) string {
 		return c.Red(line + " · 额度已耗尽，推理请求会失败")
 	}
 	return line
+}
+
+// ── GPTZero（AI 检测额度） ────────────────────────────────────
+
+// gzLabel 详情行标签列（按显示宽度对齐，同 baiLabel）。
+func gzLabel(s string) string { return padTo(s, 8) }
+
+// gzPriceCents 美分价格转 "$45.00"（套餐月费是实价，不用 ≈ 标注）。
+func gzPriceCents(cents int64) string {
+	return "$" + Fmt(float64(cents)/100)
+}
+
+// RenderGptzeroDetail GPTZero 账号详情：账号 + 月度词数额度条 + 历史累计。
+// 数据源 GET /v2/users/me（x-api-key 认证），解析层白名单，api_key 明文不出现在任何层。
+func RenderGptzeroDetail(r app.GptzeroResult, now time.Time, c Colorizer) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (GPTZero)\n", r.Account.Name)
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type gptzero --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red(r.Error) + "\n")
+		}
+		return b.String()
+	}
+	u := r.Usage
+	if u == nil {
+		if r.Error != "" {
+			b.WriteString(c.Red(r.Error) + "\n")
+		} else {
+			b.WriteString(c.Gray("  暂无数据") + "\n")
+		}
+		return b.String()
+	}
+	// 凭据行：邮箱 + 套餐名 + 月费
+	head := gzLabel("账号") + " " + u.Email
+	if u.PlanName != "" {
+		head += " · " + u.PlanName
+	}
+	if u.Plan.PriceCents > 0 {
+		head += "（" + gzPriceCents(u.Plan.PriceCents) + "/月）"
+	}
+	b.WriteString("  " + head + "\n")
+
+	// 月度额度：percent<0（limit 未知）不画条；超过内含额度（超额计费区）红标
+	percent := models.GptzeroPercentUsed(u.Monthly.Words, u.Plan.WordLimit)
+	if percent < 0 {
+		b.WriteString(c.Gray("  "+gzLabel("月额度")+" 已用 "+formatInt(u.Monthly.Words)+" 词（上限未知）") + "\n")
+	} else {
+		line := fmt.Sprintf("%s 已用 %s / %s 词 · %d%% %s", gzLabel("月额度"),
+			formatInt(u.Monthly.Words), formatInt(u.Plan.WordLimit), percent, UsageBar(percent, 10))
+		if percent >= 100 {
+			line += " · 已进入超额计费区"
+		}
+		b.WriteString("  " + c.apply(ColorForPercent(percent, percent >= 100), line) + "\n")
+		if u.Plan.OverageWordLimit > 0 {
+			fmt.Fprintf(&b, "  %s 超额上限 %s 词（内含用完后按平台超额价计费）\n",
+				gzLabel("超额"), formatInt(u.Plan.OverageWordLimit))
+		}
+	}
+
+	// 周期起点 + 预计重置（last_time_usage_reset + 1 月估算，标 ≈）
+	if t, err := time.Parse(time.RFC3339, u.LastReset); err == nil {
+		next := t.AddDate(0, 1, 0)
+		fmt.Fprintf(&b, "  %s %s（≈%s 重置）\n", gzLabel("周期"),
+			t.Local().Format("2006-01-02 15:04"), next.Local().Format("2006-01-02 15:04"))
+	}
+	if u.Monthly.Chars > 0 || u.Monthly.Documents > 0 {
+		fmt.Fprintf(&b, "  %s %s 词 · %s 字符 · %s 文档\n", gzLabel("本月"),
+			formatInt(u.Monthly.Words), formatInt(u.Monthly.Chars), formatInt(u.Monthly.Documents))
+	}
+	fmt.Fprintf(&b, "  %s %s 词 · %s 文档\n", gzLabel("历史累计"),
+		formatInt(u.AllTime.Words), formatInt(u.AllTime.Documents))
+	fmt.Fprintf(&b, "  %s %s 字符\n", gzLabel("单文档"), formatInt(u.CharLimit))
+	if r.Error != "" {
+		b.WriteString(c.Red(r.Error) + "\n")
+	}
+	return b.String()
+}
+
+// writeGptzeroOverview 总览页单账号段：额度条 + 错误（对齐 writeBaiOverview）。
+func writeGptzeroOverview(b *strings.Builder, r app.GptzeroResult, c Colorizer) {
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type gptzero --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return
+	}
+	u := r.Usage
+	if u == nil {
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		} else {
+			b.WriteString(c.Gray("  暂无数据") + "\n")
+		}
+		return
+	}
+	percent := models.GptzeroPercentUsed(u.Monthly.Words, u.Plan.WordLimit)
+	if percent < 0 {
+		b.WriteString(c.Gray(fmt.Sprintf("  月额度 已用 %s 词（上限未知）", formatInt(u.Monthly.Words))) + "\n")
+	} else {
+		line := fmt.Sprintf("月额度 %s / %s 词 · %d%% %s", formatInt(u.Monthly.Words),
+			formatInt(u.Plan.WordLimit), percent, UsageBar(percent, 10))
+		if percent >= 100 {
+			line += " 超额"
+		}
+		b.WriteString("  " + c.apply(ColorForPercent(percent, percent >= 100), line) + "\n")
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red("  "+r.Error) + "\n")
+	}
 }

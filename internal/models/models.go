@@ -12,6 +12,57 @@ import (
 	"strings"
 )
 
+// ── GPTZero（AI 检测额度） ────────────────────────────────────
+
+// GptzeroAccount GPTZero 账号。apiKey 为 app.gptzero.me → API 订阅页创建的
+// 32 位 hex 密钥（x-api-key 头认证，非 Bearer）。
+type GptzeroAccount struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	ApiKey string `json:"apiKey"`
+}
+
+// GptzeroCounters GPTZero 用量计数三元组（词为计费口径，字符/文档为辅）。
+type GptzeroCounters struct {
+	Words     int64 `json:"words"`
+	Chars     int64 `json:"chars"`
+	Documents int64 `json:"documents"`
+}
+
+// GptzeroPlan 订阅档位（full_plan 白名单子集）。
+// OverageWordLimit 是超额部分的上限（官方口径：300k 套餐 + 0.7M 超额 = 总顶 1M），
+// 刻意不做「内含+超额」加总——字段语义按官方 word_limit_msg 原文展示。
+type GptzeroPlan struct {
+	Name             string `json:"name"`
+	DurationType     string `json:"durationType"`
+	WordLimit        int64  `json:"wordLimit"`
+	OverageWordLimit int64  `json:"overageWordLimit"`
+	PriceCents       int64  `json:"priceCents"`
+}
+
+// GptzeroUsage 单账号额度快照（GET /v2/users/me 白名单子集）。
+// 解析层白名单构造：响应里的 api_key 明文字段任何层不得透传。
+type GptzeroUsage struct {
+	Email    string          `json:"email"`
+	PlanName string          `json:"planName"`
+	Monthly  GptzeroCounters `json:"monthly"`
+	AllTime  GptzeroCounters `json:"allTime"`
+	// CharLimit 单文档字符上限（非月度，展示为参考行）
+	CharLimit int64 `json:"charLimit"`
+	// LastReset 本周期起点（last_time_usage_reset 原文，RFC3339 带时区；空=未取到）
+	LastReset string      `json:"lastReset"`
+	Plan      GptzeroPlan `json:"plan"`
+}
+
+// GptzeroPercentUsed 已用百分比（整数向下取整）；limit ≤0（未知）→ -1，
+// 渲染层据此不画条。
+func GptzeroPercentUsed(used, limit int64) int {
+	if limit <= 0 {
+		return -1
+	}
+	return int(used * 100 / limit)
+}
+
 // ── Qwen Token Plan（阿里云百炼订阅）区域常量 ─────────────────
 
 const (

@@ -58,6 +58,13 @@ type BaiResult struct {
 	Error   string                `json:"error,omitempty"`
 }
 
+// GptzeroResult 单个 GPTZero 账号的刷新结果。单端点（/v2/users/me），Usage 即全部数据。
+type GptzeroResult struct {
+	Account models.GptzeroAccount `json:"account"`
+	Usage   *models.GptzeroUsage  `json:"usage,omitempty"`
+	Error   string                `json:"error,omitempty"`
+}
+
 // GalaxyResult 单个智星云账号的刷新结果（对应 GalaxyUi）。
 // Balance 必需；Status/Instances/Cost 任一失败只影响该段（错误合并进 Error）。
 type GalaxyResult struct {
@@ -87,6 +94,7 @@ type Result struct {
 	Qwen        []QwenResult
 	Galaxy      []GalaxyResult
 	Bai         []BaiResult
+	Gptzero     []GptzeroResult
 	LastUpdated time.Time
 }
 
@@ -97,6 +105,7 @@ type Repos struct {
 	Qwen     *repo.QwenRepo
 	Galaxy   *repo.GalaxyRepo
 	Bai      *repo.BaiRepo
+	Gptzero  *repo.GptzeroRepo
 }
 
 // GalaxyInstanceLimit 单次刷新展示的活跃实例上限（防止大账号拉穿）
@@ -120,6 +129,7 @@ func New(cfg *config.Config) *App {
 			Qwen:     repo.NewQwenRepo(),
 			Galaxy:   repo.NewGalaxyRepo(),
 			Bai:      repo.NewBaiRepo(),
+			Gptzero:  repo.NewGptzeroRepo(),
 		},
 		Cfg: cfg,
 	}
@@ -152,11 +162,13 @@ func (a *App) RefreshAll() (Result, error) {
 	qwenAccounts := append([]models.QwenAccount(nil), a.Cfg.QwenAccounts...)
 	galaxyAccounts := append([]models.GalaxyAccount(nil), a.Cfg.GalaxyAccounts...)
 	baiAccounts := append([]models.BaiAccount(nil), a.Cfg.BaiAccounts...)
+	gzAccounts := append([]models.GptzeroAccount(nil), a.Cfg.GptzeroAccounts...)
 	dsRes := make([]DeepSeekResult, len(dsAccounts))
 	accRes := make([]AccountResult, len(accounts))
 	qwenRes := make([]QwenResult, len(qwenAccounts))
 	galaxyRes := make([]GalaxyResult, len(galaxyAccounts))
 	baiRes := make([]BaiResult, len(baiAccounts))
+	gzRes := make([]GptzeroResult, len(gzAccounts))
 	var wg sync.WaitGroup
 	for i, acc := range dsAccounts {
 		wg.Add(1)
@@ -193,10 +205,17 @@ func (a *App) RefreshAll() (Result, error) {
 			baiRes[i] = a.refreshBai(acc)
 		}(i, acc)
 	}
+	for i, acc := range gzAccounts {
+		wg.Add(1)
+		go func(i int, acc models.GptzeroAccount) {
+			defer wg.Done()
+			gzRes[i] = a.refreshGptzero(acc)
+		}(i, acc)
+	}
 	wg.Wait()
 	now := time.Now()
 	a.Cfg.SetLastUpdate("all", now.UnixMilli())
-	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, LastUpdated: now}, nil
+	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, Gptzero: gzRes, LastUpdated: now}, nil
 }
 
 // RefreshDeepSeek 按 id 刷新单个 DeepSeek 账号（对应 refreshDeepSeekNow）
@@ -500,6 +519,39 @@ func (a *App) refreshBai(acc models.BaiAccount) BaiResult {
 		res.Points = &pts
 	}
 	res.Error = joinErrors(planErr, ptsErr)
+	return res
+}
+
+// RefreshGptzero 按 id 刷新单个 GPTZero 账号（单端点额度查询）。
+func (a *App) RefreshGptzero(id string) (GptzeroResult, error) {
+	var acc models.GptzeroAccount
+	found := false
+	for _, x := range a.Cfg.GptzeroAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return GptzeroResult{}, errors.New("账号不存在或已被删除")
+	}
+	return a.refreshGptzero(acc), nil
+}
+
+// refreshGptzero 拉取账号与月度额度。
+func (a *App) refreshGptzero(acc models.GptzeroAccount) GptzeroResult {
+	res := GptzeroResult{Account: acc}
+	if a.Repos == nil || a.Repos.Gptzero == nil {
+		res.Error = "GPTZero 仓库未初始化"
+		return res
+	}
+	u, err := a.Repos.Gptzero.Usage(acc.ApiKey)
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.Usage = &u
 	return res
 }
 

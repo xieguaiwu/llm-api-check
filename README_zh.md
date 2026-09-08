@@ -12,7 +12,8 @@
 - **Qwen Token Plan** — 订阅网关查套餐可用模型；百炼控制台查 5 小时/7 天 配额窗口与重置倒计时（配额接口不认 API Key，需控制台 Cookie）
 - **智星云 AI Galaxy** — 现金余额 / 算力券 / 信用额度分列不互相折算；租用的 GPU 与 CPU 云主机：状态徽章、显卡型号×数量、核数/内存、区域、SSH 地址端口、小时单价、自动续费标记，以及**恒显的到期倒计时**
 - **白B.AI** — 积分额度走控制台 API（`usage.points` + `usage.summary`），再加 `/v1/models` 全量模型清单与已知免费 flash 模型盯梢——缺失即红色告警（自动化 agent 依赖它们）。额度按平台原始积分显示，附名义换算值 `≈ $`（1 000 000 积分 = $1，取自平台自己的 `creditsPerDollar`）；余额归零整行红色——积分耗尽后推理请求会直接失败
-- **多账号** — DeepSeek、OpenCode、Qwen、智星云、白B.AI 账号数量不限，各自独立展示
+- **GPTZero** — AI 检测 API 月度词数额度（`GET /v2/users/me`）：已用/内含词数用量条、超额上限、周期起点与预计重置、历史累计、单文档字符上限
+- **多账号** — DeepSeek、OpenCode、Qwen、智星云、白B.AI、GPTZero 账号数量不限，各自独立展示
 - 机器可读 `--json` 输出、`NO_COLOR` 支持
 - 零第三方依赖（Go stdlib only）
 
@@ -41,6 +42,8 @@ llm-api-check galaxy                       # 智星云余额 + 实例状态
 llm-api-check galaxy --limit 5             # 只看前 5 台活跃实例
 llm-api-check accounts add --type bai --name "免费通道" --api-key sk-xxx
 llm-api-check bai                          # 白B.AI 积分额度 + 模型清单 + 免费通道盯梢
+llm-api-check accounts add --type gptzero --name "论文扫" --api-key <your-key>
+llm-api-check gptzero                      # GPTZero 月度词数额度（AI 检测）
 ```
 
 可从 [Releases](https://github.com/xieguaiwu/llm-api-check/releases) 下载预编译二进制（Linux / macOS，amd64 / arm64），与 `sha256sums.txt` 对校后放入 `PATH`：
@@ -61,6 +64,7 @@ llm-api-check --version
 | `llm-api-check qwen [名称\|ID] [--no-refresh] [--stats]` | Qwen 账号详情（`--stats` 附加 7 天 token 统计与免费额度） |
 | `llm-api-check galaxy [名称\|ID] [--no-refresh] [--limit N]` | 智星云余额 + 实例状态（`--limit` 列出实例数，默认 10，上限 100） |
 | `llm-api-check bai [名称\|ID] [--no-refresh]` | 白B.AI 积分额度、模型清单、免费通道盯梢 |
+| `llm-api-check gptzero [名称\|ID] [--no-refresh]` | GPTZero 账号与月度词数额度（AI 检测） |
 | `llm-api-check accounts list` | 列出所有账号 |
 | `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai --name 名称 [凭据 flags]` | 添加账号 |
 | `llm-api-check accounts remove --id ID \| --name 名称` | 删除账号 |
@@ -70,7 +74,7 @@ llm-api-check --version
 
 全局 flags：`--json`（所有输出为 JSON）、`--no-color`（等同 `NO_COLOR` 环境变量）。
 
-凭据 flags 缺失时按此顺序回退：flag → 环境变量 → TTY 交互提示（非 TTY 报错）。环境变量：`LLM_API_CHECK_GO_API_KEY`、`LLM_API_CHECK_WORKSPACE_ID`、`LLM_API_CHECK_AUTH_COOKIE`、`LLM_API_CHECK_DEEPSEEK_API_KEY`、`LLM_API_CHECK_PLATFORM_TOKEN`、`LLM_API_CHECK_QWEN_API_KEY`、`LLM_API_CHECK_QWEN_COOKIE`、`LLM_API_CHECK_QWEN_REGION`、`LLM_API_CHECK_GALAXY_ACCESS_KEY`、`LLM_API_CHECK_GALAXY_SECRET_KEY`、`LLM_API_CHECK_BAI_API_KEY`、`LLM_API_CHECK_BL_BIN`（Bailian CLI 路径）、`LLM_API_CHECK_QWEN_CLI`（`off` 禁用 CLI 配额通道）。
+凭据 flags 缺失时按此顺序回退：flag → 环境变量 → TTY 交互提示（非 TTY 报错）。环境变量：`LLM_API_CHECK_GO_API_KEY`、`LLM_API_CHECK_WORKSPACE_ID`、`LLM_API_CHECK_AUTH_COOKIE`、`LLM_API_CHECK_DEEPSEEK_API_KEY`、`LLM_API_CHECK_PLATFORM_TOKEN`、`LLM_API_CHECK_QWEN_API_KEY`、`LLM_API_CHECK_QWEN_COOKIE`、`LLM_API_CHECK_QWEN_REGION`、`LLM_API_CHECK_GALAXY_ACCESS_KEY`、`LLM_API_CHECK_GALAXY_SECRET_KEY`、`LLM_API_CHECK_BAI_API_KEY`、`LLM_API_CHECK_GPTZERO_API_KEY`、`LLM_API_CHECK_BL_BIN`（Bailian CLI 路径）、`LLM_API_CHECK_QWEN_CLI`（`off` 禁用 CLI 配额通道）。
 
 ## 凭据获取方式
 
@@ -85,6 +89,7 @@ llm-api-check --version
 | Qwen 控制台 Cookie（兜底通道） | 登录 `bailian.console.aliyun.com` → Token Plan 页 → DevTools → Network → 任意 `data/api.json` 请求 → 复制整个 `Cookie` 请求头（连 `Cookie:` 前缀一起粘贴也可以，工具会自动剥除） |
 | 智星云 AccessKey + SecretKey | gpu.ai-galaxy.cn 控制台 → 开放API → AccessKey管理 → 创建（需先完成实名认证）。请求按「参数名字典序 + 末尾拼 `&secret=`，取 MD5」签名 |
 | 白B.AI API key | chat.b.ai 侧栏 → API → Create API Key（`sk-…`）。同一把 key：在 `api.b.ai` 读推理模型清单，在 `chat.b.ai` 读自己的积分额度 |
+| GPTZero API key | app.gptzero.me 登录 → API 订阅页 → 创建 key（32 位 hex，`x-api-key` 头认证）。读自己的月度词数额度 |
 
 Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证密钥并列出套餐模型，并明说缺什么，不会给出臆造的数字。
 
