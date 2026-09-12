@@ -245,6 +245,10 @@ func TestStatusJSONIncludesQwenSection(t *testing.T) {
 	if !ok || len(gz) != 0 {
 		t.Errorf("gptzero 字段应为空数组: %v", parsed["gptzero"])
 	}
+	lc, ok := parsed["longcat"].([]any)
+	if !ok || len(lc) != 0 {
+		t.Errorf("longcat 字段应为空数组: %v", parsed["longcat"])
+	}
 }
 
 func TestQwenDetailNoRefreshAndFilter(t *testing.T) {
@@ -312,6 +316,46 @@ func TestQwenRemoveAndRenameAcrossTypes(t *testing.T) {
 	code, out, _ = runCLI(t, "", "accounts", "remove", "--name", "改名")
 	if code != 0 || !strings.Contains(out, "已删除 2 个账号") {
 		t.Errorf("跨类型删除不符: %s", out)
+	}
+}
+
+func TestLongCatAddAndDetail(t *testing.T) {
+	withConfigDir(t)
+	// 添加 LongCat 账号
+	code, out, errOut := runCLI(t, "", "accounts", "add", "--type", "longcat",
+		"--name", "龙猫测试", "--api-key", "sk-lc-a1234567890")
+	if code != 0 {
+		t.Fatalf("add longcat exit=%d err=%s", code, errOut)
+	}
+	if !strings.Contains(out, "已添加 LongCat") {
+		t.Errorf("应提示已添加 LongCat: %s", out)
+	}
+	// --no-refresh 详情
+	code, out, _ = runCLI(t, "", "longcat", "--no-refresh")
+	if code != 0 {
+		t.Fatalf("longcat --no-refresh exit=%d", code)
+	}
+	if !strings.Contains(out, "龙猫测试 (LongCat)") {
+		t.Errorf("应显示账号标题: %s", out)
+	}
+	if !strings.Contains(out, "预付费余额") {
+		t.Errorf("应显示计费模式: %s", out)
+	}
+	// 未知名称 → exit 1
+	if code, _, _ := runCLI(t, "", "longcat", "查无此人"); code != 1 {
+		t.Errorf("未知账号 exit=%d, want 1", code)
+	}
+	// --json 掩码
+	code, out, _ = runCLI(t, "", "--json", "longcat", "--no-refresh")
+	if code != 0 {
+		t.Fatalf("--json longcat exit=%d", code)
+	}
+	if strings.Contains(out, "sk-lc-a1234567890") {
+		t.Errorf("--json 泄漏明文 key: %s", out)
+	}
+	// 缺少 key → exit 2
+	if code, _, _ := runCLI(t, "", "accounts", "add", "--type", "longcat", "--name", "无key"); code != 2 {
+		t.Errorf("缺少 key exit=%d, want 2", code)
 	}
 }
 

@@ -343,6 +343,35 @@ func AggregateBaiUsage(recs []BaiRecord) BaiUsageStats {
 	return s
 }
 
+// ── LongCat（美团龙猫） ──────────────────────────────────────
+
+// LongCatAccount LongCat 账号。apiKey 为 longcat.chat/platform/api_keys
+// 创建的 App Key（Bearer 认证，OpenAI 兼容格式）。
+// LongCat 无公开配额 API，额度靠小额推理探活间接判断（402=余额不足）。
+type LongCatAccount struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	ApiKey string `json:"apiKey"`
+}
+
+// LongCatModel 单个可用模型（/v1/models 列表项）。
+type LongCatModel struct {
+	ID      string `json:"id"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// LongCatPlan 模型清单（API Key 认证，/v1/models）。
+type LongCatPlan struct {
+	Models []LongCatModel `json:"models"`
+}
+
+// LongCatUsage 额度快照：模型清单是否拉通 + 余额探活结果。
+// BalanceOK=nil 表示未探活（--no-refresh 或探活被跳过）。
+type LongCatUsage struct {
+	Models    []LongCatModel `json:"models,omitempty"`
+	BalanceOK *bool          `json:"balance_ok,omitempty"`
+}
+
 // ── Qwen Token Plan（订阅） ────────────────────────────────────
 
 // QwenAccount Qwen 账号。apiKey 为 Token Plan 订阅密钥（sk-sp- 前缀）；

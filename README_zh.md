@@ -12,8 +12,9 @@
 - **Qwen Token Plan** — 订阅网关查套餐可用模型；百炼控制台查 5 小时/7 天 配额窗口与重置倒计时（配额接口不认 API Key，需控制台 Cookie）
 - **智星云 AI Galaxy** — 现金余额 / 算力券 / 信用额度分列不互相折算；租用的 GPU 与 CPU 云主机：状态徽章、显卡型号×数量、核数/内存、区域、SSH 地址端口、小时单价、自动续费标记，以及**恒显的到期倒计时**
 - **白B.AI** — 积分额度走控制台 API（`usage.points` + `usage.summary`），再加 `/v1/models` 全量模型清单与已知免费 flash 模型盯梢——缺失即红色告警（自动化 agent 依赖它们）。额度按平台原始积分显示，附名义换算值 `≈ $`（1 000 000 积分 = $1，取自平台自己的 `creditsPerDollar`）；余额归零整行红色——积分耗尽后推理请求会直接失败
+- **LongCat** — 余额状态（最小推理探活：200=充足，402=不足）+ 可用模型列表（OpenAI 兼容 `/v1/models`）。无公开配额 API，余额靠探活请求间接推断。
 - **GPTZero** — AI 检测 API 月度词数额度（`GET /v2/users/me`）：已用/内含词数用量条、超额上限、周期起点与预计重置、历史累计、单文档字符上限
-- **多账号** — DeepSeek、OpenCode、Qwen、智星云、白B.AI、GPTZero 账号数量不限，各自独立展示
+- **多账号** — DeepSeek、OpenCode、Qwen、智星云、白B.AI、GPTZero、LongCat 账号数量不限，各自独立展示
 - 机器可读 `--json` 输出、`NO_COLOR` 支持
 - 零第三方依赖（Go stdlib only）
 
@@ -42,7 +43,10 @@ llm-api-check galaxy                       # 智星云余额 + 实例状态
 llm-api-check galaxy --limit 5             # 只看前 5 台活跃实例
 llm-api-check accounts add --type bai --name "免费通道" --api-key sk-xxx
 llm-api-check bai                          # 白B.AI 积分额度 + 模型清单 + 免费通道盯梢
+llm-api-check accounts add --type longcat --name "龙猫" --api-key <your-key>
+llm-api-check longcat                      # LongCat 余额 + 模型清单
 llm-api-check accounts add --type gptzero --name "论文扫" --api-key <your-key>
+llm-api-check gptzero                      # GPTZero 月度词数额度（AI 检测）
 llm-api-check gptzero                      # GPTZero 月度词数额度（AI 检测）
 ```
 
@@ -64,9 +68,10 @@ llm-api-check --version
 | `llm-api-check qwen [名称\|ID] [--no-refresh] [--stats]` | Qwen 账号详情（`--stats` 附加 7 天 token 统计与免费额度） |
 | `llm-api-check galaxy [名称\|ID] [--no-refresh] [--limit N]` | 智星云余额 + 实例状态（`--limit` 列出实例数，默认 10，上限 100） |
 | `llm-api-check bai [名称\|ID] [--no-refresh]` | 白B.AI 积分额度、模型清单、免费通道盯梢 |
+| `llm-api-check longcat [名称\|ID] [--no-refresh]` | LongCat 余额 + 模型清单 |
 | `llm-api-check gptzero [名称\|ID] [--no-refresh]` | GPTZero 账号与月度词数额度（AI 检测） |
 | `llm-api-check accounts list` | 列出所有账号 |
-| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai --name 名称 [凭据 flags]` | 添加账号 |
+`llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat --name 名称 [凭据 flags]` | 添加账号 |
 | `llm-api-check accounts remove --id ID \| --name 名称` | 删除账号 |
 | `llm-api-check accounts rename --id ID \| --name 名称 --new-name 新名称` | 重命名账号 |
 | `llm-api-check config path` | 打印配置文件路径 |
@@ -89,6 +94,7 @@ llm-api-check --version
 | Qwen 控制台 Cookie（兜底通道） | 登录 `bailian.console.aliyun.com` → Token Plan 页 → DevTools → Network → 任意 `data/api.json` 请求 → 复制整个 `Cookie` 请求头（连 `Cookie:` 前缀一起粘贴也可以，工具会自动剥除） |
 | 智星云 AccessKey + SecretKey | gpu.ai-galaxy.cn 控制台 → 开放API → AccessKey管理 → 创建（需先完成实名认证）。请求按「参数名字典序 + 末尾拼 `&secret=`，取 MD5」签名 |
 | 白B.AI API key | chat.b.ai 侧栏 → API → Create API Key（`sk-…`）。同一把 key：在 `api.b.ai` 读推理模型清单，在 `chat.b.ai` 读自己的积分额度 |
+| LongCat API key | longcat.chat 登录 → API Keys → 创建 key。OpenAI 兼容格式，Bearer 认证。无公开配额 API — 余额靠最小推理请求间接探测 |
 | GPTZero API key | app.gptzero.me 登录 → API 订阅页 → 创建 key（32 位 hex，`x-api-key` 头认证）。读自己的月度词数额度 |
 
 Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证密钥并列出套餐模型，并明说缺什么，不会给出臆造的数字。
@@ -128,6 +134,8 @@ Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证�
 | 智星云消费 | `POST .../billing/get_balance_change_list`（余额变更明细聚合今日 / 近 7 天） | AccessKey + SecretKey 签名 |
 | 白B.AI 模型 | `GET https://api.b.ai/v1/models` | API key（`Bearer sk-…`）；one-api 系信封 `{data, success}` |
 | 白B.AI 积分 | `GET https://chat.b.ai/trpc/lambda/usage.points` + `…/usage.summary` | 同一把 API key 作 Bearer（tRPC 信封 `{result:{data:{json}}}`）|
+| LongCat 模型 | `GET https://api.longcat.chat/openai/v1/models` | API key（`Bearer`）；OpenAI 系信封 `{data:[{id,owned_by}]}` |
+| LongCat 余额 | `POST https://api.longcat.chat/openai/v1/chat/completions`（max_tokens=1） | 200=余额充足，402=余额不足，401=key 无效。仅成功请求计费 |
 
 ## 安全说明
 
@@ -135,6 +143,7 @@ Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证�
 - Android 原版用 Keystore 加密凭据；CLI 无系统级 keystore，本工具用文件权限保护（与 `gh` / `aws` CLI 同模式）。配置文件权限过宽时会在 stderr 给出警告。
 - Zen billing 数据来自页面解析，若 opencode.ai 改版可能失效。Qwen 配额窗口来自百炼控制台 RPC，随控制台会话过期。
 - 白B.AI 积分额度走未文档化的控制台 API（`chat.b.ai/trpc/lambda/usage.*`）：它现在接受 API key，但控制台改版可能随时改过端点名。`api.b.ai` 本身仍只开放推理路径（其余 403）。
+- LongCat 无公开配额 API。工具用最小推理请求（max_tokens=1）探测余额状态（约 $0.000002/次）。API key 可访问账户的 token 余额——请把配置文件当敏感文件对待。
 - 智星云实例列表接口的响应体里带着实例 root/RDP/VNC 明文口令。解析层用显式白名单字段解码，这些口令不会进入数据类、`--json` 输出或终端渲染；工具也刻意不调用会回吐 SecretKey 的 `account/get_apikey_info`。
 - Qwen 控制台 Cookie 包含你的阿里云登录会话。请把配置文件当敏感文件对待，不再需要时用 `accounts remove` 删除该账号。
 

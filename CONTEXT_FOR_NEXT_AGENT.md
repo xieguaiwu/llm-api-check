@@ -1,5 +1,23 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-09-13：provider=longcat）
+- **provider=longcat（美团龙猫）**：`llm-api-check longcat` 看余额状态 + 模型清单
+  （OpenAI 兼容 API，无公开配额 API，靠小额推理探活间接判断余额）。
+  - 🔑 **通道**：`GET https://api.longcat.chat/openai/v1/models`（模型清单，Bearer 认证）+
+    `POST https://api.longcat.chat/openai/v1/chat/completions`（余额探活，max_tokens=1）。
+    200=余额充足，402=余额不足，401=key 无效。
+  - **额度语义**：LongCat 无公开配额 API。余额靠小额推理探活间接推断
+    （402=余额为 0/已耗尽，200=余额 >0）。模型清单走 /v1/models（OpenAI 兼容）。
+  - **错误语义**：401 `invalid_api_key`（key 无效/缺失）；403 `insufficient_quota`
+    （key 有效但余额不足，实测 /v1/models 此时仍回 200）；429 `rate_limit_exceeded`。
+  - 施工：models 三型（LongCatAccount/LongCatModel/LongCatPlan/LongCatUsage）；
+    parsers.ParseLongCatModels（OpenAI 兼容信封）+ ErrLongCatAuth；
+    repo.LongCatRepo（Models + ProbeBalance 两路并发）；
+    app.LongCatResult + refreshLongCat + RefreshAll 并发接入；
+    render 详情/总览；main cmdLongCat + accounts add/list/remove/rename 全接。
+  - 质量：gofmt 0 / vet 0 / 7 包 -race 全绿；用例 **346**（longcat 新增 ~25 个）；
+    真机冒烟待用户（cpu1/cpu2 实测）。未 commit。
+
 ## 最后一次完成的工作（2026-09-07 凌晨：provider=gptzero）
 - **provider=gptzero（GPTZero AI 检测额度）**：`llm-api-check gptzero` 看月度词数额度
   （论文扫 AI 率的配额盯梢），单端点只读，真实 key 真机全链通。

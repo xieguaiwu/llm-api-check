@@ -2,7 +2,7 @@
 
 > [**中文版**](README_zh.md) | [**English**](#)
 
-A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history), OpenCode (Go plan windows + Zen billing), Qwen Token Plan (plan models + 5-hour / 7-day credit windows), AI Galaxy 智星云 GPU cloud (account balance + rented instance status), B.AI 白B.AI (credit balance + free flash channel watch), and GPTZero (AI-detection monthly word quota), with multi-account support. Ported from the Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker): same data-layer logic, terminal output instead of an app UI.
+A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history), OpenCode (Go plan windows + Zen billing), Qwen Token Plan (plan models + 5-hour / 7-day credit windows), AI Galaxy 智星云 GPU cloud (account balance + rented instance status), B.AI 白B.AI (credit balance + free flash channel watch), GPTZero (AI-detection monthly word quota), and LongCat 美团龙猫 (balance probe + model list), with multi-account support. Ported from the Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker): same data-layer logic, terminal output instead of an app UI.
 
 ## Features
 
@@ -12,6 +12,7 @@ A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history),
 - **Qwen Token Plan** — plan model list via the subscription gateway, plus 5-hour / 7-day credit windows with reset countdowns (quota comes from the official Bailian CLI when available, falling back to a console cookie; the quota API does not accept API keys)
 - **AI Galaxy (智星云)** — cash balance, compute vouchers and credit quota kept apart (never summed), plus rented GPU/CVM instances: status badge, GPU model/count, vCPU/memory, region, SSH endpoint, hourly price, auto-renew flag and an always-visible expiry countdown
 - **B.AI (白B.AI)** — credit balance from the console API (`usage.points` + `usage.summary`), plus the full model list (`/v1/models`) and a watch list for the known free-tier flash models — a missing one turns into a red warning because automated agents depend on them. Credits are shown as raw points with a nominal `≈ $` conversion (1 000 000 points = $1, read from the platform's own `creditsPerDollar`). A zero balance is red: inference requests fail once credits run out
+- **LongCat** — balance status (probe via minimal chat request: 200 = sufficient, 402 = insufficient) + available model list (OpenAI-compatible `/v1/models`). No public quota API exists, so balance is inferred from a minimal probe request.
 - **GPTZero** — monthly word quota for the AI-detection API (`GET /v2/users/me`): words used vs. plan allowance with a percent bar, overage ceiling, cycle start with an estimated next reset, all-time totals, and the per-document character limit
 - **Multi-account** — unlimited DeepSeek, OpenCode, Qwen, AI Galaxy, B.AI and GPTZero accounts, shown separately
 - Machine-readable `--json` output, `NO_COLOR` support
@@ -42,7 +43,10 @@ llm-api-check galaxy                       # AI Galaxy balance + instance status
 llm-api-check galaxy --limit 5             # top 5 active instances
 llm-api-check accounts add --type bai --name "Free flash" --api-key sk-xxx
 llm-api-check bai                          # B.AI credit balance + model list + free-tier watch
+llm-api-check accounts add --type longcat --name "LongCat" --api-key <your-key>
+llm-api-check longcat                      # LongCat balance + model list
 llm-api-check accounts add --type gptzero --name "Paper scans" --api-key <your-key>
+llm-api-check longcat                      # LongCat balance + model list
 llm-api-check gptzero                      # GPTZero monthly word quota (AI detection)
 ```
 
@@ -64,9 +68,10 @@ llm-api-check --version
 | `llm-api-check qwen [name\|ID] [--no-refresh] [--stats]` | Qwen account detail (`--stats` adds 7-day token stats + free-tier quota) |
 | `llm-api-check galaxy [name\|ID] [--no-refresh] [--limit N]` | AI Galaxy balance + active instances (`--limit` how many, default 10, max 100) |
 | `llm-api-check bai [name\|ID] [--no-refresh]` | B.AI credit balance, model list, free-tier flash watch |
+| `llm-api-check longcat [name\|ID] [--no-refresh]` | LongCat balance + model list |
 | `llm-api-check gptzero [name\|ID] [--no-refresh]` | GPTZero account + monthly word quota (AI detection) |
 | `llm-api-check accounts list` | List all accounts |
-| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero --name NAME [credential flags]` | Add account |
+| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat --name NAME [credential flags]` | Add account |
 | `llm-api-check accounts remove --id ID \| --name NAME` | Remove account |
 | `llm-api-check accounts rename --id ID \| --name NAME --new-name NEW` | Rename account |
 | `llm-api-check config path` | Print config file path |
@@ -89,6 +94,7 @@ Credential flags fall back in this order: flag → env var → TTY prompt (non-T
 | Qwen console cookie (fallback) | Sign in to `bailian.console.aliyun.com` → Token Plan page → DevTools → Network → any `data/api.json` request → copy the whole `Cookie` request header (you can paste it with the `Cookie:` prefix; the tool strips it) |
 | AI Galaxy AccessKey + SecretKey | gpu.ai-galaxy.cn console → 开放API → AccessKey管理 → create (requires real-name verification first). API signature is MD5 over sorted non-empty params plus `&secret=<SecretKey>` |
 | B.AI API key | chat.b.ai sidebar → API → Create API Key (`sk-…`). The same key reads inference models on `api.b.ai` and your own credit balance on `chat.b.ai` |
+| LongCat API key | longcat.chat → sign in → API Keys → Create API Key. OpenAI-compatible format, Bearer auth. No public quota API — balance is probed via minimal chat request |
 | GPTZero API key | app.gptzero.me → sign in → API subscription page → create key (32-char hex, sent as `x-api-key`). Reads your own monthly word quota |
 
 Qwen quota is console-session data. The tool tries the official Bailian CLI first (`bailian usage token-plan`; set `LLM_API_CHECK_QWEN_CLI=off` to disable), then falls back to a console cookie. Without either it still validates the key and lists plan models, and says so instead of showing invented numbers.
@@ -128,6 +134,8 @@ Notes:
 | AI Galaxy spend | `POST .../billing/get_balance_change_list` | AccessKey + SecretKey signature |
 | B.AI models | `GET https://api.b.ai/v1/models` | API key (`Bearer sk-…`); one-api-style envelope `{data, success}` |
 | B.AI credits | `GET https://chat.b.ai/trpc/lambda/usage.points` + `…/usage.summary` | Same API key as Bearer (tRPC envelope `{result:{data:{json}}}`) |
+| LongCat models | `GET https://api.longcat.chat/openai/v1/models` | API key (`Bearer`); OpenAI-compatible envelope `{data:[{id,owned_by}]}` |
+| LongCat balance | `POST https://api.longcat.chat/openai/v1/chat/completions` (min_tokens=1) | 200 = sufficient, 429 = rate limit, 402 = insufficient, 401 = invalid key. Only successful requests are billed |
 | GPTZero quota | `GET https://api.gptzero.me/v2/users/me` | API key (`x-api-key` header); billing unit is words |
 
 ## Security
@@ -137,6 +145,7 @@ Notes:
 - Zen billing data is parsed from the billing page HTML — it may break if opencode.ai changes its page structure. Qwen quota windows come from the Bailian CLI console session (preferred) or the console RPC — both expire with your console session; re-run `bailian auth login --console` to refresh.
 - B.AI credits come from an undocumented console API (`chat.b.ai/trpc/lambda/usage.*`). It accepts the API key today; a console redesign can rename the procedures without notice. `api.b.ai` itself still blocks everything except inference paths (403).
 - AI Galaxy returns instance root/RDP/VNC passwords inside the instance list. The decoder uses an explicit field whitelist, so those secrets never reach the data model, `--json` output or the UI. The tool also never calls `account/get_apikey_info`, which would echo your SecretKey back.
+- LongCat has no public quota API. The tool probes balance with a minimal chat request (max_tokens=1, a few cents at most). The API key grants access to your account's token balance — treat the config file as sensitive.
 - The Qwen console cookie carries your Alibaba Cloud login session. Treat that config file as sensitive, and remove the account (`accounts remove`) when you no longer need it. The Bailian CLI stores its session under `~/.bailian/config.json` (0600).
 
 ## License

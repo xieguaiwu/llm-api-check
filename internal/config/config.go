@@ -31,6 +31,7 @@ type Config struct {
 	GalaxyAccounts   []models.GalaxyAccount   `json:"galaxy_accounts"`
 	BaiAccounts      []models.BaiAccount      `json:"bai_accounts"`
 	GptzeroAccounts  []models.GptzeroAccount  `json:"gptzero_accounts"`
+	LongCatAccounts  []models.LongCatAccount  `json:"longcat_accounts"`
 	LastUpdate       map[string]int64         `json:"last_update"`
 }
 
@@ -248,6 +249,28 @@ func (c *Config) DeleteGptzeroAccount(id string) {
 		}
 	}
 	c.GptzeroAccounts = kept
+}
+
+// SaveLongCatAccount 按 id upsert（同 SaveQwenAccount 逻辑）
+func (c *Config) SaveLongCatAccount(a models.LongCatAccount) {
+	for i, x := range c.LongCatAccounts {
+		if x.ID == a.ID {
+			c.LongCatAccounts[i] = a
+			return
+		}
+	}
+	c.LongCatAccounts = append(c.LongCatAccounts, a)
+}
+
+// DeleteLongCatAccount 按 id 删除（同 DeleteQwenAccount 逻辑）
+func (c *Config) DeleteLongCatAccount(id string) {
+	kept := c.LongCatAccounts[:0]
+	for _, x := range c.LongCatAccounts {
+		if x.ID != id {
+			kept = append(kept, x)
+		}
+	}
+	c.LongCatAccounts = kept
 }
 
 // SetLastUpdate 记录最近更新时间（对应 SecureSettings.setLastUpdate）

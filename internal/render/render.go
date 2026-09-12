@@ -190,6 +190,10 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 		fmt.Fprintf(&b, "\nGPTZero (%s)\n", r.Account.Name)
 		writeGptzeroOverview(&b, r, c)
 	}
+	for _, r := range res.LongCat {
+		fmt.Fprintf(&b, "\nLongCat (%s)\n", r.Account.Name)
+		writeLongCatOverview(&b, r, c)
+	}
 	return b.String()
 }
 
@@ -1163,6 +1167,84 @@ func RenderGptzeroDetail(r app.GptzeroResult, now time.Time, c Colorizer) string
 }
 
 // writeGptzeroOverview 总览页单账号段：额度条 + 错误（对齐 writeBaiOverview）。
+type longCatLabel string
+
+func (l longCatLabel) pad() string { return padTo(string(l), 8) }
+
+// ── LongCat（美团龙猫） ────────────────────────────────────
+
+// writeLongCatOverview 总览页单账号段：余额状态 + 模型数 + 错误。
+func writeLongCatOverview(b *strings.Builder, r app.LongCatResult, c Colorizer) {
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type longcat --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return
+	}
+	if r.Usage != nil && r.Usage.BalanceOK != nil {
+		if *r.Usage.BalanceOK {
+			b.WriteString("  " + c.Green("余额充足"))
+		} else {
+			b.WriteString("  " + c.Red("余额不足"))
+		}
+		if r.Plan != nil && len(r.Plan.Models) > 0 {
+			b.WriteString(fmt.Sprintf(" · 模型 %d 个", len(r.Plan.Models)))
+		}
+		b.WriteString("\n")
+	} else if r.Plan != nil {
+		// 清单拉到但未探活（不应该发生，探活与清单并发）
+		fmt.Fprintf(b, "  模型 %d 个\n", len(r.Plan.Models))
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red("  "+r.Error) + "\n")
+	} else if r.Plan == nil && r.Usage == nil {
+		b.WriteString(c.Gray("  暂无数据") + "\n")
+	}
+}
+
+// RenderLongCatDetail LongCat 账号详情：余额状态 + 模型清单。
+func RenderLongCatDetail(r app.LongCatResult, c Colorizer) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (LongCat)\n", r.Account.Name)
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type longcat --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red(r.Error) + "\n")
+		}
+		return b.String()
+	}
+	b.WriteString("API · 预付费余额（按 token 计费）\n")
+	if r.Usage == nil {
+		if r.Error != "" {
+			b.WriteString(c.Red(r.Error) + "\n")
+		} else {
+			b.WriteString(c.Gray("  暂无数据") + "\n")
+		}
+		return b.String()
+	}
+	// 余额状态
+	if r.Usage.BalanceOK != nil {
+		if *r.Usage.BalanceOK {
+			b.WriteString("  " + c.Green(longCatLabel("余额").pad()+"充足") + "\n")
+		} else {
+			b.WriteString("  " + c.Red(longCatLabel("余额").pad()+"不足（需充值）") + "\n")
+		}
+	}
+	// 模型清单
+	if r.Plan != nil && len(r.Plan.Models) > 0 {
+		ids := make([]string, 0, len(r.Plan.Models))
+		for _, m := range r.Plan.Models {
+			ids = append(ids, m.ID)
+		}
+		fmt.Fprintf(&b, "  %s %d 个：%s\n", longCatLabel("模型").pad(), len(ids), strings.Join(ids, ", "))
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red(r.Error) + "\n")
+	}
+	return b.String()
+}
+
 func writeGptzeroOverview(b *strings.Builder, r app.GptzeroResult, c Colorizer) {
 	if strings.TrimSpace(r.Account.ApiKey) == "" {
 		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type gptzero --help 添加") + "\n")

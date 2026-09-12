@@ -38,6 +38,7 @@ const (
 	envGalaxySK    = "LLM_API_CHECK_GALAXY_SECRET_KEY"
 	envBaiAPIKey   = "LLM_API_CHECK_BAI_API_KEY"
 	envGzAPIKey    = "LLM_API_CHECK_GPTZERO_API_KEY"
+	envLcAPIKey    = "LLM_API_CHECK_LONGCAT_API_KEY"
 )
 
 const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan、智星云算力云、白B.AI 与 GPTZero 使用情况（复刻 Android 版 API Checkers）
@@ -51,8 +52,9 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   llm-api-check galaxy [名称|ID] [--limit N]   智星云余额 + 云主机实例状态（--limit 列出实例数，默认 10）
   llm-api-check bai [名称|ID] [--stats]    白B.AI 账号详情：积分额度 + 模型清单 + 免费通道状态（--stats 附加用量分析）
   llm-api-check gptzero [名称|ID]          GPTZero 账号详情：月度词数额度（AI 检测扫描的配额盯梢）
+  llm-api-check longcat [名称|ID]           LongCat 账号详情：余额状态 + 模型清单（美团龙猫 API）
   llm-api-check accounts list              列出所有账号
-  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero --name 名称 [凭据 flags]
+  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
   llm-api-check accounts rename --id ID | --name 名称 --new-name 新名称
   llm-api-check config path                打印配置文件路径
@@ -84,6 +86,10 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
             环境变量 LLM_API_CHECK_GPTZERO_API_KEY
             app.gptzero.me 登录后 API 订阅页创建（32 位 hex，x-api-key 认证）；
             查看 API 月度词数额度（论文扫 AI 率的配额）
+  LongCat:  --api-key
+            环境变量 LLM_API_CHECK_LONGCAT_API_KEY
+            longcat.chat/platform/api_keys 创建（Bearer 认证，OpenAI 兼容格式）；
+            查看余额状态（小额推理探测）+ 模型清单
 
 退出码: 0 成功；1 任一账号完全失败；2 用法错误
 `
@@ -135,6 +141,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdBai(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "gptzero":
 		return cmdGptzero(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
+	case "longcat":
+		return cmdLongCat(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "accounts":
 		return cmdAccounts(rest[1:], stdin, stdout, stderr, jsonOut)
 	case "config":
@@ -195,6 +203,7 @@ func cmdStatus(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut
 			"galaxy":           sliceOrEmpty(publicGalaxyResults(res.Galaxy)),
 			"bai":              sliceOrEmpty(publicBaiResults(res.Bai)),
 			"gptzero":          sliceOrEmpty(publicGptzeroResults(res.Gptzero)),
+			"longcat":          sliceOrEmpty(publicLongCatResults(res.LongCat)),
 			"last_updated":     unixMillisOrZero(res.LastUpdated),
 			"security_warning": sw,
 		})
@@ -224,6 +233,9 @@ func resultsFromAccounts(cfg *config.Config) app.Result {
 	}
 	for _, acc := range cfg.GptzeroAccounts {
 		res.Gptzero = append(res.Gptzero, app.GptzeroResult{Account: acc})
+	}
+	for _, acc := range cfg.LongCatAccounts {
+		res.LongCat = append(res.LongCat, app.LongCatResult{Account: acc})
 	}
 	return res
 }
@@ -743,6 +755,80 @@ func cmdGptzero(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOu
 	return exitCodeForResults(res)
 }
 
+// ── longcat ─────────────────────────────────────────────────
+
+func cmdLongCat(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, noColor bool) int {
+	fs := flag.NewFlagSet("longcat", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	if err := fs.Parse(moveFlags(args)); err != nil {
+		fmt.Fprintln(stderr, "用法: llm-api-check longcat [名称|ID] [--no-refresh]")
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "用法: llm-api-check longcat [名称|ID] [--no-refresh]")
+		return 2
+	}
+	path := config.DefaultPath()
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 1
+	}
+	warnSecurity(stderr, noColor)
+	accounts := cfg.LongCatAccounts
+	if fs.NArg() == 1 {
+		filtered, ok := filterLongCat(accounts, fs.Arg(0))
+		if !ok {
+			fmt.Fprintf(stderr, "账号不存在: %s\n", fs.Arg(0))
+			return 1
+		}
+		accounts = filtered
+	}
+	a := app.New(cfg)
+	results := make([]app.LongCatResult, 0, len(accounts))
+	for _, acc := range accounts {
+		var r app.LongCatResult
+		if *noRefresh {
+			r = app.LongCatResult{Account: acc}
+		} else if r, err = a.RefreshLongCat(acc.ID); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		results = append(results, r)
+	}
+	res := app.Result{LongCat: results}
+	if jsonOut {
+		if len(results) == 1 {
+			writeJSON(stdout, map[string]any{"longcat": publicLongCatResult(results[0])})
+		} else {
+			writeJSON(stdout, map[string]any{"longcat": publicLongCatResults(results)})
+		}
+		return exitCodeForResults(res)
+	}
+	c := colorizer(noColor)
+	var b strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(render.RenderLongCatDetail(r, c))
+	}
+	fmt.Fprint(stdout, b.String())
+	return exitCodeForResults(res)
+}
+
+// filterLongCat 按 id 或 name 精确匹配（任一命中即包含）
+func filterLongCat(list []models.LongCatAccount, q string) ([]models.LongCatAccount, bool) {
+	var out []models.LongCatAccount
+	for _, a := range list {
+		if a.ID == q || a.Name == q {
+			out = append(out, a)
+		}
+	}
+	return out, len(out) > 0
+}
+
 // filterGptzero 按 id 或 name 精确匹配（任一命中即包含）
 func filterGptzero(list []models.GptzeroAccount, q string) ([]models.GptzeroAccount, bool) {
 	var out []models.GptzeroAccount
@@ -791,6 +877,7 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 			"galaxy_accounts":   sliceOrEmpty(publicGalaxyAccounts(cfg.GalaxyAccounts)),
 			"bai_accounts":      sliceOrEmpty(publicBaiAccounts(cfg.BaiAccounts)),
 			"gptzero_accounts":  sliceOrEmpty(publicGptzeroAccounts(cfg.GptzeroAccounts)),
+			"longcat_accounts":  sliceOrEmpty(publicLongCatAccounts(cfg.LongCatAccounts)),
 		})
 		return 0
 	}
@@ -842,6 +929,14 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		}
 		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
 	}
+	fmt.Fprintf(stdout, "LongCat 账号 (%d):\n", len(cfg.LongCatAccounts))
+	for _, a := range cfg.LongCatAccounts {
+		ready := "未配置"
+		if strings.TrimSpace(a.ApiKey) != "" {
+			ready = "API Key 已配置"
+		}
+		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
+	}
 	return 0
 }
 
@@ -860,12 +955,12 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 	galaxyAK := fs.String("access-key", "", "智星云 AccessKey")
 	galaxySK := fs.String("secret-key", "", "智星云 SecretKey")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero --name 名称 [凭据 flags]")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat --name 名称 [凭据 flags]")
 		return 2
 	}
-	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" && *typ != "bai" && *typ != "gptzero" {
-		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen、galaxy、bai 或 gptzero")
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero --name 名称 [凭据 flags]")
+	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" && *typ != "bai" && *typ != "gptzero" && *typ != "longcat" {
+		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen、galaxy、bai、gptzero 或 longcat")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat --name 名称 [凭据 flags]")
 		return 2
 	}
 	if strings.TrimSpace(*name) == "" {
@@ -1037,6 +1132,30 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 			writeJSON(stdout, map[string]any{"gptzero_account": publicGptzeroAccount(acc)})
 		} else {
 			fmt.Fprintf(stdout, "已添加 GPTZero 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+		}
+		return 0
+	}
+	// longcat（美团龙猫）：只用共享的 --api-key
+	if *typ == "longcat" {
+		key, err := resolveSecret(*apiKey, "api-key", envLcAPIKey, "LongCat API Key: ", true, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
+		acc := models.LongCatAccount{
+			ID:     accID,
+			Name:   strings.TrimSpace(*name),
+			ApiKey: key,
+		}
+		cfg.SaveLongCatAccount(acc)
+		if err := cfg.Save(config.DefaultPath()); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		if jsonOut {
+			writeJSON(stdout, map[string]any{"longcat_account": publicLongCatAccount(acc)})
+		} else {
+			fmt.Fprintf(stdout, "已添加 LongCat 账号「%s」(id=%s)\n", acc.Name, acc.ID)
 		}
 		return 0
 	}
@@ -1651,6 +1770,48 @@ func publicBaiAccounts(as []models.BaiAccount) []map[string]any {
 }
 
 func publicGptzeroAccount(a models.GptzeroAccount) map[string]any {
+	return map[string]any{
+		"id":     a.ID,
+		"name":   a.Name,
+		"apiKey": maskSecret(a.ApiKey),
+	}
+}
+
+// ── LongCat public（--json 输出，mask 凭据） ──────────────────
+
+func publicLongCatResults(rs []app.LongCatResult) []map[string]any {
+	out := make([]map[string]any, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, publicLongCatResult(r))
+	}
+	return out
+}
+
+func publicLongCatResult(r app.LongCatResult) map[string]any {
+	m := map[string]any{
+		"account": publicLongCatAccount(r.Account),
+	}
+	if r.Plan != nil {
+		m["plan"] = r.Plan
+	}
+	if r.Usage != nil {
+		m["usage"] = r.Usage
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	return m
+}
+
+func publicLongCatAccounts(as []models.LongCatAccount) []map[string]any {
+	out := make([]map[string]any, 0, len(as))
+	for _, a := range as {
+		out = append(out, publicLongCatAccount(a))
+	}
+	return out
+}
+
+func publicLongCatAccount(a models.LongCatAccount) map[string]any {
 	return map[string]any{
 		"id":     a.ID,
 		"name":   a.Name,

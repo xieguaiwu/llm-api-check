@@ -900,6 +900,42 @@ func ExtractQwenSECToken(html string) string {
 	return strings.TrimSpace(m[1])
 }
 
+// ── LongCat（美团龙猫，OpenAI 兼容 /v1/models） ─────────────────
+
+// ParseLongCatModels 解析 GET /openai/v1/models 响应。
+// LongCat 响应形状与 OpenAI 一致：{"data":[{"id":"…","owned_by":"…"},…]}。
+// 空清单视为失败。
+func ParseLongCatModels(raw string) ([]models.LongCatModel, error) {
+	var payload struct {
+		Data []struct {
+			ID      string `json:"id"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, fmt.Errorf("LongCat 模型清单 JSON 解析失败: %w", err)
+	}
+	if len(payload.Data) == 0 {
+		return nil, errors.New("未获取到 LongCat 可用模型")
+	}
+	seen := map[string]bool{}
+	out := make([]models.LongCatModel, 0, len(payload.Data))
+	for _, m := range payload.Data {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, models.LongCatModel{ID: id, OwnedBy: strings.TrimSpace(m.OwnedBy)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// ErrLongCatAuth LongCat 凭据问题统一口径。401 invalid_api_key / 403 insufficient_quota
+// 共用文案（403 响应体不含 key 原文，无需担心泄露）。
+var ErrLongCatAuth = errors.New("LongCat API Key 无效或已过期，请到 longcat.chat/platform/api_keys 核对")
+
 // ── GPTZero（AI 检测额度，GET /v2/users/me，x-api-key 认证） ────────
 
 // ErrGptzeroAuth GPTZero 凭据问题的统一口径。api.gptzero.me 对未带 key 回 401

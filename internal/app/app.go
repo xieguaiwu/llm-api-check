@@ -11,6 +11,7 @@ import (
 
 	"github.com/xieguiawu/llm-api-check/internal/config"
 	"github.com/xieguiawu/llm-api-check/internal/models"
+	"github.com/xieguiawu/llm-api-check/internal/parsers"
 	"github.com/xieguiawu/llm-api-check/internal/repo"
 )
 
@@ -65,6 +66,16 @@ type GptzeroResult struct {
 	Error   string                `json:"error,omitempty"`
 }
 
+// LongCatResult 单个 LongCat 账号的刷新结果。Plan = 模型清单（/v1/models）；
+// Usage = 余额探活（小额 chat 探测 402/200）。
+// LongCat 无公开配额 API，BalanceOK 只反映探活时点的余额是否 >0。
+type LongCatResult struct {
+	Account models.LongCatAccount `json:"account"`
+	Plan    *models.LongCatPlan   `json:"plan,omitempty"`
+	Usage   *models.LongCatUsage  `json:"usage,omitempty"`
+	Error   string                `json:"error,omitempty"`
+}
+
 // GalaxyResult 单个智星云账号的刷新结果（对应 GalaxyUi）。
 // Balance 必需；Status/Instances/Cost 任一失败只影响该段（错误合并进 Error）。
 type GalaxyResult struct {
@@ -95,6 +106,7 @@ type Result struct {
 	Galaxy      []GalaxyResult
 	Bai         []BaiResult
 	Gptzero     []GptzeroResult
+	LongCat     []LongCatResult
 	LastUpdated time.Time
 }
 
@@ -106,6 +118,7 @@ type Repos struct {
 	Galaxy   *repo.GalaxyRepo
 	Bai      *repo.BaiRepo
 	Gptzero  *repo.GptzeroRepo
+	LongCat  *repo.LongCatRepo
 }
 
 // GalaxyInstanceLimit 单次刷新展示的活跃实例上限（防止大账号拉穿）
@@ -130,6 +143,7 @@ func New(cfg *config.Config) *App {
 			Galaxy:   repo.NewGalaxyRepo(),
 			Bai:      repo.NewBaiRepo(),
 			Gptzero:  repo.NewGptzeroRepo(),
+			LongCat:  repo.NewLongCatRepo(),
 		},
 		Cfg: cfg,
 	}
@@ -163,12 +177,14 @@ func (a *App) RefreshAll() (Result, error) {
 	galaxyAccounts := append([]models.GalaxyAccount(nil), a.Cfg.GalaxyAccounts...)
 	baiAccounts := append([]models.BaiAccount(nil), a.Cfg.BaiAccounts...)
 	gzAccounts := append([]models.GptzeroAccount(nil), a.Cfg.GptzeroAccounts...)
+	lcAccounts := append([]models.LongCatAccount(nil), a.Cfg.LongCatAccounts...)
 	dsRes := make([]DeepSeekResult, len(dsAccounts))
 	accRes := make([]AccountResult, len(accounts))
 	qwenRes := make([]QwenResult, len(qwenAccounts))
 	galaxyRes := make([]GalaxyResult, len(galaxyAccounts))
 	baiRes := make([]BaiResult, len(baiAccounts))
 	gzRes := make([]GptzeroResult, len(gzAccounts))
+	lcRes := make([]LongCatResult, len(lcAccounts))
 	var wg sync.WaitGroup
 	for i, acc := range dsAccounts {
 		wg.Add(1)
@@ -212,10 +228,17 @@ func (a *App) RefreshAll() (Result, error) {
 			gzRes[i] = a.refreshGptzero(acc)
 		}(i, acc)
 	}
+	for i, acc := range lcAccounts {
+		wg.Add(1)
+		go func(i int, acc models.LongCatAccount) {
+			defer wg.Done()
+			lcRes[i] = a.refreshLongCat(acc)
+		}(i, acc)
+	}
 	wg.Wait()
 	now := time.Now()
 	a.Cfg.SetLastUpdate("all", now.UnixMilli())
-	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, Gptzero: gzRes, LastUpdated: now}, nil
+	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, Gptzero: gzRes, LongCat: lcRes, LastUpdated: now}, nil
 }
 
 // RefreshDeepSeek 按 id 刷新单个 DeepSeek 账号（对应 refreshDeepSeekNow）
@@ -552,6 +575,74 @@ func (a *App) refreshGptzero(acc models.GptzeroAccount) GptzeroResult {
 		return res
 	}
 	res.Usage = &u
+	return res
+}
+
+// RefreshLongCat 按 id 刷新单个 LongCat 账号（模型清单 + 余额探活）。
+func (a *App) RefreshLongCat(id string) (LongCatResult, error) {
+	var acc models.LongCatAccount
+	found := false
+	for _, x := range a.Cfg.LongCatAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return LongCatResult{}, errors.New("账号不存在或已被删除")
+	}
+	return a.refreshLongCat(acc), nil
+}
+
+// refreshLongCat 并发拉两路：模型清单（/v1/models）+ 余额探活（小额 chat）。
+// 两路独立：清单失败不抖掉探活结果，探活失败不抖掉清单。
+func (a *App) refreshLongCat(acc models.LongCatAccount) LongCatResult {
+	res := LongCatResult{Account: acc}
+	if a.Repos == nil || a.Repos.LongCat == nil {
+		res.Error = "LongCat 仓库未初始化"
+		return res
+	}
+	var (
+		wg      sync.WaitGroup
+		plan    models.LongCatPlan
+		planErr error
+		balOK   *bool
+		errorr  error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		plan, planErr = a.Repos.LongCat.Models(acc.ApiKey)
+	}()
+	go func() {
+		defer wg.Done()
+		ok, err := a.Repos.LongCat.ProbeBalance(acc.ApiKey)
+		if err == nil {
+			balOK = &ok
+		} else {
+			// 401 认证错误向上传递，其他错误只记录不致命
+			if errors.Is(err, parsers.ErrLongCatAuth) {
+				errorr = err
+			}
+		}
+	}()
+	wg.Wait()
+	if planErr == nil {
+		res.Plan = &plan
+	}
+	if balOK != nil || errorr != nil {
+		res.Usage = &models.LongCatUsage{Models: plan.Models}
+		if balOK != nil {
+			res.Usage.BalanceOK = balOK
+		}
+	}
+	// 错误合并：认证错误最优先，清单错误次之
+	if errorr != nil {
+		res.Error = errorr.Error()
+	} else if planErr != nil {
+		res.Error = planErr.Error()
+	}
 	return res
 }
 
