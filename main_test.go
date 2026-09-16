@@ -359,6 +359,41 @@ func TestLongCatAddAndDetail(t *testing.T) {
 	}
 }
 
+// 缺陷回归：accounts remove/rename 必须支持 LongCat 账号（2026-09-16 修复）
+func TestLongCatRemoveAndRename(t *testing.T) {
+	withConfigDir(t)
+	code, out, errOut := runCLI(t, "", "accounts", "add", "--type", "longcat",
+		"--name", "龙猫", "--api-key", "sk-lc-a1234567890")
+	if code != 0 {
+		t.Fatalf("add longcat exit=%d err=%s", code, errOut)
+	}
+	// remove 按名称
+	code, out, errOut = runCLI(t, "", "accounts", "remove", "--name", "龙猫")
+	if code != 0 {
+		t.Fatalf("remove longcat exit=%d err=%s", code, errOut)
+	}
+	if !strings.Contains(out, "已删除 1") {
+		t.Errorf("remove 应成功: %s", out)
+	}
+	// 再添加 + rename 按名称
+	runCLI(t, "", "accounts", "add", "--type", "longcat", "--name", "龙猫", "--api-key", "sk-lc-a1234567890")
+	code, out, errOut = runCLI(t, "", "accounts", "rename", "--name", "龙猫", "--new-name", "龙猫2")
+	if code != 0 {
+		t.Fatalf("rename longcat exit=%d err=%s", code, errOut)
+	}
+	if !strings.Contains(out, "已重命名 1") {
+		t.Errorf("rename 应成功: %s", out)
+	}
+	// list 里应看到新名字
+	code, out, _ = runCLI(t, "", "accounts", "list")
+	if code != 0 {
+		t.Fatalf("accounts list exit=%d", code)
+	}
+	if !strings.Contains(out, "龙猫2") {
+		t.Errorf("list 应显示改名后账号: %s", out)
+	}
+}
+
 // 位置参数在 flag 之前也要能识别（三个详情命令共用）
 func TestDetailFlagAfterName(t *testing.T) {
 	withConfigDir(t)

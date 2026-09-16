@@ -73,6 +73,26 @@ func TestRenderLongCatDetailError(t *testing.T) {
 	}
 }
 
+func TestRenderOverviewLongCatOnly(t *testing.T) {
+	// 缺陷回归：只配 LongCat 账号时总览必须显示 LongCat 段，不能显示「未配置任何账号」
+	c := Colorizer{Disabled: true}
+	res := app.Result{
+		LongCat: []app.LongCatResult{
+			{
+				Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test"},
+				Plan:    &models.LongCatPlan{Models: []models.LongCatModel{{ID: "LongCat-2.0"}}},
+			},
+		},
+	}
+	out := RenderOverview(res, time.Now(), c)
+	if strings.Contains(out, "未配置任何账号") {
+		t.Errorf("只配 LongCat 不应显示「未配置任何账号」: %q", out)
+	}
+	if !strings.Contains(out, "LongCat (龙猫)") {
+		t.Errorf("总览应含 LongCat 段: %q", out)
+	}
+}
+
 func TestRenderOverviewLongCat(t *testing.T) {
 	c := Colorizer{Disabled: true}
 	bal := true

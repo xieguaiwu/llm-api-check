@@ -1284,6 +1284,12 @@ func cmdAccountsRemove(args []string, stdout, stderr io.Writer, jsonOut bool) in
 		keptGz = append(keptGz, a)
 	}
 	cfg.GptzeroAccounts = keptGz
+	for _, a := range cfg.LongCatAccounts {
+		if match(a.ID, a.Name) {
+			cfg.DeleteLongCatAccount(a.ID)
+			removed++
+		}
+	}
 	if removed == 0 {
 		fmt.Fprintln(stderr, "错误: 未找到匹配的账号")
 		return 1
@@ -1368,6 +1374,13 @@ func cmdAccountsRename(args []string, stdout, stderr io.Writer, jsonOut bool) in
 	}
 	for i := range cfg.GptzeroAccounts {
 		a := &cfg.GptzeroAccounts[i]
+		if match(a.ID, a.Name) {
+			a.Name = strings.TrimSpace(*newName)
+			renamed++
+		}
+	}
+	for i := range cfg.LongCatAccounts {
+		a := &cfg.LongCatAccounts[i]
 		if match(a.ID, a.Name) {
 			a.Name = strings.TrimSpace(*newName)
 			renamed++

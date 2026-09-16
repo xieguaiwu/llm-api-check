@@ -46,7 +46,6 @@ llm-api-check bai                          # B.AI credit balance + model list + 
 llm-api-check accounts add --type longcat --name "LongCat" --api-key <your-key>
 llm-api-check longcat                      # LongCat balance + model list
 llm-api-check accounts add --type gptzero --name "Paper scans" --api-key <your-key>
-llm-api-check longcat                      # LongCat balance + model list
 llm-api-check gptzero                      # GPTZero monthly word quota (AI detection)
 ```
 

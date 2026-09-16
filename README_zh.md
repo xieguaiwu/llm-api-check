@@ -47,7 +47,6 @@ llm-api-check accounts add --type longcat --name "龙猫" --api-key <your-key>
 llm-api-check longcat                      # LongCat 余额 + 模型清单
 llm-api-check accounts add --type gptzero --name "论文扫" --api-key <your-key>
 llm-api-check gptzero                      # GPTZero 月度词数额度（AI 检测）
-llm-api-check gptzero                      # GPTZero 月度词数额度（AI 检测）
 ```
 
 可从 [Releases](https://github.com/xieguaiwu/llm-api-check/releases) 下载预编译二进制（Linux / macOS，amd64 / arm64），与 `sha256sums.txt` 对校后放入 `PATH`：

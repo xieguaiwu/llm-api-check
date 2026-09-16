@@ -162,7 +162,7 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	} else {
 		fmt.Fprintf(&b, "LLM API Check — 更新于 %s\n", lastUpdated.Format("15:04"))
 	}
-	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 && len(res.Gptzero) == 0 {
+	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 && len(res.Gptzero) == 0 && len(res.LongCat) == 0 {
 		b.WriteString("\n未配置任何账号，运行 llm-api-check accounts add --help 添加\n")
 		return b.String()
 	}
