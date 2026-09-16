@@ -2,12 +2,15 @@ package repo
 
 // LongCat（美团龙猫）API 仓库：模型清单（OpenAI 兼容 /v1/models）+ 余额探活。
 //
-// 平台特点（实测，见 docs/plans/2026-09-13-longcat-provider.md）：
+// 平台特点（实测，见 docs/plans/2026-09-13-longcat-provider.md 与
+// docs/plans/2026-09-16-longcat-console-quota.md）：
 //   - OpenAI 兼容格式：基础端点 https://api.longcat.chat/openai
 //   - 认证：Authorization: Bearer YOUR_APP_KEY
-//   - 无公开配额/余额 API —— 额度信息只能通过间接方式推断：
+//   - App Key 通道无公开配额接口 —— 余额只能间接推断：
 //     GET /v1/models 成功 = key 有效且账户正常
 //     小额 POST /v1/chat/completions → 402 = 余额不足（error.code=insufficient_quota）
+//   - 控制台通道（longcat.chat，Cookie passport_token_key）可读 Token 资源包
+//     （token-packs/summary）与按量余额（api-usage/summary），详见 ConsoleQuota/ConsolePaygo
 //   - 401 invalid_api_key = key 无效；403 insufficient_quota = key 有效但余额不足
 //   - 免费额度每日北京时间 0 点重置（不累计），付费为预付费余额模式
 
@@ -25,10 +28,15 @@ import (
 // longcatBaseURL OpenAI 兼容端点前缀（LongCat 只开放 /openai 路由）。
 const longcatBaseURL = "https://api.longcat.chat/openai"
 
-// LongCatRepo LongCat 数据仓库。BaseURL/Client 测试可注入（httptest）。
+// longcatConsoleBaseURL 控制台配额接口基址（与 API 端点 api.longcat.chat 不同域）。
+// 认证仅需 Cookie: passport_token_key=<值>（2026-09-16 实测，无需签名/风控头）。
+const longcatConsoleBaseURL = "https://longcat.chat"
+
+// LongCatRepo LongCat 数据仓库。BaseURL/ConsoleURL/Client 测试可注入（httptest）。
 type LongCatRepo struct {
-	BaseURL string
-	Client  *http.Client
+	BaseURL    string
+	ConsoleURL string
+	Client     *http.Client
 }
 
 // NewLongCatRepo 默认端点 + 15s 超时 client
@@ -48,6 +56,76 @@ func (r *LongCatRepo) baseURL() string {
 		return strings.TrimRight(r.BaseURL, "/")
 	}
 	return longcatBaseURL
+}
+
+// consoleBaseURL 控制台地址（空值退默认，ConsoleQuota/ConsolePaygo 共用）。
+func (r *LongCatRepo) consoleBaseURL() string {
+	if s := strings.TrimSpace(r.ConsoleURL); s != "" {
+		return strings.TrimRight(s, "/")
+	}
+	return longcatConsoleBaseURL
+}
+
+// ConsoleQuota 拉取 Token 资源包钱包（POST /api/pay/quota/metering/token-packs/summary，
+// body 恒为 {}）。认证仅需 Cookie（normalizeConsoleCookie 容错）。
+// HTTP 401/403 或信封 code==401 → parsers.ErrLongCatConsoleAuth。
+func (r *LongCatRepo) ConsoleQuota(cookie string) (models.LongCatQuota, error) {
+	body, err := r.consolePOST("/api/pay/quota/metering/token-packs/summary", cookie)
+	if err != nil {
+		return models.LongCatQuota{}, err
+	}
+	return parsers.ParseLongCatTokenPacksSummary(body)
+}
+
+// ConsolePaygo 拉取按量计费余额（POST /api/pay/quota/metering/api-usage/summary）。
+// 错误口径同 ConsoleQuota。
+func (r *LongCatRepo) ConsolePaygo(cookie string) (models.LongCatPaygo, error) {
+	body, err := r.consolePOST("/api/pay/quota/metering/api-usage/summary", cookie)
+	if err != nil {
+		return models.LongCatPaygo{}, err
+	}
+	return parsers.ParseLongCatPaygoSummary(body)
+}
+
+// consolePOST 控制台配额 POST：body 恒为 {}，认证头只有 Cookie。
+// 401/403 → ErrLongCatConsoleAuth；其他非 2xx → 「HTTP {code}: {body}」。
+func (r *LongCatRepo) consolePOST(path, cookie string) (string, error) {
+	req, err := http.NewRequest(http.MethodPost, r.consoleBaseURL()+path, strings.NewReader("{}"))
+	if err != nil {
+		return "", fmt.Errorf("网络请求失败: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", browserUA)
+	req.Header.Set("Cookie", normalizeConsoleCookie(cookie))
+	resp, err := r.client().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("网络请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("网络请求失败: %w", err)
+	}
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return "", parsers.ErrLongCatConsoleAuth
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate200(string(body)))
+	default:
+		return string(body), nil
+	}
+}
+
+// normalizeConsoleCookie 控制台 Cookie 容错：
+//   - 完整 Cookie 头（可含 Cookie: 前缀，normalizeCookieHeader 处理）原样透传
+//   - 不含 = 的值视为裸会话值，自动补 passport_token_key= 前缀（实测唯一必需项）
+func normalizeConsoleCookie(cookie string) string {
+	c := normalizeCookieHeader(cookie)
+	if !strings.Contains(c, "=") {
+		return "passport_token_key=" + c
+	}
+	return c
 }
 
 // longCatHeaders 请求头：Bearer 认证 + 浏览器 UA（LongCat 网关对裸客户端

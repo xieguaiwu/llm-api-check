@@ -1173,7 +1173,7 @@ func (l longCatLabel) pad() string { return padTo(string(l), 8) }
 
 // ── LongCat（美团龙猫） ────────────────────────────────────
 
-// writeLongCatOverview 总览页单账号段：余额状态 + 模型数 + 错误。
+// writeLongCatOverview 总览页单账号段：余额状态 + Token 资源包 + 模型数 + 错误。
 func writeLongCatOverview(b *strings.Builder, r app.LongCatResult, c Colorizer) {
 	if strings.TrimSpace(r.Account.ApiKey) == "" {
 		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type longcat --help 添加") + "\n")
@@ -1187,6 +1187,10 @@ func writeLongCatOverview(b *strings.Builder, r app.LongCatResult, c Colorizer) 
 			b.WriteString("  " + c.Green("余额充足"))
 		} else {
 			b.WriteString("  " + c.Red("余额不足"))
+		}
+		if lot := tokenPackLot(r); lot != nil {
+			fmt.Fprintf(b, " · Token 剩余 %s（已用 %s）",
+				formatInt(lot.RemainingToken), fmt.Sprintf("%.1f%%", lot.ConsumedRatio*100))
 		}
 		if r.Plan != nil && len(r.Plan.Models) > 0 {
 			b.WriteString(fmt.Sprintf(" · 模型 %d 个", len(r.Plan.Models)))
@@ -1203,8 +1207,99 @@ func writeLongCatOverview(b *strings.Builder, r app.LongCatResult, c Colorizer) 
 	}
 }
 
-// RenderLongCatDetail LongCat 账号详情：余额状态 + 模型清单。
-func RenderLongCatDetail(r app.LongCatResult, c Colorizer) string {
+// tokenPackLot 总览用的当前资源包（无 Cookie/未拉到时返回 nil）。
+func tokenPackLot(r app.LongCatResult) *models.LongCatLot {
+	if r.Quota == nil {
+		return nil
+	}
+	return r.Quota.CurrentLot
+}
+
+// formatTokenCount token 数量简写：1024 进制——1048576→1M、131072→128K；
+// 非整数倍用原始数字（千分位）。
+func formatTokenCount(n int64) string {
+	switch {
+	case n >= 1<<20 && n%(1<<20) == 0:
+		return fmt.Sprintf("%dM", n/(1<<20))
+	case n >= 1<<10 && n%(1<<10) == 0:
+		return fmt.Sprintf("%dK", n/(1<<10))
+	default:
+		return formatInt(n)
+	}
+}
+
+// longCatModelText 单个模型的展示名 + 能力标注：
+// LongCat-2.0（上下文 1M · 输出 128K）；能力未知（0）则不标注。
+func longCatModelText(m models.LongCatModel) string {
+	name := m.DisplayName
+	if strings.TrimSpace(name) == "" {
+		name = m.ID
+	}
+	var parts []string
+	if m.ContextWindow > 0 {
+		parts = append(parts, "上下文 "+formatTokenCount(m.ContextWindow))
+	}
+	if m.MaxOutputTokens > 0 {
+		parts = append(parts, "输出 "+formatTokenCount(m.MaxOutputTokens))
+	}
+	if len(parts) == 0 {
+		return name
+	}
+	return name + "（" + strings.Join(parts, " · ") + "）"
+}
+
+// writeLongCatConsoleQuota 控制台配额段：Token 资源包 + 有效期 + 日均消耗 + 按量余额。
+// 无资源包时 Token 行改为「无 Token 资源包」；无资源包且探活余额为 0 时补一行灰字
+// 「每日免费额度平台未公开，不含在内」。
+func writeLongCatConsoleQuota(b *strings.Builder, r app.LongCatResult, now time.Time, c Colorizer) {
+	q := r.Quota
+	if q == nil {
+		b.WriteString(c.Gray("  控制台配额       暂无数据") + "\n")
+		return
+	}
+	if lot := q.CurrentLot; lot != nil {
+		fmt.Fprintf(b, "  %s 剩余 %s / 共 %s（已用 %s）\n",
+			longCatLabel("Token").pad(), formatInt(lot.RemainingToken),
+			formatInt(lot.TotalToken), fmt.Sprintf("%.1f%%", lot.ConsumedRatio*100))
+		if lot.ExpireTime > 0 {
+			days := lot.RemainSeconds / 86400
+			if days <= 0 {
+				days = int64(time.UnixMilli(lot.ExpireTime).Sub(now).Hours() / 24)
+			}
+			suffix := ""
+			if days > 0 {
+				suffix = fmt.Sprintf("（剩 %d 天）", days)
+			}
+			fmt.Fprintf(b, "  %s %s%s\n", longCatLabel("有效期").pad(),
+				time.UnixMilli(lot.ExpireTime).Format("2006-01-02"), suffix)
+		}
+	} else {
+		b.WriteString("  " + longCatLabel("Token").pad() + "无 Token 资源包\n")
+	}
+	if est := q.Estimate; est != nil && (est.DailyAverageToken > 0 || est.ExhaustedAfterDays > 0) {
+		line := fmt.Sprintf("  %s %s", longCatLabel("日均消耗").pad(), formatInt(est.DailyAverageToken))
+		if est.ExhaustedAfterDays > 0 {
+			line += fmt.Sprintf(" · 按当前速率约 %d 天后耗尽", est.ExhaustedAfterDays)
+		}
+		b.WriteString(line + "\n")
+	}
+	if p := r.Paygo; p != nil && p.PaygoBalance != nil && p.PaygoBalance.Primary != nil {
+		amt := p.PaygoBalance.Primary
+		sym := CurrencySymbol(amt.Currency)
+		if v, err := strconv.ParseFloat(amt.Amount, 64); err == nil {
+			fmt.Fprintf(b, "  %s %s%s\n", longCatLabel("按量余额").pad(), sym, Fmt(v))
+		} else {
+			fmt.Fprintf(b, "  %s %s%s\n", longCatLabel("按量余额").pad(), sym, amt.Amount)
+		}
+	}
+	// 无资源包且探活余额为 0：平台未公开每日免费额度，提醒不在展示范围内
+	if q.CurrentLot == nil && r.Usage != nil && r.Usage.BalanceOK != nil && !*r.Usage.BalanceOK {
+		b.WriteString(c.Gray("  每日免费额度平台未公开，不含在内") + "\n")
+	}
+}
+
+// RenderLongCatDetail LongCat 账号详情：余额状态 + 控制台配额（可选）+ 模型清单。
+func RenderLongCatDetail(r app.LongCatResult, now time.Time, c Colorizer) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (LongCat)\n", r.Account.Name)
 	if strings.TrimSpace(r.Account.ApiKey) == "" {
@@ -1223,7 +1318,7 @@ func RenderLongCatDetail(r app.LongCatResult, c Colorizer) string {
 		}
 		return b.String()
 	}
-	// 余额状态
+	// 余额状态（探活结论）
 	if r.Usage.BalanceOK != nil {
 		if *r.Usage.BalanceOK {
 			b.WriteString("  " + c.Green(longCatLabel("余额").pad()+"充足") + "\n")
@@ -1231,13 +1326,19 @@ func RenderLongCatDetail(r app.LongCatResult, c Colorizer) string {
 			b.WriteString("  " + c.Red(longCatLabel("余额").pad()+"不足（需充值）") + "\n")
 		}
 	}
-	// 模型清单
+	// 控制台配额段：未配 Cookie 时给灰字指引（照 RenderQwenDetail 未配 Cookie 提示）
+	if r.Account.HasCookie() {
+		writeLongCatConsoleQuota(&b, r, now, c)
+	} else {
+		b.WriteString(c.Gray("  配额信息         需控制台 Cookie：accounts add --type longcat --console-cookie 'passport_token_key=…'") + "\n")
+	}
+	// 模型清单（含平台展示能力字段）
 	if r.Plan != nil && len(r.Plan.Models) > 0 {
-		ids := make([]string, 0, len(r.Plan.Models))
+		ms := make([]string, 0, len(r.Plan.Models))
 		for _, m := range r.Plan.Models {
-			ids = append(ids, m.ID)
+			ms = append(ms, longCatModelText(m))
 		}
-		fmt.Fprintf(&b, "  %s %d 个：%s\n", longCatLabel("模型").pad(), len(ids), strings.Join(ids, ", "))
+		fmt.Fprintf(&b, "  %s %d 个：%s\n", longCatLabel("模型").pad(), len(ms), strings.Join(ms, ", "))
 	}
 	if r.Error != "" {
 		b.WriteString(c.Red(r.Error) + "\n")

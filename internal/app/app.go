@@ -67,12 +67,15 @@ type GptzeroResult struct {
 }
 
 // LongCatResult 单个 LongCat 账号的刷新结果。Plan = 模型清单（/v1/models）；
-// Usage = 余额探活（小额 chat 探测 402/200）。
-// LongCat 无公开配额 API，BalanceOK 只反映探活时点的余额是否 >0。
+// Usage = 余额探活（小额 chat 探测 402/200）；Quota/Paygo = 控制台 Cookie 通道
+// （仅当账号配置了 Cookie 才拉取，失败不覆盖探活与清单结论）。
+// App Key 通道无公开配额 API，BalanceOK 只反映探活时点的余额是否 >0。
 type LongCatResult struct {
 	Account models.LongCatAccount `json:"account"`
 	Plan    *models.LongCatPlan   `json:"plan,omitempty"`
 	Usage   *models.LongCatUsage  `json:"usage,omitempty"`
+	Quota   *models.LongCatQuota  `json:"quota,omitempty"`
+	Paygo   *models.LongCatPaygo  `json:"paygo,omitempty"`
 	Error   string                `json:"error,omitempty"`
 }
 
@@ -595,8 +598,9 @@ func (a *App) RefreshLongCat(id string) (LongCatResult, error) {
 	return a.refreshLongCat(acc), nil
 }
 
-// refreshLongCat 并发拉两路：模型清单（/v1/models）+ 余额探活（小额 chat）。
-// 两路独立：清单失败不抖掉探活结果，探活失败不抖掉清单。
+// refreshLongCat 并发拉两路：模型清单（/v1/models）+ 余额探活（小额 chat）；
+// 配置了控制台 Cookie 时追加两路：Token 资源包 + 按量余额（控制台并发）。
+// 各通道独立：Cookie 通道失败不覆盖探活结论，反之亦然（错误全部合并进 Error）。
 func (a *App) refreshLongCat(acc models.LongCatAccount) LongCatResult {
 	res := LongCatResult{Account: acc}
 	if a.Repos == nil || a.Repos.LongCat == nil {
@@ -604,11 +608,15 @@ func (a *App) refreshLongCat(acc models.LongCatAccount) LongCatResult {
 		return res
 	}
 	var (
-		wg      sync.WaitGroup
-		plan    models.LongCatPlan
-		planErr error
-		balOK   *bool
-		errorr  error
+		wg       sync.WaitGroup
+		plan     models.LongCatPlan
+		planErr  error
+		balOK    *bool
+		errorr   error
+		quota    models.LongCatQuota
+		quotaErr error
+		paygo    models.LongCatPaygo
+		paygoErr error
 	)
 	wg.Add(2)
 	go func() {
@@ -627,6 +635,18 @@ func (a *App) refreshLongCat(acc models.LongCatAccount) LongCatResult {
 			}
 		}
 	}()
+	hasCookie := acc.HasCookie()
+	if hasCookie {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			quota, quotaErr = a.Repos.LongCat.ConsoleQuota(acc.ConsoleCookie)
+		}()
+		go func() {
+			defer wg.Done()
+			paygo, paygoErr = a.Repos.LongCat.ConsolePaygo(acc.ConsoleCookie)
+		}()
+	}
 	wg.Wait()
 	if planErr == nil {
 		res.Plan = &plan
@@ -637,12 +657,14 @@ func (a *App) refreshLongCat(acc models.LongCatAccount) LongCatResult {
 			res.Usage.BalanceOK = balOK
 		}
 	}
-	// 错误合并：认证错误最优先，清单错误次之
-	if errorr != nil {
-		res.Error = errorr.Error()
-	} else if planErr != nil {
-		res.Error = planErr.Error()
+	if hasCookie && quotaErr == nil {
+		res.Quota = &quota
 	}
+	if hasCookie && paygoErr == nil {
+		res.Paygo = &paygo
+	}
+	// 错误合并：认证错误最优先，其余按 清单→控制台 顺序（joinErrors 整行去重）
+	res.Error = joinErrors(errorr, planErr, quotaErr, paygoErr)
 	return res
 }
 

@@ -39,9 +39,10 @@ const (
 	envBaiAPIKey   = "LLM_API_CHECK_BAI_API_KEY"
 	envGzAPIKey    = "LLM_API_CHECK_GPTZERO_API_KEY"
 	envLcAPIKey    = "LLM_API_CHECK_LONGCAT_API_KEY"
+	envLcCookie    = "LLM_API_CHECK_LONGCAT_COOKIE"
 )
 
-const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan、智星云算力云、白B.AI 与 GPTZero 使用情况（复刻 Android 版 API Checkers）
+const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan、智星云算力云、白B.AI、GPTZero 与 LongCat 使用情况（复刻 Android 版 API Checkers）
 
 用法:
   llm-api-check                            刷新全部账号并显示总览（等同 status）
@@ -72,8 +73,8 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   Qwen:     --api-key / --console-cookie / --region
             环境变量 LLM_API_CHECK_QWEN_API_KEY / LLM_API_CHECK_QWEN_COOKIE / LLM_API_CHECK_QWEN_REGION
             --api-key 为订阅密钥（sk-sp- 开头，与区域绑定）；--region 可选 cn-beijing（默认）/ap-southeast-1
-            --console-cookie 可选：阿里云百炼控制台 Cookie，提供后才能看到 5 小时/7 天 配额窗口
-            （Cookie 从已登录的 bailian.console.aliyun.com 订阅页网络请求里复制）
+            --console-cookie 可选：Qwen / LongCat 控制台 Cookie，提供后显示配额信息
+            （Qwen：5 小时/7 天窗口；LongCat：Token 资源包/按量余额）
   智星云:   --access-key / --secret-key
             环境变量 LLM_API_CHECK_GALAXY_ACCESS_KEY / LLM_API_CHECK_GALAXY_SECRET_KEY
             控制台「开放API → AccessKey管理」创建（需先完成实名认证）；看余额 + 实例状态与到期时间
@@ -86,10 +87,14 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
             环境变量 LLM_API_CHECK_GPTZERO_API_KEY
             app.gptzero.me 登录后 API 订阅页创建（32 位 hex，x-api-key 认证）；
             查看 API 月度词数额度（论文扫 AI 率的配额）
-  LongCat:  --api-key
-            环境变量 LLM_API_CHECK_LONGCAT_API_KEY
+  LongCat:  --api-key / --console-cookie
+            环境变量 LLM_API_CHECK_LONGCAT_API_KEY / LLM_API_CHECK_LONGCAT_COOKIE
             longcat.chat/platform/api_keys 创建（Bearer 认证，OpenAI 兼容格式）；
             查看余额状态（小额推理探测）+ 模型清单
+            --console-cookie 可选：longcat.chat 控制台 Cookie（passport_token_key=…），
+            提供后显示 Token 资源包与按量余额（配额信息，每日免费额度平台未公开）
+
+退出码: 0 成功；1 任一账号完全失败；2 用法错误
 
 退出码: 0 成功；1 任一账号完全失败；2 用法错误
 `
@@ -812,7 +817,7 @@ func cmdLongCat(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOu
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		b.WriteString(render.RenderLongCatDetail(r, c))
+		b.WriteString(render.RenderLongCatDetail(r, time.Now(), c))
 	}
 	fmt.Fprint(stdout, b.String())
 	return exitCodeForResults(res)
@@ -935,7 +940,11 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		if strings.TrimSpace(a.ApiKey) != "" {
 			ready = "API Key 已配置"
 		}
-		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
+		cookie := "Cookie 未配置（仅探活）"
+		if a.HasCookie() {
+			cookie = "Cookie 已配置（含配额）"
+		}
+		fmt.Fprintf(stdout, "  %s  %s  [%s · %s]\n", a.ID, a.Name, ready, cookie)
 	}
 	return 0
 }
@@ -950,7 +959,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 	cookie := fs.String("auth-cookie", "", "OpenCode Auth Cookie（可选）")
 	apiKey := fs.String("api-key", "", "DeepSeek / Qwen API Key")
 	ptok := fs.String("platform-token", "", "DeepSeek 平台 Token（可选）")
-	qwenCookie := fs.String("console-cookie", "", "Qwen 控制台 Cookie（可选，配额窗口需要）")
+	consoleCookie := fs.String("console-cookie", "", "Qwen / LongCat 控制台 Cookie（可选，配额需要）")
 	qwenRegion := fs.String("region", "", "Qwen 区域: cn-beijing（默认）|ap-southeast-1")
 	galaxyAK := fs.String("access-key", "", "智星云 AccessKey")
 	galaxySK := fs.String("secret-key", "", "智星云 SecretKey")
@@ -1135,17 +1144,23 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		}
 		return 0
 	}
-	// longcat（美团龙猫）：只用共享的 --api-key
+	// longcat（美团龙猫）：--api-key 必填，--console-cookie 可选（控制台配额通道）
 	if *typ == "longcat" {
 		key, err := resolveSecret(*apiKey, "api-key", envLcAPIKey, "LongCat API Key: ", true, stdin, stdout)
 		if err != nil {
 			fmt.Fprintf(stderr, "错误: %v\n", err)
 			return 2
 		}
+		ck, err := resolveSecret(*consoleCookie, "console-cookie", envLcCookie, "控制台 Cookie（可选，回车跳过）: ", false, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
 		acc := models.LongCatAccount{
-			ID:     accID,
-			Name:   strings.TrimSpace(*name),
-			ApiKey: key,
+			ID:            accID,
+			Name:          strings.TrimSpace(*name),
+			ApiKey:        key,
+			ConsoleCookie: ck,
 		}
 		cfg.SaveLongCatAccount(acc)
 		if err := cfg.Save(config.DefaultPath()); err != nil {
@@ -1156,6 +1171,9 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 			writeJSON(stdout, map[string]any{"longcat_account": publicLongCatAccount(acc)})
 		} else {
 			fmt.Fprintf(stdout, "已添加 LongCat 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+			if !acc.HasCookie() {
+				fmt.Fprintln(stdout, "提示: 未配控制台 Cookie，余额只能探活；配额信息（Token 资源包/按量余额）需重跑并传 --console-cookie")
+			}
 		}
 		return 0
 	}
@@ -1165,7 +1183,7 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 2
 	}
-	ck, err := resolveSecret(*qwenCookie, "console-cookie", envQwenCookie, "控制台 Cookie（可选，回车跳过）: ", false, stdin, stdout)
+	ck, err := resolveSecret(*consoleCookie, "console-cookie", envQwenCookie, "控制台 Cookie（可选，回车跳过）: ", false, stdin, stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "错误: %v\n", err)
 		return 2
@@ -1826,9 +1844,10 @@ func publicLongCatAccounts(as []models.LongCatAccount) []map[string]any {
 
 func publicLongCatAccount(a models.LongCatAccount) map[string]any {
 	return map[string]any{
-		"id":     a.ID,
-		"name":   a.Name,
-		"apiKey": maskSecret(a.ApiKey),
+		"id":            a.ID,
+		"name":          a.Name,
+		"apiKey":        maskSecret(a.ApiKey),
+		"consoleCookie": maskSecret(a.ConsoleCookie),
 	}
 }
 

@@ -1,5 +1,35 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-09-16：LongCat 控制台配额通道 + 三缺陷修复）
+- **LongCat 控制台 Cookie 配额通道（Phase 1 = Go CLI 完成）**：`longcat.chat` 控制台两个
+  配额端点（认证仅需 Cookie `passport_token_key`）已接入，照 Qwen ConsoleCookie 模板全链同构。
+  - 🔑 **控制台端点**（POST，body `{}`，Content-Type: application/json）：
+    `https://longcat.chat/api/pay/quota/metering/token-packs/summary`（Token 资源包：
+    剩余/总量/已用/已用比例/有效期毫秒/剩余秒/grantCategory=GIFT 免费）与
+    `…/api-usage/summary`（按量余额：paygoBalanceCent/status/rechargeEnabled/statusTip/
+    paygoBalance.primary{currency,amount}/exchangeRate）。
+  - **模型能力字段**：`/v1/models` 的 `display_name`/`context_window`/`max_output_tokens`
+    （实测 LongCat-2.0 = 1048576/131072）已提取，详情行显示
+    `模型 1 个：LongCat-2.0（上下文 1M · 输出 128K）`（1024 进制简写，非整数倍用原始数字）。
+  - **降级语义**：无 Cookie → 只探活+清单；有 Cookie 失效 → `ErrLongCatConsoleAuth`
+    （不污染探活/清单）；`currentLot:null` = 合法无资源包；字段缺失显式失败（除 data 整体缺失）。
+  - **已知边界**：每日免费额度平台未公开（无 `/free-quota` 类接口）；控制台接口非公开可能变更；
+    Cookie = 登录态，敏感度同 Qwen 控制台 Cookie。
+  - **⚠️ 13 日那轮声称 accounts remove/rename 全接有误**：实测 `accounts remove/rename
+    --name 龙猫` 报「未找到匹配的账号」（main.go 无 LongCat 分支，DeleteLongCatAccount
+    是死代码），本期已修复并端到端回归。
+  - **质量门**：gofmt 空 / vet 干净 / 7 包 -race 全绿；用例 346 → **383**；
+    新二进制 e2e：status/remove/rename/list 四路径全过。
+  - 契约：docs/plans/2026-09-16-longcat-console-quota.md。
+- **📌 近形标识符陷阱（本期踩坑，复犯警告）**：go.mod 的模块路径是
+  `github.com/xiegui**a**wu/llm-api-check`（hex …69617775 = i,a,w,u，**i 在 a 前**），
+  而 git remote 指向正确拼写 `github.com/xiegu**ai**wu/llm-api-check`（hex …61697775）。
+  **Agent 输出该标识符时字节会被转置**（输入 xieguiawu → 落地 xiegui**a**wu），
+  导致 import 解析失败「no required module provides package」。
+  防范：写 Go 文件后必须用脚本校验所有 `github.com/<org>/llm-api-check` 段与 go.mod 一致
+  （仓库已有 /tmp/fixmodpath.py /tmp/checkmodpath.py 的校验逻辑可复用），
+  或直接从 go.mod 读模块路径拼接 import。
+
 ## 最后一次完成的工作（2026-09-13：provider=longcat）
 - **provider=longcat（美团龙猫）**：`llm-api-check longcat` 看余额状态 + 模型清单
   （OpenAI 兼容 API，无公开配额 API，靠小额推理探活间接判断余额）。

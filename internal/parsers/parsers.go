@@ -904,12 +904,17 @@ func ExtractQwenSECToken(html string) string {
 
 // ParseLongCatModels 解析 GET /openai/v1/models 响应。
 // LongCat 响应形状与 OpenAI 一致：{"data":[{"id":"…","owned_by":"…"},…]}。
+// 平台另返回展示能力字段 display_name / context_window / max_output_tokens
+// （2026-09-16 实测，LongCat-2.0 = 1048576 / 131072）；缺席按 0（未知）处理。
 // 空清单视为失败。
 func ParseLongCatModels(raw string) ([]models.LongCatModel, error) {
 	var payload struct {
 		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
+			ID              string          `json:"id"`
+			OwnedBy         string          `json:"owned_by"`
+			DisplayName     string          `json:"display_name"`
+			ContextWindow   json.RawMessage `json:"context_window"`
+			MaxOutputTokens json.RawMessage `json:"max_output_tokens"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
@@ -926,7 +931,14 @@ func ParseLongCatModels(raw string) ([]models.LongCatModel, error) {
 			continue
 		}
 		seen[id] = true
-		out = append(out, models.LongCatModel{ID: id, OwnedBy: strings.TrimSpace(m.OwnedBy)})
+		model := models.LongCatModel{ID: id, OwnedBy: strings.TrimSpace(m.OwnedBy), DisplayName: strings.TrimSpace(m.DisplayName)}
+		if v, ok := rawInt64(m.ContextWindow); ok {
+			model.ContextWindow = v
+		}
+		if v, ok := rawInt64(m.MaxOutputTokens); ok {
+			model.MaxOutputTokens = v
+		}
+		out = append(out, model)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -935,6 +947,173 @@ func ParseLongCatModels(raw string) ([]models.LongCatModel, error) {
 // ErrLongCatAuth LongCat 凭据问题统一口径。401 invalid_api_key / 403 insufficient_quota
 // 共用文案（403 响应体不含 key 原文，无需担心泄露）。
 var ErrLongCatAuth = errors.New("LongCat API Key 无效或已过期，请到 longcat.chat/platform/api_keys 核对")
+
+// ErrLongCatConsoleAuth LongCat 控制台会话失效统一口径。控制台配额接口
+// （longcat.chat/api/pay/quota/metering/*）认证仅需 Cookie passport_token_key，
+// 会话过期后 HTTP 401 或信封 code=401 都归一到此（2026-09-16 实测）。
+var ErrLongCatConsoleAuth = errors.New("LongCat 控制台会话已失效，请重新从浏览器复制 Cookie")
+
+// longCatConsoleEnvelope 控制台配额接口统一信封 {code,msg,data}。
+// Code 用指针区分「缺失」与「0」：缺失必须显式失败，不得当成功静默通过。
+type longCatConsoleEnvelope struct {
+	Code *int            `json:"code"`
+	Msg  string          `json:"msg"`
+	Data json.RawMessage `json:"data"`
+}
+
+// parseLongCatConsoleEnvelope 拆信封：code 缺失→失败；401→ErrLongCatConsoleAuth；
+// 其它 code!=0→带 msg 的错误；data 缺失或 null→失败。
+func parseLongCatConsoleEnvelope(raw string) (json.RawMessage, error) {
+	var env longCatConsoleEnvelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return nil, fmt.Errorf("LongCat 控制台响应 JSON 解析失败: %w", err)
+	}
+	if env.Code == nil {
+		return nil, errors.New("LongCat 控制台响应缺少 code 字段")
+	}
+	if *env.Code == 401 {
+		return nil, ErrLongCatConsoleAuth
+	}
+	if *env.Code != 0 {
+		if msg := strings.TrimSpace(env.Msg); msg != "" {
+			return nil, fmt.Errorf("LongCat 控制台错误（code=%d）: %s", *env.Code, msg)
+		}
+		return nil, fmt.Errorf("LongCat 控制台错误（code=%d）", *env.Code)
+	}
+	if len(env.Data) == 0 || string(env.Data) == "null" {
+		return nil, errors.New("LongCat 控制台响应缺少 data 字段")
+	}
+	return env.Data, nil
+}
+
+// longCatLotPayload token-packs/summary 的 currentLot/otherLots 元素形状。
+// 字段允许前端裁剪缺席（缺省 0/空串），但 currentLot:null 整体是合法语义。
+type longCatLotPayload struct {
+	RemainingToken int64   `json:"remainingToken"`
+	TotalToken     int64   `json:"totalToken"`
+	ConsumedToken  int64   `json:"consumedToken"`
+	ConsumedRatio  float64 `json:"consumedRatio"`
+	ExpireTime     int64   `json:"expireTime"`
+	RemainSeconds  int64   `json:"remainSeconds"`
+	GrantCategory  string  `json:"grantCategory"`
+}
+
+// longCatEstimatePayload token-packs/summary 的 estimate 形状。
+type longCatEstimatePayload struct {
+	WindowDays         int   `json:"windowDays"`
+	DailyAverageToken  int64 `json:"dailyAverageToken"`
+	ExhaustedAfterDays int   `json:"exhaustedAfterDays"`
+}
+
+// ParseLongCatTokenPacksSummary 解析控制台 token-packs/summary 响应（Token
+// 资源包钱包：剩余/总量/已用/有效期/预计耗尽）。
+//   - code != 0 → 带 msg 的错误；code == 401 → ErrLongCatConsoleAuth
+//   - data 整体缺失/为 null → 显式失败
+//   - data.currentLot == null → 合法「账号无资源包」（Quota.CurrentLot=nil）
+//   - 包内字段缺失按前端裁剪处理，缺省 0/空串（不把缺失当 0 静默放行）
+func ParseLongCatTokenPacksSummary(raw string) (models.LongCatQuota, error) {
+	data, err := parseLongCatConsoleEnvelope(raw)
+	if err != nil {
+		return models.LongCatQuota{}, err
+	}
+	var d struct {
+		CurrentLot *longCatLotPayload      `json:"currentLot"`
+		OtherLots  []longCatLotPayload     `json:"otherLots"`
+		Estimate   *longCatEstimatePayload `json:"estimate"`
+	}
+	if err := json.Unmarshal(data, &d); err != nil {
+		return models.LongCatQuota{}, fmt.Errorf("LongCat 资源包数据解析失败: %w", err)
+	}
+	q := models.LongCatQuota{
+		CurrentLot: lotToModel(d.CurrentLot),
+		Estimate:   estimateToModel(d.Estimate),
+	}
+	q.OtherLots = make([]models.LongCatLot, 0, len(d.OtherLots))
+	for _, lot := range d.OtherLots {
+		q.OtherLots = append(q.OtherLots, *lotToModel(&lot))
+	}
+	return q, nil
+}
+
+func lotToModel(p *longCatLotPayload) *models.LongCatLot {
+	if p == nil {
+		return nil
+	}
+	return &models.LongCatLot{
+		RemainingToken: p.RemainingToken,
+		TotalToken:     p.TotalToken,
+		ConsumedToken:  p.ConsumedToken,
+		ConsumedRatio:  p.ConsumedRatio,
+		ExpireTime:     p.ExpireTime,
+		RemainSeconds:  p.RemainSeconds,
+		GrantCategory:  p.GrantCategory,
+	}
+}
+
+func estimateToModel(p *longCatEstimatePayload) *models.LongCatEstimate {
+	if p == nil {
+		return nil
+	}
+	return &models.LongCatEstimate{
+		WindowDays:         p.WindowDays,
+		DailyAverageToken:  p.DailyAverageToken,
+		ExhaustedAfterDays: p.ExhaustedAfterDays,
+	}
+}
+
+// longCatPaygoAmountPayload api-usage/summary 的 paygoBalance 金额形状。
+type longCatPaygoAmountPayload struct {
+	Currency string `json:"currency"`
+	Amount   string `json:"amount"`
+}
+
+// longCatPaygoBalancePayload api-usage/summary 的 paygoBalance 形状。
+type longCatPaygoBalancePayload struct {
+	Primary   *longCatPaygoAmountPayload `json:"primary"`
+	Secondary *longCatPaygoAmountPayload `json:"secondary"`
+}
+
+// ParseLongCatPaygoSummary 解析控制台 api-usage/summary 响应（按量计费余额）。
+// 信封语义同 ParseLongCatTokenPacksSummary；paygoBalance.primary 缺失 →
+// 显式失败（余额是渲染主体，不得静默当 0）。
+func ParseLongCatPaygoSummary(raw string) (models.LongCatPaygo, error) {
+	data, err := parseLongCatConsoleEnvelope(raw)
+	if err != nil {
+		return models.LongCatPaygo{}, err
+	}
+	var d struct {
+		PaygoBalanceCent int64                       `json:"paygoBalanceCent"`
+		PaygoStatus      string                      `json:"paygoStatus"`
+		RechargeEnabled  bool                        `json:"rechargeEnabled"`
+		StatusTip        string                      `json:"statusTip"`
+		PaygoBalance     *longCatPaygoBalancePayload `json:"paygoBalance"`
+		ExchangeRate     float64                     `json:"exchangeRate"`
+	}
+	if err := json.Unmarshal(data, &d); err != nil {
+		return models.LongCatPaygo{}, fmt.Errorf("LongCat 按量余额数据解析失败: %w", err)
+	}
+	if d.PaygoBalance == nil || d.PaygoBalance.Primary == nil {
+		return models.LongCatPaygo{}, errors.New("LongCat 按量余额缺少 paygoBalance.primary")
+	}
+	return models.LongCatPaygo{
+		PaygoBalanceCent: d.PaygoBalanceCent,
+		PaygoStatus:      d.PaygoStatus,
+		RechargeEnabled:  d.RechargeEnabled,
+		StatusTip:        d.StatusTip,
+		PaygoBalance: &models.LongCatPaygoBalance{
+			Primary:   paygoAmountToModel(d.PaygoBalance.Primary),
+			Secondary: paygoAmountToModel(d.PaygoBalance.Secondary),
+		},
+		ExchangeRate: d.ExchangeRate,
+	}, nil
+}
+
+func paygoAmountToModel(p *longCatPaygoAmountPayload) *models.LongCatPaygoAmount {
+	if p == nil {
+		return nil
+	}
+	return &models.LongCatPaygoAmount{Currency: p.Currency, Amount: p.Amount}
+}
 
 // ── GPTZero（AI 检测额度，GET /v2/users/me，x-api-key 认证） ────────
 

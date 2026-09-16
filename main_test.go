@@ -685,3 +685,83 @@ func TestAccountsAddNoPanicPath(t *testing.T) {
 		t.Errorf("不应 panic: %q", errOut)
 	}
 }
+
+// 控制台 Cookie 通道：add 掩码 / 无 Cookie 提示 / list 状态（2026-09-16）
+func TestLongCatAddConsoleCookie(t *testing.T) {
+	withConfigDir(t)
+	const fakeCookie = "passport_token_key=fake-cookie-for-test"
+	// 添加带 Cookie 的账号
+	code, out, errOut := runCLI(t, "", "accounts", "add", "--type", "longcat",
+		"--name", "龙猫", "--api-key", "sk-lc-a1234567890", "--console-cookie", fakeCookie)
+	if code != 0 {
+		t.Fatalf("add longcat with cookie exit=%d err=%s", code, errOut)
+	}
+	if !strings.Contains(out, "已添加 LongCat") {
+		t.Errorf("应提示已添加: %s", out)
+	}
+	// --json 输出必须掩码 Cookie 与 API Key
+	code, out, _ = runCLI(t, "", "accounts", "add", "--type", "longcat",
+		"--name", "龙猫2", "--api-key", "sk-lc-b9876543210", "--console-cookie", fakeCookie, "--json")
+	if code != 0 {
+		t.Fatalf("add --json exit=%d", code)
+	}
+	if strings.Contains(out, fakeCookie) || strings.Contains(out, "sk-lc-b9876543210") {
+		t.Errorf("--json 泄漏明文凭据: %s", out)
+	}
+	if !strings.Contains(out, "consoleCookie") {
+		t.Errorf("--json 应含 consoleCookie 键: %s", out)
+	}
+	// 环境变量通道
+	t.Setenv("LLM_API_CHECK_LONGCAT_API_KEY", "sk-lc-envkey")
+	t.Setenv("LLM_API_CHECK_LONGCAT_COOKIE", "passport_token_key=env-cookie")
+	code, out, errOut = runCLI(t, "", "accounts", "add", "--type", "longcat", "--name", "龙猫3")
+	if code != 0 {
+		t.Fatalf("add from env exit=%d err=%s", code, errOut)
+	}
+	// 落盘配置里 cookie 应在
+	code, out, _ = runCLI(t, "", "accounts", "list")
+	if code != 0 {
+		t.Fatalf("list exit=%d", code)
+	}
+	if !strings.Contains(out, "龙猫3") {
+		t.Errorf("list 应含 env 添加的账号: %s", out)
+	}
+}
+
+func TestLongCatAddNoCookieHint(t *testing.T) {
+	withConfigDir(t)
+	// 无 TTY 无 flag 时控制台 Cookie 可选（resolveSecret 允许跳过），不应报错
+	code, out, errOut := runCLI(t, "", "accounts", "add", "--type", "longcat",
+		"--name", "龙猫", "--api-key", "sk-lc-a1234567890")
+	if code != 0 {
+		t.Fatalf("add longcat without cookie exit=%d err=%s", code, errOut)
+	}
+	if !strings.Contains(out, "未配控制台 Cookie") {
+		t.Errorf("未配 Cookie 应打印提示: %s", out)
+	}
+}
+
+func TestLongCatListCookieStatus(t *testing.T) {
+	withConfigDir(t)
+	runCLI(t, "", "accounts", "add", "--type", "longcat", "--name", "有Cookie", "--api-key", "sk-lc-1",
+		"--console-cookie", "passport_token_key=fake")
+	runCLI(t, "", "accounts", "add", "--type", "longcat", "--name", "无Cookie", "--api-key", "sk-lc-2")
+	code, out, _ := runCLI(t, "", "accounts", "list")
+	if code != 0 {
+		t.Fatalf("list exit=%d", code)
+	}
+	if !strings.Contains(out, "API Key 已配置 · Cookie 已配置（含配额）") {
+		t.Errorf("list 应显示 Cookie 已配置: %s", out)
+	}
+	if !strings.Contains(out, "API Key 已配置 · Cookie 未配置（仅探活）") {
+		t.Errorf("list 应显示 Cookie 未配置: %s", out)
+	}
+	// --json 同样掩码
+	code, out, _ = runCLI(t, "", "--json", "accounts", "list")
+	if code != 0 {
+		t.Fatalf("--json list exit=%d", code)
+	}
+	if strings.Contains(out, "passport_token_key=fake") {
+		t.Errorf("--json list 泄漏 Cookie: %s", out)
+	}
+}

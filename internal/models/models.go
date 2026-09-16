@@ -347,17 +347,28 @@ func AggregateBaiUsage(recs []BaiRecord) BaiUsageStats {
 
 // LongCatAccount LongCat 账号。apiKey 为 longcat.chat/platform/api_keys
 // 创建的 App Key（Bearer 认证，OpenAI 兼容格式）。
-// LongCat 无公开配额 API，额度靠小额推理探活间接判断（402=余额不足）。
+// App Key 通道无公开配额接口，额度靠小额推理探活间接判断（402=余额不足）；
+// consoleCookie 可选：longcat.chat 控制台会话 Cookie（passport_token_key=…），
+// 提供后可读 Token 资源包与按量余额（见 docs/plans/2026-09-16-longcat-console-quota.md）。
 type LongCatAccount struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	ApiKey string `json:"apiKey"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ApiKey        string `json:"apiKey"`
+	ConsoleCookie string `json:"consoleCookie"`
 }
 
+// HasCookie 是否配置了控制台 Cookie（对应 Kotlin hasCookie）。
+func (a LongCatAccount) HasCookie() bool { return strings.TrimSpace(a.ConsoleCookie) != "" }
+
 // LongCatModel 单个可用模型（/v1/models 列表项）。
+// DisplayName/ContextWindow/MaxOutputTokens 为平台展示能力字段（缺省 0 = 未知，
+// 渲染时 0 则不显示对应部分）。
 type LongCatModel struct {
-	ID      string `json:"id"`
-	OwnedBy string `json:"owned_by"`
+	ID              string `json:"id"`
+	OwnedBy         string `json:"owned_by"`
+	DisplayName     string `json:"display_name"`
+	ContextWindow   int64  `json:"context_window"`
+	MaxOutputTokens int64  `json:"max_output_tokens"`
 }
 
 // LongCatPlan 模型清单（API Key 认证，/v1/models）。
@@ -370,6 +381,55 @@ type LongCatPlan struct {
 type LongCatUsage struct {
 	Models    []LongCatModel `json:"models,omitempty"`
 	BalanceOK *bool          `json:"balance_ok,omitempty"`
+}
+
+// LongCatLot Token 资源包（控制台 token-packs/summary 的 currentLot/otherLots 元素）。
+// 数值字段为 0 表示前端裁剪或该包尚未使用（前端可能裁剪字段，见 §2 降级规则）。
+type LongCatLot struct {
+	RemainingToken int64   `json:"remaining_token"`
+	TotalToken     int64   `json:"total_token"`
+	ConsumedToken  int64   `json:"consumed_token"`
+	ConsumedRatio  float64 `json:"consumed_ratio"` // 0..1
+	ExpireTime     int64   `json:"expire_time"`    // 毫秒时间戳；0=未返回
+	RemainSeconds  int64   `json:"remain_seconds"`
+	GrantCategory  string  `json:"grant_category"` // "GIFT"=免费发放，其它为付费
+}
+
+// LongCatEstimate 按当前速率的耗尽估算（token-packs/summary 的 estimate）。
+type LongCatEstimate struct {
+	WindowDays         int   `json:"window_days"`
+	DailyAverageToken  int64 `json:"daily_average_token"`
+	ExhaustedAfterDays int   `json:"exhausted_after_days"`
+}
+
+// LongCatQuota Token 资源包钱包（控制台 token-packs/summary）。
+// CurrentLot=nil 是平台合法语义（账号无资源包），不是错误。
+type LongCatQuota struct {
+	CurrentLot *LongCatLot      `json:"current_lot"`
+	OtherLots  []LongCatLot     `json:"other_lots,omitempty"`
+	Estimate   *LongCatEstimate `json:"estimate,omitempty"`
+}
+
+// LongCatPaygoAmount 按量余额金额（amount 为字符串原文，避免浮点误差）。
+type LongCatPaygoAmount struct {
+	Currency string `json:"currency"`
+	Amount   string `json:"amount"`
+}
+
+// LongCatPaygoBalance 按量余额（primary 必填；secondary 为多币种场景预留）。
+type LongCatPaygoBalance struct {
+	Primary   *LongCatPaygoAmount `json:"primary"`
+	Secondary *LongCatPaygoAmount `json:"secondary"`
+}
+
+// LongCatPaygo 按量计费余额（控制台 api-usage/summary）。
+type LongCatPaygo struct {
+	PaygoBalanceCent int64                `json:"paygo_balance_cent"`
+	PaygoStatus      string               `json:"paygo_status"`
+	RechargeEnabled  bool                 `json:"recharge_enabled"`
+	StatusTip        string               `json:"status_tip,omitempty"`
+	PaygoBalance     *LongCatPaygoBalance `json:"paygo_balance"`
+	ExchangeRate     float64              `json:"exchange_rate"`
 }
 
 // ── Qwen Token Plan（订阅） ────────────────────────────────────
