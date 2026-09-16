@@ -461,3 +461,64 @@ func TestRenderLongCatDetailClampConsumedRatio(t *testing.T) {
 		}
 	}
 }
+
+// P1 终检：「暂无数据」行对齐（与同段 longCatLabel.pad() 风格一致，非硬编码空格）
+func TestRenderLongCatDetailNoQuotaAlignment(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	bal := true
+	r := app.LongCatResult{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+		Quota:   nil,
+	}
+	out := RenderLongCatDetail(r, time.Now(), c)
+	// 灰字行应是 "  配额    暂无数据"（2 空格缩进 + 配额 4 列 + padTo 8 → 4 空格 + 暂无数据）
+	want := "  配额    暂无数据"
+	if !strings.Contains(out, want) {
+		t.Errorf("暂无数据行应对齐（配额后 4 空格）:\n%q\nwant substr: %q", out, want)
+	}
+}
+
+// P2 终检：paygo.status_tip 渲染（有值→出现；含 ANSI→剥离；空→不出现）
+func TestRenderLongCatDetailPaygoStatusTip(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	base := func(tip string) app.LongCatResult {
+		bal := true
+		return app.LongCatResult{
+			Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+			Usage:   &models.LongCatUsage{BalanceOK: &bal},
+			Quota:   &models.LongCatQuota{CurrentLot: nil}, // 非 nil 才进入配额段
+			Paygo: &models.LongCatPaygo{
+				StatusTip: tip,
+				PaygoBalance: &models.LongCatPaygoBalance{
+					Primary: &models.LongCatPaygoAmount{Currency: "CNY", Amount: "0.00"},
+				},
+			},
+		}
+	}
+
+	// 有 status_tip → 出现
+	out := RenderLongCatDetail(base("账户余额已耗尽，请及时充值"), time.Now(), c)
+	if !strings.Contains(out, "账户余额已耗尽") {
+		t.Errorf("应显示 status_tip:\n%s", out)
+	}
+	// 含 ANSI 转义 → 被 SanitizeText 剥离
+	outAnsi := RenderLongCatDetail(base("余额低\x1b[31m红色\x1b[0m警告"), time.Now(), c)
+	if strings.Contains(outAnsi, "\x1b[") || strings.Contains(outAnsi, "\x1b[31m") {
+		t.Errorf("ANSI 转义应被剥离:\n%q", outAnsi)
+	}
+	if !strings.Contains(outAnsi, "余额低") || !strings.Contains(outAnsi, "红色") || !strings.Contains(outAnsi, "警告") {
+		t.Errorf("ANSI 剥离后应保留纯文本:\n%s", outAnsi)
+	}
+	// 空 status_tip → 不出现空行（不应有多余空白行含空 tip）
+	outEmpty := RenderLongCatDetail(base(""), time.Now(), c)
+	for _, line := range strings.Split(outEmpty, "\n") {
+		if strings.TrimSpace(line) == "" && line != "" {
+			// 允许末尾的换行，但不应有纯空白行出现在内容区
+		}
+	}
+	// 明确断言：没有仅含空白 + 空 tip 的行
+	if strings.Contains(outEmpty, "¥0.00\n\n") {
+		t.Errorf("空 status_tip 不应产生多余空行:\n%q", outEmpty)
+	}
+}

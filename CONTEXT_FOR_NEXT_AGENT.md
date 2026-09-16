@@ -23,6 +23,7 @@
   - 契约：docs/plans/2026-09-16-longcat-console-quota.md。
   - **复审修复（2026-09-16 复审）**：--json 投影补 quota/paygo；标签「控制台配额」→「配额」对齐；
   - **第二轮独立复核处置（2026-09-16）**：0 Blocker / 1 Major / 4 Minor / 3 Nit。
+  - **终检收尾**：「暂无数据」行对齐（longCatLabel.pad() 替代硬编码空格）+ paygo.status_tip 渲染（SanitizeText 防 ANSI 注入）。用例 397→399。
     M1 exitCodeForResults 补 LongCat 退出码（照 Qwen 口径：认证失败/无数据→1，控制台失效但探活成功→0）；
     m1 consumedRatio 渲染层 clampPercent64 钳制 0..100%（与 Qwen clampPercent 同口径）；
     m2 fixture 时间矛盾修复（ExpireTime 未来 + RemainSeconds==0 回退分支用例）；

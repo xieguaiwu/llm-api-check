@@ -1286,7 +1286,7 @@ func longCatModelText(m models.LongCatModel) string {
 func writeLongCatConsoleQuota(b *strings.Builder, r app.LongCatResult, now time.Time, c Colorizer) {
 	q := r.Quota
 	if q == nil {
-		b.WriteString(c.Gray("  配额         暂无数据") + "\n")
+		b.WriteString(c.Gray("  "+longCatLabel("配额").pad()+"暂无数据") + "\n")
 		return
 	}
 	if lot := q.CurrentLot; lot != nil {
@@ -1322,6 +1322,10 @@ func writeLongCatConsoleQuota(b *strings.Builder, r app.LongCatResult, now time.
 			fmt.Fprintf(b, "  %s %s%s\n", longCatLabel("按量余额").pad(), sym, Fmt(v))
 		} else {
 			fmt.Fprintf(b, "  %s %s%s\n", longCatLabel("按量余额").pad(), sym, amt.Amount)
+		}
+		// 按量余额下方展示平台状态文案（如「账户余额已耗尽」），先过 SanitizeText 防 ANSI 注入
+		if tip := strings.TrimSpace(p.StatusTip); tip != "" {
+			b.WriteString(c.Gray("  "+parsers.SanitizeText(tip)) + "\n")
 		}
 	}
 	// 无资源包且无有效按量余额（缺失或为 0）：平台未公开每日免费额度，提醒不在展示范围内
