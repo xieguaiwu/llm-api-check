@@ -1365,7 +1365,7 @@ func RenderLongCatDetail(r app.LongCatResult, now time.Time, c Colorizer) string
 	if r.Account.HasCookie() {
 		writeLongCatConsoleQuota(&b, r, now, c)
 	} else {
-		b.WriteString(c.Gray("  配额     需控制台 Cookie：accounts add --type longcat --console-cookie 'passport_token_key=…'") + "\n")
+		b.WriteString(c.Gray("  "+longCatLabel("配额").pad()+" 需控制台 Cookie：accounts add --type longcat --console-cookie 'passport_token_key=…'") + "\n")
 	}
 	// 模型清单（含平台展示能力字段）
 	if r.Plan != nil && len(r.Plan.Models) > 0 {

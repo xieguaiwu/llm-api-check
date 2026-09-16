@@ -387,10 +387,10 @@ func TestRenderLongCatDetailNoCookieLabelAlignment(t *testing.T) {
 	out := RenderLongCatDetail(r, time.Now(), c)
 	for _, line := range strings.Split(out, "\n") {
 		if strings.HasPrefix(line, "  配额") && strings.Contains(line, "需控制台 Cookie") {
-			// "配额" (4 列) + 空格 + 提示，断言"配额"后至少有 2 个空格
+			// "配额" (4 列) + padTo 4 空格 + 单空格 = 标签后恰 5 空格（与「余额」「Token」同列）
 			afterLabel := strings.TrimPrefix(line, "  配额")
-			if len(afterLabel) < 2 || afterLabel[0] != ' ' || afterLabel[1] != ' ' {
-				t.Errorf("标签应对齐（配额后至少 2 空格）: %q", line)
+			if !strings.HasPrefix(afterLabel, "     ") {
+				t.Errorf("标签应对齐（配额后应恰为 5 空格）: %q", line)
 			}
 			return
 		}
