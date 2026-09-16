@@ -3,13 +3,11 @@ package repo
 import (
 	"encoding/json"
 	"errors"
-
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/xieguiawu/llm-api-check/internal/models"
 	"github.com/xieguiawu/llm-api-check/internal/parsers"
 )
 
@@ -151,17 +149,6 @@ func TestLongCatModelsBadKey(t *testing.T) {
 	_, err := repo.Models("bad-key")
 	if err == nil {
 		t.Fatal("bad key should error")
-	}
-}
-
-func TestLongCatAccountStruct(t *testing.T) {
-	acc := models.LongCatAccount{
-		ID:     "test-id",
-		Name:   "测试号",
-		ApiKey: "sk-test123",
-	}
-	if acc.ID != "test-id" {
-		t.Errorf("ID: %q", acc.ID)
 	}
 }
 

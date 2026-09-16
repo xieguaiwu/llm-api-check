@@ -21,7 +21,14 @@
   - **质量门**：gofmt 空 / vet 干净 / 7 包 -race 全绿；用例 346 → **392**；
     新二进制 e2e：status/remove/rename/list 四路径全过。
   - 契约：docs/plans/2026-09-16-longcat-console-quota.md。
-  - **复审修复（2026-09-16 复审）**：--json 投影补 quota/paygo；标签「控制台配额」→「配额」对齐；提示条件改为无资源包+按量余额≤0；总览配额段与探活解耦（四组合降级）。
+  - **复审修复（2026-09-16 复审）**：--json 投影补 quota/paygo；标签「控制台配额」→「配额」对齐；
+  - **第二轮独立复核处置（2026-09-16）**：0 Blocker / 1 Major / 4 Minor / 3 Nit。
+    M1 exitCodeForResults 补 LongCat 退出码（照 Qwen 口径：认证失败/无数据→1，控制台失效但探活成功→0）；
+    m1 consumedRatio 渲染层 clampPercent64 钳制 0..100%（与 Qwen clampPercent 同口径）；
+    m2 fixture 时间矛盾修复（ExpireTime 未来 + RemainSeconds==0 回退分支用例）；
+    m4/n1 TestErrLongCatAuth 断言具体文案、删除 TestLongCatAccountStruct（编译器测试）；
+    m3 fixture 常量跨包重复已接受（Go 测试无轻量共享常量机制）。用例 396（+50 vs 基线 346）。
+提示条件改为无资源包+按量余额≤0；总览配额段与探活解耦（四组合降级）。
 - **📌 近形标识符陷阱（本期踩坑，复犯警告）**：本期施工中，Agent 新写的 import
   行出现过字节转置（输出 `xieguiawu` → 落地 `xiegui**a**wu`），构建报
   `no required module provides package github.com/xieguiawu/llm-api-check/...`。

@@ -152,3 +152,18 @@ LongCat 账号 (1):
 
 - `f598f16` fix: LongCat 账号三缺陷（总览空判定/remove/rename）+ README 去重
 - 本期 feat 提交（见 git log）
+
+## 七、独立复核结论（2026-09-16，fresh-context 只读）
+
+`fc30bb8..09f2bb4` 范围，0 Blocker / 1 Major / 4 Minor / 3 Nit。
+
+| # | 级别 | 问题 | 处置 |
+|---|---|---|---|
+| M1 | Major | `exitCodeForResults` 漏 LongCat，退出码与其余 6 provider 不一致 | 补 LongCat 段：`r.Error != "" && r.Plan == nil && r.Quota == nil && r.Paygo == nil && (r.Usage == nil || r.Usage.BalanceOK == nil)` → exit 1；3 条用例覆盖（无 key/网络失败→1，key 无效→1） |
+| m1 | Minor | `consumedRatio` 未做范围钳制 | 渲染层 `clampPercent64` 钳到 0..100%（与 Qwen `clampPercent` 同口径，保持解析层忠实）；3 条用例 |
+| m2 | Minor | fixture `ExpireTime`(2025-10-13 已过去) 与 `RemainSeconds`(27天) 自相矛盾 | fixture 改为 `time.Now()+27天`；补 `RemainSeconds==0` 回退分支用例 |
+| m3 | Minor | repo/app 两份测试各自重复定义 fixture 常量 | 已接受（Go 测试无跨包共享常量轻量机制，不引入 helper 包） |
+| m4 | Minor | `TestErrLongCatAuth` 仅断言 `Error() != ""`（同义反复） | 改为断言具体文案 `LongCat API Key 无效或已过期` |
+| n1 | Nit | `TestLongCatAccountStruct` 编译器测试 | 删除 |
+
+用例 392 → 396。提交 `09f2bb4`。

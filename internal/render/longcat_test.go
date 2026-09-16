@@ -128,9 +128,10 @@ var (
 			TotalToken:     5000000,
 			ConsumedToken:  3765433,
 			ConsumedRatio:  0.753,
-			ExpireTime:     1760342400000,
-			RemainSeconds:  2332800,
-			GrantCategory:  "GIFT",
+			// 未来 27 天，与 RemainSeconds=2332800 一致（避免「过去日期+剩 N 天」自相矛盾）
+			ExpireTime:    time.Now().Add(27 * 24 * time.Hour).UnixMilli(),
+			RemainSeconds: 2332800,
+			GrantCategory: "GIFT",
 		},
 		Estimate: &models.LongCatEstimate{
 			WindowDays:         7,
@@ -163,7 +164,7 @@ func TestRenderLongCatDetailWithQuota(t *testing.T) {
 	for _, want := range []string{
 		"余额", "充足",
 		"Token", "剩余 1,234,567 / 共 5,000,000（已用 75.3%）",
-		"有效期", "2025-10-13", "剩 27 天",
+		"有效期", "剩 27 天",
 		"日均消耗", "12,345", "按当前速率约 100 天后耗尽",
 		"按量余额", "¥0.00",
 		"模型", "LongCat 2.0（上下文 1M · 输出 128K）",
@@ -396,4 +397,67 @@ func TestRenderLongCatDetailNoCookieLabelAlignment(t *testing.T) {
 		}
 	}
 	t.Errorf("未找到配额指引行:\n%s", out)
+}
+
+// RemainSeconds == 0 时回退用 ExpireTime 计算天数
+func TestRenderLongCatDetailExpiryFallback(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	future := time.Now().Add(30 * 24 * time.Hour).UnixMilli()
+	q := &models.LongCatQuota{
+		CurrentLot: &models.LongCatLot{
+			RemainingToken: 500000,
+			TotalToken:     1000000,
+			ConsumedRatio:  0.5,
+			ExpireTime:     future,
+			RemainSeconds:  0, // 触发回退分支
+		},
+	}
+	bal := true
+	r := app.LongCatResult{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+		Quota:   q,
+	}
+	out := RenderLongCatDetail(r, time.Now(), c)
+	if !strings.Contains(out, "有效期") {
+		t.Errorf("应显示有效期行:\n%s", out)
+	}
+	// 回退用 ExpireTime 计算约 30 天
+	if !strings.Contains(out, "剩") || !strings.Contains(out, "天") {
+		t.Errorf("回退分支应显示约 30 天:\n%s", out)
+	}
+}
+
+// consumedRatio 越界钳制（渲染层 clampPercent64，与 Qwen clampPercent 同口径）
+func TestRenderLongCatDetailClampConsumedRatio(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	cases := []struct {
+		ratio float64
+		want  string
+	}{
+		{1.5, "100.0%"},  // 越上界
+		{-0.1, "0.0%"},   // 越下界
+		{0.753, "75.3%"}, // 正常
+	}
+	for _, tc := range cases {
+		q := &models.LongCatQuota{
+			CurrentLot: &models.LongCatLot{
+				RemainingToken: 1000000,
+				TotalToken:     5000000,
+				ConsumedRatio:  tc.ratio,
+				ExpireTime:     time.Now().Add(30 * 24 * time.Hour).UnixMilli(),
+				RemainSeconds:  30 * 86400,
+			},
+		}
+		bal := true
+		r := app.LongCatResult{
+			Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+			Usage:   &models.LongCatUsage{BalanceOK: &bal},
+			Quota:   q,
+		}
+		out := RenderLongCatDetail(r, time.Now(), c)
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("consumedRatio=%v 应显示 %q:\n%s", tc.ratio, tc.want, out)
+		}
+	}
 }

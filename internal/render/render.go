@@ -1193,7 +1193,7 @@ func writeLongCatOverview(b *strings.Builder, r app.LongCatResult, c Colorizer) 
 	}
 	if lot := tokenPackLot(r); lot != nil {
 		parts = append(parts, fmt.Sprintf("Token 剩余 %s（已用 %s）",
-			formatInt(lot.RemainingToken), fmt.Sprintf("%.1f%%", lot.ConsumedRatio*100)))
+			formatInt(lot.RemainingToken), fmt.Sprintf("%.1f%%", clampPercent64(lot.ConsumedRatio*100))))
 	} else if amt := overviewPaygoAmount(r); amt != "" {
 		parts = append(parts, "按量余额 "+amt)
 	}
@@ -1249,6 +1249,17 @@ func formatTokenCount(n int64) string {
 	}
 }
 
+// clampPercent64 把百分比（float64）限到 0..100（用量条上限），与 Qwen clampPercent 同口径
+func clampPercent64(p float64) float64 {
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return p
+}
+
 // longCatModelText 单个模型的展示名 + 能力标注：
 // LongCat-2.0（上下文 1M · 输出 128K）；能力未知（0）则不标注。
 func longCatModelText(m models.LongCatModel) string {
@@ -1281,7 +1292,7 @@ func writeLongCatConsoleQuota(b *strings.Builder, r app.LongCatResult, now time.
 	if lot := q.CurrentLot; lot != nil {
 		fmt.Fprintf(b, "  %s 剩余 %s / 共 %s（已用 %s）\n",
 			longCatLabel("Token").pad(), formatInt(lot.RemainingToken),
-			formatInt(lot.TotalToken), fmt.Sprintf("%.1f%%", lot.ConsumedRatio*100))
+			formatInt(lot.TotalToken), fmt.Sprintf("%.1f%%", clampPercent64(lot.ConsumedRatio*100)))
 		if lot.ExpireTime > 0 {
 			days := lot.RemainSeconds / 86400
 			if days <= 0 {

@@ -277,6 +277,11 @@ func exitCodeForResults(res app.Result) int {
 			return 1
 		}
 	}
+	for _, r := range res.LongCat {
+		if r.Error != "" && r.Plan == nil && r.Quota == nil && r.Paygo == nil && (r.Usage == nil || r.Usage.BalanceOK == nil) {
+			return 1
+		}
+	}
 	return 0
 }
 

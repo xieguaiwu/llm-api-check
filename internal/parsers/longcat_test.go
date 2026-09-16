@@ -74,10 +74,14 @@ func TestParseLongCatModelsInvalidJSON(t *testing.T) {
 }
 
 func TestErrLongCatAuth(t *testing.T) {
-	// 401 错误响应不应包含 key 原文（与 GPTZero 不同）
+	// 401 错误响应不应包含 key 原文（与 GPTZero 不同），且文案应明确指向凭据问题
 	msg := ErrLongCatAuth.Error()
 	if msg == "" {
 		t.Fatal("ErrLongCatAuth message empty")
+	}
+	want := "LongCat API Key 无效或已过期"
+	if !strings.Contains(msg, want) {
+		t.Errorf("ErrLongCatAuth 应含 %q, 实得 %q", want, msg)
 	}
 }
 
