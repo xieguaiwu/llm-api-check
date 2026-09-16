@@ -871,3 +871,34 @@ func TestLongCatConsoleAuthFailureProbeOKExit0(t *testing.T) {
 		t.Fatalf("key 无效应 exit=1，实得 %d", code)
 	}
 }
+
+// exitCodeForResults 直接测 LongCat 语义（不依赖网络注入）
+func TestExitCodeForResultsLongCat(t *testing.T) {
+	// 控制台失效但探活成功 → 有数据 → exit 0
+	bal := true
+	r0 := app.LongCatResult{
+		Error: "LongCat 控制台会话已失效，请重新从浏览器复制 Cookie",
+		Usage: &models.LongCatUsage{BalanceOK: &bal},
+	}
+	if code := exitCodeForResults(app.Result{LongCat: []app.LongCatResult{r0}}); code != 0 {
+		t.Errorf("控制台失效但探活成功应 exit=0, got %d", code)
+	}
+
+	// 全无数据（空壳 Usage，BalanceOK=nil）→ exit 1
+	r1 := app.LongCatResult{
+		Error: "网络请求失败: ...",
+		Usage: &models.LongCatUsage{}, // BalanceOK=nil 空壳
+	}
+	if code := exitCodeForResults(app.Result{LongCat: []app.LongCatResult{r1}}); code != 1 {
+		t.Errorf("无数据应 exit=1, got %d", code)
+	}
+
+	// 有 quota 数据 → exit 0（即使 Error 非空）
+	r2 := app.LongCatResult{
+		Error: "LongCat 控制台会话已失效",
+		Quota: &models.LongCatQuota{CurrentLot: &models.LongCatLot{}},
+	}
+	if code := exitCodeForResults(app.Result{LongCat: []app.LongCatResult{r2}}); code != 0 {
+		t.Errorf("有 quota 数据应 exit=0, got %d", code)
+	}
+}
