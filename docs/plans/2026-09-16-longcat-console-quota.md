@@ -75,7 +75,7 @@ HTTP 401
 | `gofmt -l .` | 空 ✅ |
 | `go vet ./...` | 干净 ✅ |
 | `go test ./... -race` | 7 包全绿 ✅ |
-| 用例数 | 346 → **383**（+37） |
+| 用例数 | 346 → **392**（+46） |
 | 三缺陷端到端回归 | 临时 XDG_CONFIG_HOME + 真实二进制：① `status --no-refresh` 只配 LongCat 显示 LongCat 段 ② `accounts remove --name 龙猫` 成功 ③ `accounts rename --name 龙猫 --new-name 龙猫2` 成功 ④ `accounts list` 显示 Cookie 状态 ✅ |
 
 ## 五、已知边界与风险
@@ -86,14 +86,18 @@ HTTP 401
    泄露即等于账号登录态泄露，应立即在浏览器登出/轮换。配置文件按敏感文件对待（0600）。
 3. **接口非公开**：`/api/pay/quota/metering/*` 未在公开文档出现，平台改版可能变更字段或路径。
    解析层对字段缺失显式失败（不静默当 0），改版时会在错误信息中暴露。
-4. **go.mod 模块路径拼写（既有问题，非本期引入）**：`go.mod` 的 module 路径为
-   `github.com/xiegui**a**wu/llm-api-check`（i 在 a 前），而 git remote 指向正确拼写
-   `github.com/xiegu**ai**wu/llm-api-check`。Go 1.25 工具链对主模块导入路径的近似拼写有容错
-   （实测 typo 导入可解析），故全仓一致使用 go.mod 拼写即可正常编译；但外部用户
-   `go get github.com/xiegu**ai**wu/llm-api-check` 会拿到与 go.mod 不一致的模块路径，属既有技术债，
-   不在本期范围（修复需协调改 go.mod + 全仓 import + remote）。
+4. **go.mod 模块路径正确（非本期问题）**：`go.mod` 的 module 路径为
+   `github.com/xieguiawu/llm-api-check`，与 git remote 一致，全仓 61 处 import 全部一致。
+   本期施工中 Agent 新写的 import 行曾出现字节转置（输出 `xieguiawu` → 落地 `xiegui**a**wu`），
+   构建报 `no required module provides package`；防范：写完 Go 文件后脚本校验所有
+   `github.com/<org>/llm-api-check` 段与 go.mod 逐字节一致。
 5. **Cookie 通道 e2e 未做实机验证**：硬约束禁止调用真实 longcat.chat，控制台通道仅由
    httptest 单测覆盖（cookie 透传/自动补名/401 哨兵/500/并发）。
+6. **复审修复（2026-09-16）**：
+   - `--json` 投影漏 quota/paygo（publicLongCatResult 已补）
+   - 标签「控制台配额」超 8 列改为「配额」
+   - 提示「每日免费额度平台未公开」依赖探活结论 → 改为依赖「无资源包 + 按量余额≤0」
+   - 总览配额段嵌套在探活分支内 → 独立降级（有 lot / 有 paygo 余额 / 两者皆无 / Usage==nil 有 paygo 四组合）
 
 ## 六、实施记录
 
@@ -113,7 +117,7 @@ HTTP 401
 $ gofmt -l .          # 空
 $ go vet ./...        # 干净
 $ go test ./... -race # 7 包全绿
-$ grep -rh "^func Test" --include="*_test.go" . | wc -l   # 383（基线 346）
+$ grep -rh "^func Test" --include="*_test.go" . | wc -l   # 392（基线 346）
 ```
 
 ### 三缺陷端到端回归输出（临时 XDG_CONFIG_HOME + 真实二进制 v1.4.0）

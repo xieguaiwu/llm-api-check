@@ -51,7 +51,7 @@ llm-api-check accounts add --type gptzero --name "Paper scans" --api-key <your-k
 llm-api-check gptzero                      # GPTZero monthly word quota (AI detection)
 ```
 
-Download a prebuilt binary from [Releases](https://github.com/xieguaiwu/llm-api-check/releases) (Linux and macOS, amd64 and arm64), verify it against `sha256sums.txt`, then put it on your `PATH`:
+Download a prebuilt binary from [Releases](https://github.com/xieguiawu/llm-api-check/releases) (Linux and macOS, amd64 and arm64), verify it against `sha256sums.txt`, then put it on your `PATH`:
 
 ```bash
 tar -xzf llm-api-check_1.1.0_linux_amd64.tar.gz -C ~/.local/bin

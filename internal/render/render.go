@@ -1182,22 +1182,28 @@ func writeLongCatOverview(b *strings.Builder, r app.LongCatResult, c Colorizer) 
 		}
 		return
 	}
+	// 余额段（依赖探活）、配额段（依赖控制台 Cookie，与探活解耦）、模型数（依赖清单）各自独立降级
+	var parts []string
 	if r.Usage != nil && r.Usage.BalanceOK != nil {
 		if *r.Usage.BalanceOK {
-			b.WriteString("  " + c.Green("余额充足"))
+			parts = append(parts, c.Green("余额充足"))
 		} else {
-			b.WriteString("  " + c.Red("余额不足"))
+			parts = append(parts, c.Red("余额不足"))
 		}
-		if lot := tokenPackLot(r); lot != nil {
-			fmt.Fprintf(b, " · Token 剩余 %s（已用 %s）",
-				formatInt(lot.RemainingToken), fmt.Sprintf("%.1f%%", lot.ConsumedRatio*100))
-		}
-		if r.Plan != nil && len(r.Plan.Models) > 0 {
-			b.WriteString(fmt.Sprintf(" · 模型 %d 个", len(r.Plan.Models)))
-		}
-		b.WriteString("\n")
+	}
+	if lot := tokenPackLot(r); lot != nil {
+		parts = append(parts, fmt.Sprintf("Token 剩余 %s（已用 %s）",
+			formatInt(lot.RemainingToken), fmt.Sprintf("%.1f%%", lot.ConsumedRatio*100)))
+	} else if amt := overviewPaygoAmount(r); amt != "" {
+		parts = append(parts, "按量余额 "+amt)
+	}
+	if r.Plan != nil && len(r.Plan.Models) > 0 {
+		parts = append(parts, fmt.Sprintf("模型 %d 个", len(r.Plan.Models)))
+	}
+	if len(parts) > 0 {
+		b.WriteString("  " + strings.Join(parts, " · ") + "\n")
 	} else if r.Plan != nil {
-		// 清单拉到但未探活（不应该发生，探活与清单并发）
+		// 清单拉到但无探活也无配额数据（不应发生，探活与清单并发）
 		fmt.Fprintf(b, "  模型 %d 个\n", len(r.Plan.Models))
 	}
 	if r.Error != "" {
@@ -1205,6 +1211,21 @@ func writeLongCatOverview(b *strings.Builder, r app.LongCatResult, c Colorizer) 
 	} else if r.Plan == nil && r.Usage == nil {
 		b.WriteString(c.Gray("  暂无数据") + "\n")
 	}
+}
+
+// overviewPaygoAmount 总览用的按量余额字符串（无或非零解析失败返回空串，表示不显示）
+func overviewPaygoAmount(r app.LongCatResult) string {
+	p := r.Paygo
+	if p == nil || p.PaygoBalance == nil || p.PaygoBalance.Primary == nil {
+		return ""
+	}
+	amt := p.PaygoBalance.Primary
+	sym := CurrencySymbol(amt.Currency)
+	v, err := strconv.ParseFloat(amt.Amount, 64)
+	if err != nil || v == 0 {
+		return ""
+	}
+	return sym + Fmt(v)
 }
 
 // tokenPackLot 总览用的当前资源包（无 Cookie/未拉到时返回 nil）。
@@ -1254,7 +1275,7 @@ func longCatModelText(m models.LongCatModel) string {
 func writeLongCatConsoleQuota(b *strings.Builder, r app.LongCatResult, now time.Time, c Colorizer) {
 	q := r.Quota
 	if q == nil {
-		b.WriteString(c.Gray("  控制台配额       暂无数据") + "\n")
+		b.WriteString(c.Gray("  配额         暂无数据") + "\n")
 		return
 	}
 	if lot := q.CurrentLot; lot != nil {
@@ -1292,10 +1313,24 @@ func writeLongCatConsoleQuota(b *strings.Builder, r app.LongCatResult, now time.
 			fmt.Fprintf(b, "  %s %s%s\n", longCatLabel("按量余额").pad(), sym, amt.Amount)
 		}
 	}
-	// 无资源包且探活余额为 0：平台未公开每日免费额度，提醒不在展示范围内
-	if q.CurrentLot == nil && r.Usage != nil && r.Usage.BalanceOK != nil && !*r.Usage.BalanceOK {
+	// 无资源包且无有效按量余额（缺失或为 0）：平台未公开每日免费额度，提醒不在展示范围内
+	if q.CurrentLot == nil && !hasUsablePaygo(r) {
 		b.WriteString(c.Gray("  每日免费额度平台未公开，不含在内") + "\n")
 	}
+}
+
+// hasUsablePaygo 是否存在非零的按量余额（缺失或金额为 0 视为无）
+func hasUsablePaygo(r app.LongCatResult) bool {
+	p := r.Paygo
+	if p == nil || p.PaygoBalance == nil || p.PaygoBalance.Primary == nil {
+		return false
+	}
+	amt := p.PaygoBalance.Primary
+	v, err := strconv.ParseFloat(amt.Amount, 64)
+	if err != nil {
+		return false
+	}
+	return v > 0
 }
 
 // RenderLongCatDetail LongCat 账号详情：余额状态 + 控制台配额（可选）+ 模型清单。
@@ -1330,7 +1365,7 @@ func RenderLongCatDetail(r app.LongCatResult, now time.Time, c Colorizer) string
 	if r.Account.HasCookie() {
 		writeLongCatConsoleQuota(&b, r, now, c)
 	} else {
-		b.WriteString(c.Gray("  配额信息         需控制台 Cookie：accounts add --type longcat --console-cookie 'passport_token_key=…'") + "\n")
+		b.WriteString(c.Gray("  配额     需控制台 Cookie：accounts add --type longcat --console-cookie 'passport_token_key=…'") + "\n")
 	}
 	// 模型清单（含平台展示能力字段）
 	if r.Plan != nil && len(r.Plan.Models) > 0 {

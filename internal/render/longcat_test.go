@@ -264,3 +264,136 @@ func TestFormatTokenCount(t *testing.T) {
 		}
 	}
 }
+
+// 复审修复测试：Fix 3 提示条件（无资源包 且 按量余额缺失或为 0 → 灰字；余额>0 → 灰字消失）
+func TestRenderLongCatDetailHintNoLotZeroPaygo(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	bal := false
+	r := app.LongCatResult{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+		Quota:   &models.LongCatQuota{CurrentLot: nil},
+	}
+	out := RenderLongCatDetail(r, time.Now(), c)
+	if !strings.Contains(out, "每日免费额度平台未公开，不含在内") {
+		t.Errorf("无资源包+无 paygo 应显示免费额度灰字:\n%s", out)
+	}
+}
+
+func TestRenderLongCatDetailHintNoLotWithPaygo(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	bal := true
+	r := app.LongCatResult{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+		Quota:   &models.LongCatQuota{CurrentLot: nil},
+		Paygo: &models.LongCatPaygo{
+			PaygoBalance: &models.LongCatPaygoBalance{Primary: &models.LongCatPaygoAmount{Currency: "CNY", Amount: "12.50"}},
+		},
+	}
+	out := RenderLongCatDetail(r, time.Now(), c)
+	if strings.Contains(out, "每日免费额度平台未公开") {
+		t.Errorf("无资源包但 paygo>0 不应显示免费额度灰字:\n%s", out)
+	}
+}
+
+func TestRenderLongCatDetailHintHasLot(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	r := app.LongCatResult{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		Quota: &models.LongCatQuota{CurrentLot: &models.LongCatLot{
+			RemainingToken: 1000000, TotalToken: 5000000, ConsumedRatio: 0.8,
+		}},
+	}
+	out := RenderLongCatDetail(r, time.Now(), c)
+	if strings.Contains(out, "每日免费额度平台未公开") {
+		t.Errorf("有资源包不应显示免费额度灰字:\n%s", out)
+	}
+}
+
+// 复审修复测试：Fix 4 总览配额独立于探活（四种组合）
+func TestRenderLongCatOverviewWithLot(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	bal := true
+	res := app.Result{LongCat: []app.LongCatResult{{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+		Quota:   lcHappyQuota,
+		Plan:    &models.LongCatPlan{Models: []models.LongCatModel{{ID: "LongCat-2.0"}}},
+	}}}
+	out := RenderOverview(res, time.Now(), c)
+	if !strings.Contains(out, "Token 剩余 1,234,567（已用 75.3%）") {
+		t.Errorf("有资源包应显示 Token 剩余:\n%s", out)
+	}
+}
+
+func TestRenderLongCatOverviewNoLotWithPaygo(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	bal := true
+	res := app.Result{LongCat: []app.LongCatResult{{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+		Quota:   &models.LongCatQuota{CurrentLot: nil},
+		Plan:    &models.LongCatPlan{Models: []models.LongCatModel{{ID: "LongCat-2.0"}}},
+	}}}
+	out := RenderOverview(res, time.Now(), c)
+	// 按量余额 0.00 → 不显示（hasUsablePaygo 返回 false，因为金额为 0）
+	if strings.Contains(out, "按量余额") {
+		t.Errorf("按量余额为 0 不应显示按量段:\n%s", out)
+	}
+}
+
+func TestRenderLongCatOverviewNoLotPaygoWithAmount(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	res := app.Result{LongCat: []app.LongCatResult{{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		// Usage==nil 但 paygo 有金额 → 配额段应照常显示
+		Quota: &models.LongCatQuota{CurrentLot: nil},
+		Paygo: &models.LongCatPaygo{
+			PaygoBalance: &models.LongCatPaygoBalance{Primary: &models.LongCatPaygoAmount{Currency: "CNY", Amount: "8.88"}},
+		},
+		Plan: &models.LongCatPlan{Models: []models.LongCatModel{{ID: "LongCat-2.0"}}},
+	}}}
+	out := RenderOverview(res, time.Now(), c)
+	if !strings.Contains(out, "按量余额 ¥8.88") {
+		t.Errorf("Usage==nil 但有 paygo 金额应显示按量余额:\n%s", out)
+	}
+	if strings.Contains(out, "余额充足") || strings.Contains(out, "余额不足") {
+		t.Errorf("Usage==nil 不应显示余额段:\n%s", out)
+	}
+}
+
+func TestRenderLongCatOverviewNothing(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	res := app.Result{LongCat: []app.LongCatResult{{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test", ConsoleCookie: "passport_token_key=fake"},
+		Quota:   &models.LongCatQuota{CurrentLot: nil},
+		Plan:    &models.LongCatPlan{Models: []models.LongCatModel{{ID: "LongCat-2.0"}}},
+	}}}
+	out := RenderOverview(res, time.Now(), c)
+	if !strings.Contains(out, "模型 1 个") {
+		t.Errorf("无配额数据应降级为模型数:\n%s", out)
+	}
+}
+
+// 复审修复测试：Fix 2 标签对齐（"配额" 4 列中文，pad 后至少 2 空格）
+func TestRenderLongCatDetailNoCookieLabelAlignment(t *testing.T) {
+	c := Colorizer{Disabled: true}
+	bal := true
+	r := app.LongCatResult{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-test"},
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+	}
+	out := RenderLongCatDetail(r, time.Now(), c)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "  配额") && strings.Contains(line, "需控制台 Cookie") {
+			// "配额" (4 列) + 空格 + 提示，断言"配额"后至少有 2 个空格
+			afterLabel := strings.TrimPrefix(line, "  配额")
+			if len(afterLabel) < 2 || afterLabel[0] != ' ' || afterLabel[1] != ' ' {
+				t.Errorf("标签应对齐（配额后至少 2 空格）: %q", line)
+			}
+			return
+		}
+	}
+	t.Errorf("未找到配额指引行:\n%s", out)
+}

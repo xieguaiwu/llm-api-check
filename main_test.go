@@ -765,3 +765,54 @@ func TestLongCatListCookieStatus(t *testing.T) {
 		t.Errorf("--json list 泄漏 Cookie: %s", out)
 	}
 }
+
+// 复审修复测试：Fix 1 --json 投影包含 quota/paygo（不依赖真实网络）
+func TestPublicLongCatResultProjectsQuotaPaygo(t *testing.T) {
+	bal := true
+	r := app.LongCatResult{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-lc-testkey", ConsoleCookie: "passport_token_key=fake-cookie-for-test"},
+		Plan:    &models.LongCatPlan{}, // 复用任意非 nil 指针即可（仅断言存在性）
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+		Quota: &models.LongCatQuota{
+			CurrentLot: &models.LongCatLot{RemainingToken: 1234567, TotalToken: 5000000, ConsumedRatio: 0.753},
+		},
+		Paygo: &models.LongCatPaygo{
+			PaygoBalance: &models.LongCatPaygoBalance{Primary: &models.LongCatPaygoAmount{Currency: "CNY", Amount: "0.00"}},
+		},
+	}
+	m := publicLongCatResult(r)
+	for _, key := range []string{"account", "plan", "usage", "quota", "paygo"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("--json 投影缺少键 %q: %v", key, m)
+		}
+	}
+	// 凭据掩码
+	acc := m["account"].(map[string]any)
+	if acc["apiKey"] == "sk-lc-testkey" {
+		t.Errorf("apiKey 未掩码: %v", acc["apiKey"])
+	}
+	if cc, ok := acc["consoleCookie"]; ok && cc == "passport_token_key=fake-cookie-for-test" {
+		t.Errorf("consoleCookie 未掩码: %v", cc)
+	}
+}
+
+// status --json 走 publicLongCatResults（与 publicLongCatResult 同投影逻辑）
+func TestPublicLongCatResultsProjectsQuotaPaygo(t *testing.T) {
+	bal := true
+	rs := []app.LongCatResult{{
+		Account: models.LongCatAccount{Name: "龙猫", ApiKey: "sk-lc-testkey", ConsoleCookie: "passport_token_key=fake-cookie-for-test"},
+		Usage:   &models.LongCatUsage{BalanceOK: &bal},
+		Quota:   &models.LongCatQuota{CurrentLot: &models.LongCatLot{RemainingToken: 1000000}},
+		Paygo:   &models.LongCatPaygo{PaygoBalance: &models.LongCatPaygoBalance{Primary: &models.LongCatPaygoAmount{Currency: "CNY", Amount: "5.00"}}},
+	}}
+	list := publicLongCatResults(rs)
+	if len(list) != 1 {
+		t.Fatalf("len: got %d, want 1", len(list))
+	}
+	m := list[0]
+	for _, key := range []string{"account", "usage", "quota", "paygo"} {
+		if _, ok := m[key]; !ok {
+			t.Errorf("--json status 投影缺少键 %q: %v", key, m)
+		}
+	}
+}

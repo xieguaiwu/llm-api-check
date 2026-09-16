@@ -1828,6 +1828,12 @@ func publicLongCatResult(r app.LongCatResult) map[string]any {
 	if r.Usage != nil {
 		m["usage"] = r.Usage
 	}
+	if r.Quota != nil {
+		m["quota"] = r.Quota
+	}
+	if r.Paygo != nil {
+		m["paygo"] = r.Paygo
+	}
 	if r.Error != "" {
 		m["error"] = r.Error
 	}

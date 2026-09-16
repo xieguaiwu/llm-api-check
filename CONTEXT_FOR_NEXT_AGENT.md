@@ -18,17 +18,16 @@
   - **⚠️ 13 日那轮声称 accounts remove/rename 全接有误**：实测 `accounts remove/rename
     --name 龙猫` 报「未找到匹配的账号」（main.go 无 LongCat 分支，DeleteLongCatAccount
     是死代码），本期已修复并端到端回归。
-  - **质量门**：gofmt 空 / vet 干净 / 7 包 -race 全绿；用例 346 → **383**；
+  - **质量门**：gofmt 空 / vet 干净 / 7 包 -race 全绿；用例 346 → **392**；
     新二进制 e2e：status/remove/rename/list 四路径全过。
   - 契约：docs/plans/2026-09-16-longcat-console-quota.md。
-- **📌 近形标识符陷阱（本期踩坑，复犯警告）**：go.mod 的模块路径是
-  `github.com/xiegui**a**wu/llm-api-check`（hex …69617775 = i,a,w,u，**i 在 a 前**），
-  而 git remote 指向正确拼写 `github.com/xiegu**ai**wu/llm-api-check`（hex …61697775）。
-  **Agent 输出该标识符时字节会被转置**（输入 xieguiawu → 落地 xiegui**a**wu），
-  导致 import 解析失败「no required module provides package」。
-  防范：写 Go 文件后必须用脚本校验所有 `github.com/<org>/llm-api-check` 段与 go.mod 一致
-  （仓库已有 /tmp/fixmodpath.py /tmp/checkmodpath.py 的校验逻辑可复用），
-  或直接从 go.mod 读模块路径拼接 import。
+  - **复审修复（2026-09-16 复审）**：--json 投影补 quota/paygo；标签「控制台配额」→「配额」对齐；提示条件改为无资源包+按量余额≤0；总览配额段与探活解耦（四组合降级）。
+- **📌 近形标识符陷阱（本期踩坑，复犯警告）**：本期施工中，Agent 新写的 import
+  行出现过字节转置（输出 `xieguiawu` → 落地 `xiegui**a**wu`），构建报
+  `no required module provides package github.com/xieguiawu/llm-api-check/...`。
+  **go.mod 本身正确且从未改动**（`module github.com/xieguiawu/llm-api-check`，全仓 61 处
+  import 全部一致）。防范：每次写完 Go 文件后，脚本校验所有 `github.com/<org>/llm-api-check`
+  段与 go.mod 的模块前缀逐字节一致；不要手打该标识符（[[near-miss-spelling]] 教训同源）。
 
 ## 最后一次完成的工作（2026-09-13：provider=longcat）
 - **provider=longcat（美团龙猫）**：`llm-api-check longcat` 看余额状态 + 模型清单
@@ -218,7 +217,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 
 🔴 **Android 侧唯一权威 clone（2026-08-29 取证）= `~/Desktop/go-projects/pocket-llm-api-checker/`**（HEAD e1c1568，含 fastlane 元数据 + tag v1.0.0 + scripts/ 可复现构建 + docs/fdroid 草稿）。`~/Desktop/android-projects/api-checkers/` 是落后一提交的旧副本（HEAD cec6ef7，无 fastlane、无 tag），只做历史参考，**勿在其上开发**。
 
-**公开 repo：https://github.com/xieguaiwu/llm-api-check（PUBLIC）**
+**公开 repo：https://github.com/xieguiawu/llm-api-check（PUBLIC）**
 发布物：GitHub Release v1.1.0（linux amd64/arm64 + darwin amd64/arm64 tarball + sha256sums.txt）
 
 ## 最后一次完成的工作（2026-08-29 14:10）
@@ -240,7 +239,7 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - [ ] songjieshi/xieguaiwu 的 key 来自 config.fish 注释行（非当前生效），可能已过期（xieguaiwu 实测 M 100% 已限流属正常用量而非 key 失效）
 - [x] ~~P3 未修（非阻塞）：NewID panic 改返回错误、writeJSON stderr 注入、promptTTY bufio.Reader 复用、`--json --version` 文本输出~~ 仍未修（本轮只做了 momus 的 3 个 P2）；Qwen 额度绝对值（quota-config 接口的 `five_hour`/`weekly` credits）未接入，现只显示百分比（CodexBar 已接 quota-config，可参考）
 - [ ] Zen billing 解析依赖 opencode.ai 页面结构，改版需更新 `internal/parsers/parsers.go` 的 ParseZenBilling；Qwen 同理依赖百炼控制台 RPC（信封形状变化时改 `qwenFindObject` 目标键）或 bailian-cli 输出（字段变化时改 `qwenCLIErrorEnvelope`/`ParseQwenUsage`）
-- [x] ~~**发版 v1.3.0**~~ → **2026-09-06 已发**：`VERSION=1.3.0 scripts/build-dist.sh`（四平台 tarball + sha256sums）→ tag v1.3.0 → Release https://github.com/xieguaiwu/llm-api-check/releases/tag/v1.3.0（覆盖 v1.2.0+v1.3.0 全部内容：galaxy provider、bai 积分、qwen --stats、moveFlags/joinText 修复）。**下载回验通过**：从 Release 拉回 linux_amd64 包 `sha256sum -c` OK、解包 `--version` → 1.3.0；v1.3.0 已接管 Latest 标记。main 与 tag 均已 push
+- [x] ~~**发版 v1.3.0**~~ → **2026-09-06 已发**：`VERSION=1.3.0 scripts/build-dist.sh`（四平台 tarball + sha256sums）→ tag v1.3.0 → Release https://github.com/xieguiawu/llm-api-check/releases/tag/v1.3.0（覆盖 v1.2.0+v1.3.0 全部内容：galaxy provider、bai 积分、qwen --stats、moveFlags/joinText 修复）。**下载回验通过**：从 Release 拉回 linux_amd64 包 `sha256sum -c` OK、解包 `--version` → 1.3.0；v1.3.0 已接管 Latest 标记。main 与 tag 均已 push
 - [ ] **智星云可选增强**（未做，需要时再加）：`billing/get_instance_cost_summary` 单实例费用分解、`instance/get_instance_detail` 深看、`/store/*` 显卡价格与库存、自动续费开关状态细化、余额低于阈值告警（可接 belater 定时跑 `galaxy --json`）
 - [ ] 图形知识图谱 graphify-out/ 未生成（可选，`graphify update . --no-llm`）
 
