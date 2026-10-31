@@ -40,6 +40,7 @@ const (
 	envGzAPIKey    = "LLM_API_CHECK_GPTZERO_API_KEY"
 	envLcAPIKey    = "LLM_API_CHECK_LONGCAT_API_KEY"
 	envLcCookie    = "LLM_API_CHECK_LONGCAT_COOKIE"
+	envCmAPIKey    = "LLM_API_CHECK_COMMANDAI_API_KEY"
 )
 
 const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan、智星云算力云、白B.AI、GPTZero 与 LongCat 使用情况（复刻 Android 版 API Checkers）
@@ -54,8 +55,9 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   llm-api-check bai [名称|ID] [--stats]    白B.AI 账号详情：积分额度 + 模型清单 + 免费通道状态（--stats 附加用量分析）
   llm-api-check gptzero [名称|ID]          GPTZero 账号详情：月度词数额度（AI 检测扫描的配额盯梢）
   llm-api-check longcat [名称|ID]           LongCat 账号详情：余额状态 + 模型清单（美团龙猫 API）
+  llm-api-check commandai [名称|ID]         Commandai 账号详情：积分额度 + 模型清单（Command Code API）
   llm-api-check accounts list              列出所有账号
-  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat --name 名称 [凭据 flags]
+  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
   llm-api-check accounts rename --id ID | --name 名称 --new-name 新名称
   llm-api-check config path                打印配置文件路径
@@ -93,6 +95,10 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
             查看余额状态（小额推理探测）+ 模型清单
             --console-cookie 可选：longcat.chat 控制台 Cookie（passport_token_key=…），
             提供后显示 Token 资源包与按量余额（配额信息，每日免费额度平台未公开）
+  Commandai: --api-key
+            环境变量 COMMAND_CODE_API_KEY（官方名，优先）/ LLM_API_CHECK_COMMANDAI_API_KEY（回退）
+            commandcode.ai/studio 创建（Bearer 认证）；
+            查看积分额度（月度/充值/免费三池 + 5小时/每周滚动窗口）+ 模型清单
 
 退出码: 0 成功；1 任一账号完全失败；2 用法错误
 
@@ -148,6 +154,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdGptzero(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "longcat":
 		return cmdLongCat(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
+	case "commandai":
+		return cmdCommandai(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "accounts":
 		return cmdAccounts(rest[1:], stdin, stdout, stderr, jsonOut)
 	case "config":
@@ -209,6 +217,7 @@ func cmdStatus(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut
 			"bai":              sliceOrEmpty(publicBaiResults(res.Bai)),
 			"gptzero":          sliceOrEmpty(publicGptzeroResults(res.Gptzero)),
 			"longcat":          sliceOrEmpty(publicLongCatResults(res.LongCat)),
+			"commandai":        sliceOrEmpty(publicCommandaiResults(res.Commandai)),
 			"last_updated":     unixMillisOrZero(res.LastUpdated),
 			"security_warning": sw,
 		})
@@ -241,6 +250,9 @@ func resultsFromAccounts(cfg *config.Config) app.Result {
 	}
 	for _, acc := range cfg.LongCatAccounts {
 		res.LongCat = append(res.LongCat, app.LongCatResult{Account: acc})
+	}
+	for _, acc := range cfg.CommandaiAccounts {
+		res.Commandai = append(res.Commandai, app.CommandaiResult{Account: acc})
 	}
 	return res
 }
@@ -279,6 +291,14 @@ func exitCodeForResults(res app.Result) int {
 	}
 	for _, r := range res.LongCat {
 		if r.Error != "" && r.Plan == nil && r.Quota == nil && r.Paygo == nil && (r.Usage == nil || r.Usage.BalanceOK == nil) {
+			return 1
+		}
+	}
+	for _, r := range res.Commandai {
+		if r.AuthFailed() {
+			return 1
+		}
+		if r.Error != "" && r.Plan == nil && r.Credits == nil && r.Subscription == nil && r.Summary == nil && r.Whoami == nil {
 			return 1
 		}
 	}
@@ -828,6 +848,78 @@ func cmdLongCat(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOu
 	return exitCodeForResults(res)
 }
 
+func cmdCommandai(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, noColor bool) int {
+	fs := flag.NewFlagSet("commandai", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	if err := fs.Parse(moveFlags(args)); err != nil {
+		fmt.Fprintln(stderr, "用法: llm-api-check commandai [名称|ID] [--no-refresh]")
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "用法: llm-api-check commandai [名称|ID] [--no-refresh]")
+		return 2
+	}
+	path := config.DefaultPath()
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 1
+	}
+	warnSecurity(stderr, noColor)
+	accounts := cfg.CommandaiAccounts
+	if fs.NArg() == 1 {
+		filtered, ok := filterCommandai(accounts, fs.Arg(0))
+		if !ok {
+			fmt.Fprintf(stderr, "账号不存在: %s\n", fs.Arg(0))
+			return 1
+		}
+		accounts = filtered
+	}
+	a := app.New(cfg)
+	results := make([]app.CommandaiResult, 0, len(accounts))
+	for _, acc := range accounts {
+		var r app.CommandaiResult
+		if *noRefresh {
+			r = app.CommandaiResult{Account: acc}
+		} else if r, err = a.RefreshCommandai(acc.ID); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		results = append(results, r)
+	}
+	res := app.Result{Commandai: results}
+	if jsonOut {
+		if len(results) == 1 {
+			writeJSON(stdout, map[string]any{"commandai": publicCommandaiResult(results[0])})
+		} else {
+			writeJSON(stdout, map[string]any{"commandai": publicCommandaiResults(results)})
+		}
+		return exitCodeForResults(res)
+	}
+	c := colorizer(noColor)
+	var b strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(render.RenderCommandaiDetail(r, time.Now(), c))
+	}
+	fmt.Fprint(stdout, b.String())
+	return exitCodeForResults(res)
+}
+
+// filterCommandai 按 id 或 name 精确匹配（任一命中即包含）
+func filterCommandai(list []models.CommandaiAccount, q string) ([]models.CommandaiAccount, bool) {
+	var out []models.CommandaiAccount
+	for _, a := range list {
+		if a.ID == q || a.Name == q {
+			out = append(out, a)
+		}
+	}
+	return out, len(out) > 0
+}
+
 // filterLongCat 按 id 或 name 精确匹配（任一命中即包含）
 func filterLongCat(list []models.LongCatAccount, q string) ([]models.LongCatAccount, bool) {
 	var out []models.LongCatAccount
@@ -881,13 +973,14 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 	warnSecurity(stderr, false)
 	if jsonOut {
 		writeJSON(stdout, map[string]any{
-			"deepseek_accounts": sliceOrEmpty(publicDeepSeekAccounts(cfg.DeepSeekAccounts)),
-			"accounts":          sliceOrEmpty(publicAccounts(cfg.Accounts)),
-			"qwen_accounts":     sliceOrEmpty(publicQwenAccounts(cfg.QwenAccounts)),
-			"galaxy_accounts":   sliceOrEmpty(publicGalaxyAccounts(cfg.GalaxyAccounts)),
-			"bai_accounts":      sliceOrEmpty(publicBaiAccounts(cfg.BaiAccounts)),
-			"gptzero_accounts":  sliceOrEmpty(publicGptzeroAccounts(cfg.GptzeroAccounts)),
-			"longcat_accounts":  sliceOrEmpty(publicLongCatAccounts(cfg.LongCatAccounts)),
+			"deepseek_accounts":  sliceOrEmpty(publicDeepSeekAccounts(cfg.DeepSeekAccounts)),
+			"accounts":           sliceOrEmpty(publicAccounts(cfg.Accounts)),
+			"qwen_accounts":      sliceOrEmpty(publicQwenAccounts(cfg.QwenAccounts)),
+			"galaxy_accounts":    sliceOrEmpty(publicGalaxyAccounts(cfg.GalaxyAccounts)),
+			"bai_accounts":       sliceOrEmpty(publicBaiAccounts(cfg.BaiAccounts)),
+			"gptzero_accounts":   sliceOrEmpty(publicGptzeroAccounts(cfg.GptzeroAccounts)),
+			"longcat_accounts":   sliceOrEmpty(publicLongCatAccounts(cfg.LongCatAccounts)),
+			"commandai_accounts": sliceOrEmpty(publicCommandaiAccounts(cfg.CommandaiAccounts)),
 		})
 		return 0
 	}
@@ -951,6 +1044,15 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		}
 		fmt.Fprintf(stdout, "  %s  %s  [%s · %s]\n", a.ID, a.Name, ready, cookie)
 	}
+
+	fmt.Fprintf(stdout, "Commandai 账号 (%d):\n", len(cfg.CommandaiAccounts))
+	for _, a := range cfg.CommandaiAccounts {
+		ready := "未配置"
+		if strings.TrimSpace(a.ApiKey) != "" {
+			ready = "API Key 已配置"
+		}
+		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
+	}
 	return 0
 }
 
@@ -969,10 +1071,10 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 	galaxyAK := fs.String("access-key", "", "智星云 AccessKey")
 	galaxySK := fs.String("secret-key", "", "智星云 SecretKey")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat --name 名称 [凭据 flags]")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai --name 名称 [凭据 flags]")
 		return 2
 	}
-	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" && *typ != "bai" && *typ != "gptzero" && *typ != "longcat" {
+	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" && *typ != "bai" && *typ != "gptzero" && *typ != "longcat" && *typ != "commandai" {
 		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen、galaxy、bai、gptzero 或 longcat")
 		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat --name 名称 [凭据 flags]")
 		return 2
@@ -1182,6 +1284,32 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		}
 		return 0
 	}
+	// commandai（Command Code）：--api-key 必填（额度面 Bearer 认证；模型面免认证）
+	if *typ == "commandai" {
+		// 官方环境变量名优先（全局已导出），历史名回退。
+		key, err := resolveSecretFrom(*apiKey, "api-key",
+			[]string{"COMMAND_CODE_API_KEY", envCmAPIKey}, "Commandai API Key: ", true, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
+		acc := models.CommandaiAccount{
+			ID:     accID,
+			Name:   strings.TrimSpace(*name),
+			ApiKey: key,
+		}
+		cfg.SaveCommandaiAccount(acc)
+		if err := cfg.Save(config.DefaultPath()); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		if jsonOut {
+			writeJSON(stdout, map[string]any{"commandai_account": publicCommandaiAccount(acc)})
+		} else {
+			fmt.Fprintf(stdout, "已添加 Commandai 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+		}
+		return 0
+	}
 	// qwen
 	key, err := resolveSecret(*apiKey, "api-key", envQwenAPIKey, "Qwen API Key（sk-sp- 开头）: ", true, stdin, stdout)
 	if err != nil {
@@ -1313,6 +1441,12 @@ func cmdAccountsRemove(args []string, stdout, stderr io.Writer, jsonOut bool) in
 			removed++
 		}
 	}
+	for _, a := range cfg.CommandaiAccounts {
+		if match(a.ID, a.Name) {
+			cfg.DeleteCommandaiAccount(a.ID)
+			removed++
+		}
+	}
 	if removed == 0 {
 		fmt.Fprintln(stderr, "错误: 未找到匹配的账号")
 		return 1
@@ -1409,6 +1543,13 @@ func cmdAccountsRename(args []string, stdout, stderr io.Writer, jsonOut bool) in
 			renamed++
 		}
 	}
+	for i := range cfg.CommandaiAccounts {
+		a := &cfg.CommandaiAccounts[i]
+		if match(a.ID, a.Name) {
+			a.Name = strings.TrimSpace(*newName)
+			renamed++
+		}
+	}
 	if renamed == 0 {
 		fmt.Fprintln(stderr, "错误: 未找到匹配的账号")
 		return 1
@@ -1445,16 +1586,24 @@ func cmdConfig(args []string, stdout, stderr io.Writer, jsonOut bool) int {
 // resolveSecret 凭据解析顺序：flag → 环境变量 → TTY 交互提示。
 // 非 TTY 且 required 凭据缺失 → 报错提示用法（interactive-cli-design 降级）。
 func resolveSecret(flagVal, flagName, envName, prompt string, required bool, stdin io.Reader, stdout io.Writer) (string, error) {
+	return resolveSecretFrom(flagVal, flagName, []string{envName}, prompt, required, stdin, stdout)
+}
+
+// resolveSecretFrom resolveSecret 的多环境变量变体：按 envNames 顺序取第一个非空值
+// （官方名优先，历史名回退）。错误文案会把全部候选名一并列出。
+func resolveSecretFrom(flagVal, flagName string, envNames []string, prompt string, required bool, stdin io.Reader, stdout io.Writer) (string, error) {
 	if strings.TrimSpace(flagVal) != "" {
 		return strings.TrimSpace(flagVal), nil
 	}
-	if v := os.Getenv(envName); v != "" {
-		return v, nil
+	for _, name := range envNames {
+		if v := os.Getenv(name); v != "" {
+			return v, nil
+		}
 	}
 	if !isTTY(stdin) {
 		if required {
 			return "", fmt.Errorf("缺少凭据 --%s（或环境变量 %s）：非交互终端无法提示，请显式传入",
-				flagName, envName)
+				flagName, strings.Join(envNames, " / "))
 		}
 		return "", nil
 	}
@@ -1859,6 +2008,57 @@ func publicLongCatAccount(a models.LongCatAccount) map[string]any {
 		"name":          a.Name,
 		"apiKey":        maskSecret(a.ApiKey),
 		"consoleCookie": maskSecret(a.ConsoleCookie),
+	}
+}
+
+// ── Commandai public（--json 输出，mask 凭据） ─────────────────
+
+func publicCommandaiResults(rs []app.CommandaiResult) []map[string]any {
+	out := make([]map[string]any, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, publicCommandaiResult(r))
+	}
+	return out
+}
+
+func publicCommandaiResult(r app.CommandaiResult) map[string]any {
+	m := map[string]any{
+		"account": publicCommandaiAccount(r.Account),
+	}
+	if r.Plan != nil {
+		m["plan"] = r.Plan
+	}
+	if r.Whoami != nil {
+		m["whoami"] = r.Whoami
+	}
+	if r.Credits != nil {
+		m["credits"] = r.Credits
+	}
+	if r.Subscription != nil {
+		m["subscription"] = r.Subscription
+	}
+	if r.Summary != nil {
+		m["summary"] = r.Summary
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	return m
+}
+
+func publicCommandaiAccounts(as []models.CommandaiAccount) []map[string]any {
+	out := make([]map[string]any, 0, len(as))
+	for _, a := range as {
+		out = append(out, publicCommandaiAccount(a))
+	}
+	return out
+}
+
+func publicCommandaiAccount(a models.CommandaiAccount) map[string]any {
+	return map[string]any{
+		"id":     a.ID,
+		"name":   a.Name,
+		"apiKey": maskSecret(a.ApiKey),
 	}
 }
 

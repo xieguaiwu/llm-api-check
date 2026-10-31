@@ -25,14 +25,15 @@ var SecurityWarning string
 
 // Config 配置文件结构（账号列表 + 最近更新时间）。
 type Config struct {
-	DeepSeekAccounts []models.DeepSeekAccount `json:"deepseek_accounts"`
-	Accounts         []models.Account         `json:"accounts"`
-	QwenAccounts     []models.QwenAccount     `json:"qwen_accounts"`
-	GalaxyAccounts   []models.GalaxyAccount   `json:"galaxy_accounts"`
-	BaiAccounts      []models.BaiAccount      `json:"bai_accounts"`
-	GptzeroAccounts  []models.GptzeroAccount  `json:"gptzero_accounts"`
-	LongCatAccounts  []models.LongCatAccount  `json:"longcat_accounts"`
-	LastUpdate       map[string]int64         `json:"last_update"`
+	DeepSeekAccounts  []models.DeepSeekAccount  `json:"deepseek_accounts"`
+	Accounts          []models.Account          `json:"accounts"`
+	QwenAccounts      []models.QwenAccount      `json:"qwen_accounts"`
+	GalaxyAccounts    []models.GalaxyAccount    `json:"galaxy_accounts"`
+	BaiAccounts       []models.BaiAccount       `json:"bai_accounts"`
+	GptzeroAccounts   []models.GptzeroAccount   `json:"gptzero_accounts"`
+	LongCatAccounts   []models.LongCatAccount   `json:"longcat_accounts"`
+	CommandaiAccounts []models.CommandaiAccount `json:"commandai_accounts"`
+	LastUpdate        map[string]int64          `json:"last_update"`
 }
 
 // DefaultPath 配置路径：$XDG_CONFIG_HOME/llm-api-check/config.json，
@@ -271,6 +272,28 @@ func (c *Config) DeleteLongCatAccount(id string) {
 		}
 	}
 	c.LongCatAccounts = kept
+}
+
+// SaveCommandaiAccount 按 id upsert（同 SaveQwenAccount 逻辑）
+func (c *Config) SaveCommandaiAccount(a models.CommandaiAccount) {
+	for i, x := range c.CommandaiAccounts {
+		if x.ID == a.ID {
+			c.CommandaiAccounts[i] = a
+			return
+		}
+	}
+	c.CommandaiAccounts = append(c.CommandaiAccounts, a)
+}
+
+// DeleteCommandaiAccount 按 id 删除（同 DeleteQwenAccount 逻辑）
+func (c *Config) DeleteCommandaiAccount(id string) {
+	kept := c.CommandaiAccounts[:0]
+	for _, x := range c.CommandaiAccounts {
+		if x.ID != id {
+			kept = append(kept, x)
+		}
+	}
+	c.CommandaiAccounts = kept
 }
 
 // SetLastUpdate 记录最近更新时间（对应 SecureSettings.setLastUpdate）

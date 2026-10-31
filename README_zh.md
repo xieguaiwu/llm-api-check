@@ -2,7 +2,7 @@
 
 > [**English**](README.md) | [**中文版**](#)
 
-查看 LLM API 使用情况的终端 CLI——DeepSeek（余额 + 消费明细）、OpenCode（Go plan 三窗口 + Zen billing）、Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）、智星云 AI Galaxy 算力云（账户余额 + 云主机实例状态）与白B.AI（积分额度 + 免费 flash 通道盯梢），支持多账号。复刻自 Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker)：数据层逻辑一致，输出改为终端文本/JSON 而非 App 界面。
+查看 LLM API 使用情况的终端 CLI——DeepSeek（余额 + 消费明细）、OpenCode（Go plan 三窗口 + Zen billing）、Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）、智星云 AI Galaxy 算力云（账户余额 + 云主机实例状态）、白B.AI（积分额度 + 免费 flash 通道盯梢）、LongCat 美团龙猫（余额探活 + 模型清单）与 Commandai Command Code（积分三池 + 模型清单），支持多账号。复刻自 Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker)：数据层逻辑一致，输出改为终端文本/JSON 而非 App 界面。
 
 ## 功能
 
@@ -14,7 +14,8 @@
 - **白B.AI** — 积分额度走控制台 API（`usage.points` + `usage.summary`），再加 `/v1/models` 全量模型清单与已知免费 flash 模型盯梢——缺失即红色告警（自动化 agent 依赖它们）。额度按平台原始积分显示，附名义换算值 `≈ $`（1 000 000 积分 = $1，取自平台自己的 `creditsPerDollar`）；余额归零整行红色——积分耗尽后推理请求会直接失败
 - **LongCat** — 余额状态（最小推理探活：200=充足，402=不足）+ 可用模型列表（含能力字段：显示名/上下文/输出上限，OpenAI 兼容 `/v1/models`）。配置控制台 Cookie 后，另显示 Token 资源包与按量余额（控制台接口 `longcat.chat/api/pay/quota/metering/*`）；无 Cookie 时余额靠探活请求间接推断。
 - **GPTZero** — AI 检测 API 月度词数额度（`GET /v2/users/me`）：已用/内含词数用量条、超额上限、周期起点与预计重置、历史累计、单文档字符上限
-- **多账号** — DeepSeek、OpenCode、Qwen、智星云、白B.AI、GPTZero、LongCat 账号数量不限，各自独立展示
+- **Commandai** — 积分三池（月度/充值/免费，单位美元）+ 5 小时/每周滚动窗口（窗口确实用尽时「已限流」徽章与重置倒计时并存）+ 本期已花与请求数 + 模型清单（`/provider/v1/models`）。不做推理探活——额度有真值接口，探活只会白烧钱
+- **多账号** — DeepSeek、OpenCode、Qwen、智星云、白B.AI、GPTZero、LongCat、Commandai 账号数量不限，各自独立展示
 - 机器可读 `--json` 输出、`NO_COLOR` 支持
 - 零第三方依赖（Go stdlib only）
 
@@ -49,6 +50,8 @@ llm-api-check accounts add --type longcat --name "龙猫" --api-key <your-key> \
 llm-api-check longcat                      # LongCat 余额 + 模型清单（有 Cookie 时含控制台配额）
 llm-api-check accounts add --type gptzero --name "论文扫" --api-key <your-key>
 llm-api-check gptzero                      # GPTZero 月度词数额度（AI 检测）
+llm-api-check accounts add --type commandai --name "命令" --api-key <your-key>
+llm-api-check commandai                    # Commandai 积分三池 + 模型清单
 ```
 
 可从 [Releases](https://github.com/xieguiawu/llm-api-check/releases) 下载预编译二进制（Linux / macOS，amd64 / arm64），与 `sha256sums.txt` 对校后放入 `PATH`：
@@ -70,9 +73,10 @@ llm-api-check --version
 | `llm-api-check galaxy [名称\|ID] [--no-refresh] [--limit N]` | 智星云余额 + 实例状态（`--limit` 列出实例数，默认 10，上限 100） |
 | `llm-api-check bai [名称\|ID] [--no-refresh]` | 白B.AI 积分额度、模型清单、免费通道盯梢 |
 | `llm-api-check longcat [名称\|ID] [--no-refresh]` | LongCat 余额 + 模型清单 |
+| `llm-api-check commandai [名称\|ID] [--no-refresh]` | Commandai 积分三池 + 模型清单 |
 | `llm-api-check gptzero [名称\|ID] [--no-refresh]` | GPTZero 账号与月度词数额度（AI 检测） |
 | `llm-api-check accounts list` | 列出所有账号 |
-`llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat --name 名称 [凭据 flags]` | 添加账号 |
+`llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat\|commandai --name 名称 [凭据 flags]` | 添加账号 |
 | `llm-api-check accounts remove --id ID \| --name 名称` | 删除账号 |
 | `llm-api-check accounts rename --id ID \| --name 名称 --new-name 新名称` | 重命名账号 |
 | `llm-api-check config path` | 打印配置文件路径 |
@@ -80,7 +84,7 @@ llm-api-check --version
 
 全局 flags：`--json`（所有输出为 JSON）、`--no-color`（等同 `NO_COLOR` 环境变量）。
 
-凭据 flags 缺失时按此顺序回退：flag → 环境变量 → TTY 交互提示（非 TTY 报错）。环境变量：`LLM_API_CHECK_GO_API_KEY`、`LLM_API_CHECK_WORKSPACE_ID`、`LLM_API_CHECK_AUTH_COOKIE`、`LLM_API_CHECK_DEEPSEEK_API_KEY`、`LLM_API_CHECK_PLATFORM_TOKEN`、`LLM_API_CHECK_QWEN_API_KEY`、`LLM_API_CHECK_QWEN_COOKIE`、`LLM_API_CHECK_QWEN_REGION`、`LLM_API_CHECK_GALAXY_ACCESS_KEY`、`LLM_API_CHECK_GALAXY_SECRET_KEY`、`LLM_API_CHECK_BAI_API_KEY`、`LLM_API_CHECK_GPTZERO_API_KEY`、`LLM_API_CHECK_BL_BIN`（Bailian CLI 路径）、`LLM_API_CHECK_QWEN_CLI`（`off` 禁用 CLI 配额通道）。
+凭据 flags 缺失时按此顺序回退：flag → 环境变量 → TTY 交互提示（非 TTY 报错）。环境变量：`LLM_API_CHECK_GO_API_KEY`、`LLM_API_CHECK_WORKSPACE_ID`、`LLM_API_CHECK_AUTH_COOKIE`、`LLM_API_CHECK_DEEPSEEK_API_KEY`、`LLM_API_CHECK_PLATFORM_TOKEN`、`LLM_API_CHECK_QWEN_API_KEY`、`LLM_API_CHECK_QWEN_COOKIE`、`LLM_API_CHECK_QWEN_REGION`、`LLM_API_CHECK_GALAXY_ACCESS_KEY`、`LLM_API_CHECK_GALAXY_SECRET_KEY`、`LLM_API_CHECK_BAI_API_KEY`、`LLM_API_CHECK_GPTZERO_API_KEY`、`LLM_API_CHECK_LONGCAT_API_KEY`、`LLM_API_CHECK_LONGCAT_COOKIE`、`LLM_API_CHECK_COMMANDAI_API_KEY`、`LLM_API_CHECK_BL_BIN`（Bailian CLI 路径）、`LLM_API_CHECK_QWEN_CLI`（`off` 禁用 CLI 配额通道）。
 
 ## 凭据获取方式
 
@@ -98,6 +102,7 @@ llm-api-check --version
 | LongCat API key | longcat.chat 登录 → API Keys → 创建 key。OpenAI 兼容格式，Bearer 认证。App Key 通道无公开配额 API — 余额靠最小推理请求间接探测 |
 | LongCat 控制台 Cookie（可选） | 登录 `longcat.chat` → DevTools → Application → Cookies → `passport_token_key`. 启用 Token 资源包 + 按量余额（控制台计量接口）。敏感度等同登录态 |
 | GPTZero API key | app.gptzero.me 登录 → API 订阅页 → 创建 key（32 位 hex，`x-api-key` 头认证）。读自己的月度词数额度 |
+| Commandai API key | commandcode.ai 登录 → Studio → 创建 key。`Bearer` 认证。模型清单接口实测免认证，但额度接口（`/alpha/*`）必须有 key |
 
 Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证密钥并列出套餐模型，并明说缺什么，不会给出臆造的数字。
 
@@ -140,6 +145,11 @@ Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证�
 | LongCat 余额 | `POST https://api.longcat.chat/openai/v1/chat/completions`（max_tokens=1） | 200=余额充足，402=余额不足，401=key 无效。仅成功请求计费 |
 | LongCat Token 资源包 | `POST https://longcat.chat/api/pay/quota/metering/token-packs/summary` | Cookie `passport_token_key`；信封 `{code,msg,data}`；`data.currentLot`=资源包（null=无） |
 | LongCat 按量余额 | `POST https://longcat.chat/api/pay/quota/metering/api-usage/summary` | Cookie `passport_token_key`；信封 `{code,msg,data}`；`data.paygoBalance.primary`=余额 |
+| Commandai 模型 | `GET https://api.commandcode.ai/provider/v1/models` | Bearer（实测免认证）；OpenAI 系信封 `{object:"list",data:[…]}` |
+| Commandai 身份 | `GET https://api.commandcode.ai/alpha/whoami?limits=1` | Bearer；`user.userName` 用于展示。个人账号 `org` 为 `null`——此时额度查询省略 orgId（传空 orgId 会 400） |
+| Commandai 积分 | `GET https://api.commandcode.ai/alpha/billing/credits?orgId=…` | Bearer；嵌套 `credits.{monthlyCredits,purchasedCredits,freeCredits}`（美元浮点），**另有顶层** `windowLimits`、`sandboxAccess`、`sandboxMinutes`。planId 不在这里——在订阅里 |
+| Commandai 套餐 | `GET https://api.commandcode.ai/alpha/billing/subscriptions?orgId=…` | Bearer；`data.{planId,status,currentPeriodStart,currentPeriodEnd}`（`currentPeriodStart` 为 ISO-8601，同时原文回传作 summary 的 `since`） |
+| Commandai 本期消耗 | `GET https://api.commandcode.ai/alpha/usage/summary?orgId=…&since=…` | Bearer；`totalCost`（美元）、`totalCount`、`periodBasis`；周期起点未知时省略 `since` |
 
 ## 安全说明
 
@@ -151,6 +161,7 @@ Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证�
 - LongCat 控制台 Cookie（`passport_token_key`）即 longcat.chat 登录态——同源写接口亦受其保护。敏感度等同密码；不再需要时删账号（`accounts remove`）。平台未公开每日免费额度，工具不显示。
 - 智星云实例列表接口的响应体里带着实例 root/RDP/VNC 明文口令。解析层用显式白名单字段解码，这些口令不会进入数据类、`--json` 输出或终端渲染；工具也刻意不调用会回吐 SecretKey 的 `account/get_apikey_info`。
 - Qwen 控制台 Cookie 包含你的阿里云登录会话。请把配置文件当敏感文件对待，不再需要时用 `accounts remove` 删除该账号。
+- Commandai 额度走未文档化的 CLI 私有端点（`/alpha/*`）：它现在接受 Bearer key，但平台改版可能随时改过端点名。工具不发推理请求，健康检查零成本。错误信封优先于 HTTP 状态码；`upgrade_required`（Go 套餐无 API 访问）归一到专属文案。
 
 ## 许可证
 

@@ -79,6 +79,25 @@ type LongCatResult struct {
 	Error   string                `json:"error,omitempty"`
 }
 
+// CommandaiResult 单个 Command Code 账号的刷新结果。
+// Plan = 模型清单（/provider/v1/models，免认证）；Whoami/Credits/Subscription/Summary
+// = 额度面四元组（/alpha/*，Bearer）。额度段指针 nil = 该段不可用。
+type CommandaiResult struct {
+	Account      models.CommandaiAccount       `json:"account"`
+	Plan         *models.CommandaiPlan         `json:"plan,omitempty"`
+	Whoami       *models.CommandaiWhoami       `json:"whoami,omitempty"`
+	Credits      *models.CommandaiCredits      `json:"credits,omitempty"`
+	Subscription *models.CommandaiSubscription `json:"subscription,omitempty"`
+	Summary      *models.CommandaiUsageSummary `json:"summary,omitempty"`
+	Error        string                        `json:"error,omitempty"`
+}
+
+// AuthFailed 是否为凭据认证失败（exit code 判据：认证失败即使清单成功也判失败）。
+// refreshCommandai 在认证失败时把 Error 单行化为 ErrCommandaiAuth 原文。
+func (r CommandaiResult) AuthFailed() bool {
+	return strings.Contains(r.Error, parsers.ErrCommandaiAuth.Error())
+}
+
 // GalaxyResult 单个智星云账号的刷新结果（对应 GalaxyUi）。
 // Balance 必需；Status/Instances/Cost 任一失败只影响该段（错误合并进 Error）。
 type GalaxyResult struct {
@@ -110,18 +129,20 @@ type Result struct {
 	Bai         []BaiResult
 	Gptzero     []GptzeroResult
 	LongCat     []LongCatResult
+	Commandai   []CommandaiResult
 	LastUpdated time.Time
 }
 
 // Repos 仓库注入点（测试可替换为 httptest 服务）
 type Repos struct {
-	DeepSeek *repo.DeepSeekRepo
-	OpenCode *repo.OpenCodeRepo
-	Qwen     *repo.QwenRepo
-	Galaxy   *repo.GalaxyRepo
-	Bai      *repo.BaiRepo
-	Gptzero  *repo.GptzeroRepo
-	LongCat  *repo.LongCatRepo
+	DeepSeek  *repo.DeepSeekRepo
+	OpenCode  *repo.OpenCodeRepo
+	Qwen      *repo.QwenRepo
+	Galaxy    *repo.GalaxyRepo
+	Bai       *repo.BaiRepo
+	Gptzero   *repo.GptzeroRepo
+	LongCat   *repo.LongCatRepo
+	Commandai *repo.CommandaiRepo
 }
 
 // GalaxyInstanceLimit 单次刷新展示的活跃实例上限（防止大账号拉穿）
@@ -140,13 +161,14 @@ type App struct {
 func New(cfg *config.Config) *App {
 	return &App{
 		Repos: &Repos{
-			DeepSeek: repo.NewDeepSeekRepo(),
-			OpenCode: repo.NewOpenCodeRepo(),
-			Qwen:     repo.NewQwenRepo(),
-			Galaxy:   repo.NewGalaxyRepo(),
-			Bai:      repo.NewBaiRepo(),
-			Gptzero:  repo.NewGptzeroRepo(),
-			LongCat:  repo.NewLongCatRepo(),
+			DeepSeek:  repo.NewDeepSeekRepo(),
+			OpenCode:  repo.NewOpenCodeRepo(),
+			Qwen:      repo.NewQwenRepo(),
+			Galaxy:    repo.NewGalaxyRepo(),
+			Bai:       repo.NewBaiRepo(),
+			Gptzero:   repo.NewGptzeroRepo(),
+			LongCat:   repo.NewLongCatRepo(),
+			Commandai: repo.NewCommandaiRepo(),
 		},
 		Cfg: cfg,
 	}
@@ -181,6 +203,7 @@ func (a *App) RefreshAll() (Result, error) {
 	baiAccounts := append([]models.BaiAccount(nil), a.Cfg.BaiAccounts...)
 	gzAccounts := append([]models.GptzeroAccount(nil), a.Cfg.GptzeroAccounts...)
 	lcAccounts := append([]models.LongCatAccount(nil), a.Cfg.LongCatAccounts...)
+	cmAccounts := append([]models.CommandaiAccount(nil), a.Cfg.CommandaiAccounts...)
 	dsRes := make([]DeepSeekResult, len(dsAccounts))
 	accRes := make([]AccountResult, len(accounts))
 	qwenRes := make([]QwenResult, len(qwenAccounts))
@@ -188,6 +211,7 @@ func (a *App) RefreshAll() (Result, error) {
 	baiRes := make([]BaiResult, len(baiAccounts))
 	gzRes := make([]GptzeroResult, len(gzAccounts))
 	lcRes := make([]LongCatResult, len(lcAccounts))
+	cmRes := make([]CommandaiResult, len(cmAccounts))
 	var wg sync.WaitGroup
 	for i, acc := range dsAccounts {
 		wg.Add(1)
@@ -238,10 +262,17 @@ func (a *App) RefreshAll() (Result, error) {
 			lcRes[i] = a.refreshLongCat(acc)
 		}(i, acc)
 	}
+	for i, acc := range cmAccounts {
+		wg.Add(1)
+		go func(i int, acc models.CommandaiAccount) {
+			defer wg.Done()
+			cmRes[i] = a.refreshCommandai(acc)
+		}(i, acc)
+	}
 	wg.Wait()
 	now := time.Now()
 	a.Cfg.SetLastUpdate("all", now.UnixMilli())
-	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, Gptzero: gzRes, LongCat: lcRes, LastUpdated: now}, nil
+	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, Gptzero: gzRes, LongCat: lcRes, Commandai: cmRes, LastUpdated: now}, nil
 }
 
 // RefreshDeepSeek 按 id 刷新单个 DeepSeek 账号（对应 refreshDeepSeekNow）
@@ -665,6 +696,80 @@ func (a *App) refreshLongCat(acc models.LongCatAccount) LongCatResult {
 	}
 	// 错误合并：认证错误最优先，其余按 清单→控制台 顺序（joinErrors 整行去重）
 	res.Error = joinErrors(errorr, planErr, quotaErr, paygoErr)
+	return res
+}
+
+// RefreshCommandai 按 id 刷新单个 Command Code 账号（模型清单 + 额度四元组）。
+func (a *App) RefreshCommandai(id string) (CommandaiResult, error) {
+	var acc models.CommandaiAccount
+	found := false
+	for _, x := range a.Cfg.CommandaiAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return CommandaiResult{}, errors.New("账号不存在或已被删除")
+	}
+	return a.refreshCommandai(acc), nil
+}
+
+// refreshCommandai 并发拉两路：模型清单（/provider/v1/models）+ 额度四元组（/alpha/*）。
+// 模型面免认证，额度面失败不抖掉清单。无 key 时不发额度请求（提示「额度信息不可用」）。
+// 认证失败时 Error 单行化（不叠 models 错误），其余按 额度→模型 顺序合并。
+func (a *App) refreshCommandai(acc models.CommandaiAccount) CommandaiResult {
+	res := CommandaiResult{Account: acc}
+	if a.Repos == nil || a.Repos.Commandai == nil {
+		res.Error = "Commandai 仓库未初始化"
+		return res
+	}
+	var (
+		wg       sync.WaitGroup
+		plan     models.CommandaiPlan
+		planErr  error
+		who      *models.CommandaiWhoami
+		cred     *models.CommandaiCredits
+		sub      *models.CommandaiSubscription
+		sum      *models.CommandaiUsageSummary
+		quotaErr error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		plan, planErr = a.Repos.Commandai.Models(acc.ApiKey)
+	}()
+	go func() {
+		defer wg.Done()
+		if strings.TrimSpace(acc.ApiKey) == "" {
+			quotaErr = errors.New("未配置 API Key（额度信息不可用）")
+			return
+		}
+		who, cred, sub, sum, quotaErr = a.Repos.Commandai.Quota(acc.ApiKey)
+	}()
+	wg.Wait()
+	if planErr == nil {
+		res.Plan = &plan
+	}
+	if who != nil {
+		res.Whoami = who
+	}
+	if cred != nil {
+		res.Credits = cred
+	}
+	if sub != nil {
+		res.Subscription = sub
+	}
+	if sum != nil {
+		res.Summary = sum
+	}
+	// 认证失败主行只读一句（不叠 models 错误）；其余合并两路错误
+	if errors.Is(quotaErr, parsers.ErrCommandaiAuth) {
+		res.Error = quotaErr.Error()
+	} else {
+		res.Error = joinErrors(quotaErr, planErr)
+	}
 	return res
 }
 

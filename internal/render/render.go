@@ -162,7 +162,7 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	} else {
 		fmt.Fprintf(&b, "LLM API Check — 更新于 %s\n", lastUpdated.Format("15:04"))
 	}
-	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 && len(res.Gptzero) == 0 && len(res.LongCat) == 0 {
+	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 && len(res.Gptzero) == 0 && len(res.LongCat) == 0 && len(res.Commandai) == 0 {
 		b.WriteString("\n未配置任何账号，运行 llm-api-check accounts add --help 添加\n")
 		return b.String()
 	}
@@ -193,6 +193,10 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	for _, r := range res.LongCat {
 		fmt.Fprintf(&b, "\nLongCat (%s)\n", r.Account.Name)
 		writeLongCatOverview(&b, r, c)
+	}
+	for _, r := range res.Commandai {
+		fmt.Fprintf(&b, "\nCommandai (%s)\n", r.Account.Name)
+		writeCommandaiOverview(&b, r, now, c)
 	}
 	return b.String()
 }
@@ -1171,6 +1175,11 @@ type longCatLabel string
 
 func (l longCatLabel) pad() string { return padTo(string(l), 8) }
 
+// commandaiLabel Commandai 标签列（显示宽度补位，禁 %-Ns 对中文）。
+type commandaiLabel string
+
+func (l commandaiLabel) pad() string { return padTo(string(l), 8) }
+
 // ── LongCat（美团龙猫） ────────────────────────────────────
 
 // writeLongCatOverview 总览页单账号段：余额状态 + Token 资源包 + 模型数 + 错误。
@@ -1389,6 +1398,281 @@ func RenderLongCatDetail(r app.LongCatResult, now time.Time, c Colorizer) string
 			ms = append(ms, longCatModelText(m))
 		}
 		fmt.Fprintf(&b, "  %s %d 个：%s\n", longCatLabel("模型").pad(), len(ms), strings.Join(ms, ", "))
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red(r.Error) + "\n")
+	}
+	return b.String()
+}
+
+// ── Commandai（Command Code，commandcode.ai） ────────────────
+
+// commandaiPlanName 套餐显示名（未知 → 空串）。
+func commandaiPlanName(sub *models.CommandaiSubscription) string {
+	if sub == nil || strings.TrimSpace(sub.PlanID) == "" {
+		return ""
+	}
+	return models.CommandaiPlanDisplayName(sub.PlanID)
+}
+
+// commandaiWindowExceeded 窗口是否已用尽（Exceeded 字段，或 used 已达 cap 的兵底判据）。
+func commandaiWindowExceeded(w *models.CommandaiWindowLimit) bool {
+	if w == nil {
+		return false
+	}
+	return w.Exceeded || (w.Cap > 0 && w.Used >= w.Cap)
+}
+
+// commandaiAnyWindowExceeded 任一滚动窗口已用尽。
+func commandaiAnyWindowExceeded(wl *models.CommandaiWindowLimits) bool {
+	if wl == nil {
+		return false
+	}
+	return commandaiWindowExceeded(wl.FiveHour) || commandaiWindowExceeded(wl.Weekly)
+}
+
+// commandaiFirstExceeded 返回首个已用尽的窗口（供总览倒计时取最早重置的那个）。
+func commandaiFirstExceeded(wl *models.CommandaiWindowLimits) *models.CommandaiWindowLimit {
+	if wl == nil {
+		return nil
+	}
+	if commandaiWindowExceeded(wl.FiveHour) {
+		return wl.FiveHour
+	}
+	if commandaiWindowExceeded(wl.Weekly) {
+		return wl.Weekly
+	}
+	return nil
+}
+
+// writeCommandaiWindow 滚动窗口行：used/cap + 条 + 百分比；窗口已用尽（Exceeded）时
+// 「已限流」徽章与重置倒计时并存（§六铁律）。
+// 注意：判据是窗口自身的 Exceeded（实测字段 exceeded），不是 CommandaiWindowLimits.Limited——
+// 后者语义是「本套餐配置了额度限制、值得展示」（npm projectUsageView 仅用它决定是否
+// 渲染「Usage limits」段），实测 Go 套餐 limited=true 而 exceeded=false，拿它当限流判据会误报。
+func writeCommandaiWindow(b *strings.Builder, label string, w *models.CommandaiWindowLimit, now time.Time, c Colorizer) {
+	if w == nil {
+		return
+	}
+	pct := 0
+	if w.Cap > 0 {
+		pct = int(math.Round(w.Used / w.Cap * 100))
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	// used 已达 cap 也视为已限流（exceeded 字段缺席时的兵底判据）。
+	exceeded := commandaiWindowExceeded(w)
+	col := ColorForPercent(pct, exceeded)
+	line := fmt.Sprintf("  %s $%s/$%s %s %s",
+		commandaiLabel(label).pad(), Fmt(w.Used), Fmt(w.Cap), UsageBar(pct, 10),
+		c.apply(col, fmt.Sprintf("%d%%", pct)))
+	suffix := ""
+	if w.ResetAt != nil {
+		suffix = FormatCountdown(w.ResetAt.Format(time.RFC3339), now)
+	} else if w.ResetAtRaw != "" {
+		suffix = "重置时间未知"
+	}
+	if exceeded {
+		// 已限流徽章与倒计时并存（二者都不可缺）
+		if suffix != "" {
+			line += " · " + c.Red("已限流") + " · " + suffix
+		} else {
+			line += " · " + c.Red("已限流")
+		}
+	} else if suffix != "" {
+		line += " · " + suffix
+	}
+	b.WriteString(line + "\n")
+}
+
+// commandaiContextText 上下文长度十进制缩写（1000000 → 1M；400000 → 400K）。
+func commandaiContextText(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		m := float64(n) / 1_000_000
+		if m == math.Trunc(m) {
+			return fmt.Sprintf("%dM", int64(m))
+		}
+		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1fM", m), "0"), ".")
+	case n >= 1_000:
+		k := float64(n) / 1_000
+		if k == math.Trunc(k) {
+			return fmt.Sprintf("%dK", int64(k))
+		}
+		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1fK", k), "0"), ".")
+	default:
+		return formatInt(n)
+	}
+}
+
+// commandaiModelText 单个模型展示：ID（上下文 · 端点）。
+func commandaiModelText(m models.CommandaiModel) string {
+	name := strings.TrimSpace(m.ID)
+	var parts []string
+	if m.ContextLength > 0 {
+		parts = append(parts, commandaiContextText(m.ContextLength))
+	}
+	if len(m.SupportedEndpoints) > 0 {
+		parts = append(parts, strings.Join(m.SupportedEndpoints, "+"))
+	}
+	if len(parts) == 0 {
+		return name
+	}
+	return name + "（" + strings.Join(parts, " · ") + "）"
+}
+
+// writeCommandaiModels 模型段：总数 + 端点分类计数 + 前 8 个（超出「…等 N 个」）。
+func writeCommandaiModels(b *strings.Builder, p *models.CommandaiPlan) {
+	ms := p.Models
+	var msg, chat, both int
+	for _, m := range ms {
+		hasMsg, hasChat, hasResp := false, false, false
+		for _, ep := range m.SupportedEndpoints {
+			switch ep {
+			case "/messages":
+				hasMsg = true
+			case "/chat/completions":
+				hasChat = true
+			case "/responses":
+				hasResp = true
+			}
+		}
+		if hasMsg {
+			msg++
+		}
+		if hasChat {
+			chat++
+		}
+		// 双端点 = 同时支持 OpenAI 两条路由（chat/completions + responses，实测 72/93；
+		// Claude 系只开 /messages，与 chat 无交集，不能用 msg∧chat——那恒为 0）。
+		if hasChat && hasResp {
+			both++
+		}
+	}
+	fmt.Fprintf(b, "  %s %d 个（Claude 系 %d · OpenAI 兼容 %d · 双端点 %d）\n",
+		commandaiLabel("模型").pad(), len(ms), msg, chat, both)
+	const limit = 8
+	n := len(ms)
+	if n > limit {
+		n = limit
+	}
+	parts := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		parts = append(parts, commandaiModelText(ms[i]))
+	}
+	line := "    " + strings.Join(parts, " · ")
+	if len(ms) > limit {
+		line += fmt.Sprintf(" …等 %d 个", len(ms)-limit)
+	}
+	b.WriteString(line + "\n")
+}
+
+// writeCommandaiOverview 总览页单账号段：套餐 + 用量条 + 状态注记（已限流带倒计时）。
+func writeCommandaiOverview(b *strings.Builder, r app.CommandaiResult, now time.Time, c Colorizer) {
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type commandai --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return
+	}
+	var parts []string
+	if r.Credits != nil {
+		billing := models.CommandaiBillingOf(r.Credits, r.Subscription, r.Summary, now)
+		pct := int(math.Round(billing.UsagePercent))
+		seg := fmt.Sprintf("%s %s %d%%", commandaiPlanName(r.Subscription), UsageBar(pct, 10), pct)
+		parts = append(parts, c.apply(ColorForPercent(pct, false), seg))
+		if wl := r.Credits.WindowLimits; commandaiAnyWindowExceeded(wl) {
+			// 已限流：取最先重置的那个窗口做倒计时（与详情页徽章判据一致）
+			w := commandaiFirstExceeded(wl)
+			note := c.Red("已限流")
+			if w != nil && w.ResetAt != nil {
+				note += " · " + FormatCountdown(w.ResetAt.Format(time.RFC3339), now)
+			}
+			parts = append(parts, note)
+		}
+	}
+	if r.Plan != nil && len(r.Plan.Models) > 0 {
+		parts = append(parts, fmt.Sprintf("模型 %d 个", len(r.Plan.Models)))
+	}
+	if len(parts) > 0 {
+		b.WriteString("  " + strings.Join(parts, " · ") + "\n")
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red("  "+r.Error) + "\n")
+	} else if r.Credits == nil && r.Plan == nil {
+		b.WriteString(c.Gray("  暂无数据") + "\n")
+	}
+}
+
+// RenderCommandaiDetail Commandai 账号详情：套餐 + 积分三池 + 滚动窗口 +
+// 本期消耗 + 云沙箱 + 模型清单。额度单位美元；窗口限流时徽章与倒计时并存。
+func RenderCommandaiDetail(r app.CommandaiResult, now time.Time, c Colorizer) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (Commandai)\n", r.Account.Name)
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type commandai --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return b.String()
+	}
+	b.WriteString("Command Code · 积分额度（美元）\n")
+	if r.Credits != nil {
+		billing := models.CommandaiBillingOf(r.Credits, r.Subscription, r.Summary, now)
+		// 套餐行：显示名（状态）· 本期剩 N 天后重置；无周期 → 「周期未知」
+		name := commandaiPlanName(r.Subscription)
+		if name == "" {
+			name = "未知套餐"
+		}
+		planLine := "  " + commandaiLabel("套餐").pad() + name
+		if r.Subscription != nil && r.Subscription.Status != "" {
+			planLine += "（" + r.Subscription.Status + "）"
+		}
+		if billing.DaysLeft >= 0 {
+			planLine += fmt.Sprintf(" · 本期剩 %d 天后重置", billing.DaysLeft)
+		} else {
+			planLine += " · 周期未知"
+		}
+		b.WriteString(planLine + "\n")
+		// 额度行：额度已耗尽（剩余 0 且本期有消耗）→ 红色单行
+		if billing.TotalRemaining <= 0 && billing.Spent > 0 {
+			b.WriteString("  " + c.Red(commandaiLabel("额度").pad()+"额度已耗尽") + "\n")
+		} else {
+			pct := int(math.Round(billing.UsagePercent))
+			col := ColorForPercent(pct, false)
+			fmt.Fprintf(&b, "  %s $%s 可用 / 总池 $%s %s %s 已用\n",
+				commandaiLabel("额度").pad(), Fmt(billing.TotalRemaining), Fmt(billing.TotalPool),
+				UsageBar(pct, 10), c.apply(col, fmt.Sprintf("%d%%", pct)))
+		}
+		// 三池明细
+		fmt.Fprintf(&b, "  %s $%s · 充值 $%s · 免费 $%s\n",
+			commandaiLabel("月度").pad(), Fmt(r.Credits.MonthlyCredits),
+			Fmt(r.Credits.PurchasedCredits), Fmt(r.Credits.FreeCredits))
+		// 滚动窗口（订阅套餐才有；Provider 套餐无 → 不渲染）
+		if wl := r.Credits.WindowLimits; wl != nil {
+			writeCommandaiWindow(&b, "5小时窗口", wl.FiveHour, now, c)
+			writeCommandaiWindow(&b, "每周窗口", wl.Weekly, now, c)
+		}
+		// 云沙箱（有权限且有值才渲染）
+		if r.Credits.SandboxAccess && r.Credits.SandboxMinutes != nil {
+			s := r.Credits.SandboxMinutes
+			fmt.Fprintf(&b, "  %s %s/%s 分钟\n",
+				commandaiLabel("沙箱").pad(), Fmt(s.UsedMinutes), Fmt(s.LimitMinutes))
+		}
+	}
+	// 本期消耗（缺 → 不渲染）
+	if r.Summary != nil {
+		fmt.Fprintf(&b, "  %s $%s · %s 次请求\n",
+			commandaiLabel("本期已花").pad(), Fmt(r.Summary.TotalCost), formatInt(r.Summary.TotalCount))
+	}
+	// 模型清单
+	if r.Plan != nil && len(r.Plan.Models) > 0 {
+		writeCommandaiModels(&b, r.Plan)
 	}
 	if r.Error != "" {
 		b.WriteString(c.Red(r.Error) + "\n")

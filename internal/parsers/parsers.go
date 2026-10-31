@@ -1208,3 +1208,348 @@ func ParseGptzeroUsage(raw string) (models.GptzeroUsage, error) {
 	out.Plan.PriceCents, _ = rawInt64(d.FullPlan.PriceData.UnitAmount)
 	return out, nil
 }
+
+// ── Commandai（Command Code，commandcode.ai） ──────────────────
+
+// ErrCommandaiAuth Commandai key 无效或已过期（401 / 认证类错误信封）。
+var ErrCommandaiAuth = errors.New("Commandai API Key 无效或已过期，请到 commandcode.ai/studio 创建或核对 API key")
+
+// ErrCommandaiUpgrade 当前套餐不含 API 访问（Go 套餐），需升级到 GOAT 或更高。
+var ErrCommandaiUpgrade = errors.New("当前套餐不含 API 访问（Go 套餐），请升级到 GOAT 或更高")
+
+// commandaiEnvelope 错误信封：{success:false,error:{code,status,message,docs}}。
+type commandaiEnvelope struct {
+	Success bool `json:"success"`
+	Error   *struct {
+		Code    string `json:"code"`
+		Status  int    `json:"status"`
+		Message string `json:"message"`
+		Docs    string `json:"docs"`
+	} `json:"error"`
+}
+
+// commandaiEnvelopeOf 提取错误信封（无信封 → ok=false）。
+// message 先 SanitizeText 后截断 200（防 ANSI 注入 + 终端污染）。
+func commandaiEnvelopeOf(raw string) (code, message string, ok bool) {
+	var env commandaiEnvelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return "", "", false
+	}
+	if env.Error == nil {
+		return "", "", false
+	}
+	msg := strings.TrimSpace(env.Error.Message)
+	if msg == "" {
+		return "", "", false
+	}
+	return strings.TrimSpace(env.Error.Code), truncate(SanitizeText(msg), 200), true
+}
+
+// CommandaiEnvelopeError 把错误信封归一为 Go error（无信封 → nil）。
+// 401/认证类 → ErrCommandaiAuth；upgrade_required → ErrCommandaiUpgrade；
+// 其他 → 消毒后的 message。repo 层 401/403 时先调此函数（信封优先于状态码）。
+func CommandaiEnvelopeError(raw string) error {
+	code, msg, ok := commandaiEnvelopeOf(raw)
+	if !ok {
+		return nil
+	}
+	switch {
+	case strings.EqualFold(code, "UNAUTHORIZED"), strings.EqualFold(code, "authentication_error"):
+		return ErrCommandaiAuth
+	case strings.EqualFold(code, "upgrade_required"):
+		return ErrCommandaiUpgrade
+	default:
+		if msg != "" {
+			return errors.New(msg)
+		}
+		return fmt.Errorf("Commandai 返回错误（code=%s）", code)
+	}
+}
+
+// commandaiRawText 取原始 JSON 值的可读原文（去引号/空白；null/空 → 空串）。
+func commandaiRawText(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	return strings.Trim(s, `"`)
+}
+
+// commandaiTimeOf 多形状时间容错：
+//   - 数值 >1e12 → unix 毫秒；≤1e12 → unix 秒；
+//   - 字符串 → RFC3339/ISO 宽容解析；
+//   - 全失败 → nil（渲染层显式「未知」，不二次猜）。
+func commandaiTimeOf(raw json.RawMessage) *time.Time {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return nil
+	}
+	q := strings.Trim(strings.TrimSpace(s), `"`)
+	if q == "" {
+		return nil
+	}
+	if v, err := strconv.ParseFloat(q, 64); err == nil {
+		var sec int64
+		if v > 1e12 {
+			sec = int64(v / 1000)
+		} else {
+			sec = int64(v)
+		}
+		t := time.Unix(sec, 0)
+		return &t
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05", "2006-01-02"} {
+		if t, err := time.Parse(layout, q); err == nil {
+			return &t
+		}
+	}
+	return nil
+}
+
+// ParseCommandaiModels 解析 GET /provider/v1/models（OpenAI 兼容信封）。
+// data 缺席 = 显式失败；空数组 = 合法 0 模型（不得静默吞）。
+// 401 信封（code=UNAUTHORIZED）→ ErrCommandaiAuth。
+func ParseCommandaiModels(raw string) ([]models.CommandaiModel, error) {
+	if err := CommandaiEnvelopeError(raw); err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, fmt.Errorf("Commandai 模型清单 JSON 解析失败: %w", err)
+	}
+	if len(payload.Data) == 0 || strings.TrimSpace(string(payload.Data)) == "null" {
+		return nil, errors.New("未获取到 Commandai 可用模型（响应缺少 data）")
+	}
+	var items []struct {
+		ID                 string          `json:"id"`
+		Name               string          `json:"name"`
+		ContextLength      json.RawMessage `json:"context_length"`
+		SupportedEndpoints []string        `json:"supported_endpoints"`
+		OwnedBy            string          `json:"owned_by"`
+	}
+	if err := json.Unmarshal(payload.Data, &items); err != nil {
+		return nil, fmt.Errorf("Commandai 模型清单负载解析失败: %w", err)
+	}
+	seen := map[string]bool{}
+	out := make([]models.CommandaiModel, 0, len(items))
+	for _, m := range items {
+		id := strings.TrimSpace(m.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		model := models.CommandaiModel{
+			ID:                 id,
+			Name:               strings.TrimSpace(m.Name),
+			SupportedEndpoints: append([]string(nil), m.SupportedEndpoints...),
+			OwnedBy:            strings.TrimSpace(m.OwnedBy),
+		}
+		if v, ok := rawInt64(m.ContextLength); ok {
+			model.ContextLength = v
+		}
+		out = append(out, model)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+// ParseCommandaiWhoami 解析 GET /alpha/whoami?limits=1。
+// org 可空（实测个人账号 org:null）：orgId 只是可选的查询参数，缺席时额度端点
+// 不带 orgId 即可（带空 orgId 会 400 Invalid UUID）。org.login / user.userName
+// 缺席容错空串。
+func ParseCommandaiWhoami(raw string) (models.CommandaiWhoami, error) {
+	if err := CommandaiEnvelopeError(raw); err != nil {
+		return models.CommandaiWhoami{}, err
+	}
+	var payload struct {
+		Org *struct {
+			ID    string `json:"id"`
+			Login string `json:"login"`
+		} `json:"org"`
+		User struct {
+			UserName string `json:"userName"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return models.CommandaiWhoami{}, fmt.Errorf("Commandai whoami JSON 解析失败: %w", err)
+	}
+	out := models.CommandaiWhoami{
+		OrgLogin: "",
+		UserName: strings.TrimSpace(payload.User.UserName),
+	}
+	if payload.Org != nil {
+		out.OrgID = strings.TrimSpace(payload.Org.ID)
+		out.OrgLogin = strings.TrimSpace(payload.Org.Login)
+	}
+	return out, nil
+}
+
+// commandaiWindowPayload 滚动窗口的原始形状（resetAt 多形状容错；exceeded=该窗口已用尽）。
+type commandaiWindowPayload struct {
+	Used     float64         `json:"used"`
+	Cap      float64         `json:"cap"`
+	Exceeded bool            `json:"exceeded"`
+	ResetAt  json.RawMessage `json:"resetAt"`
+}
+
+// commandaiSandboxPayload 沙箱分钟数的原始形状（limitMinutes/usedMinutes）。
+type commandaiSandboxPayload struct {
+	LimitMinutes float64         `json:"limitMinutes"`
+	UsedMinutes  float64         `json:"usedMinutes"`
+	ResetAt      json.RawMessage `json:"resetAt"`
+}
+
+// commandaiCreditsPayload credits 对象的原始形状（白名单字段；未知字段忽略）。
+// 实测响应里 credits 对象只有 belowThreshold/creditThreshold/monthlyCredits/
+// purchasedCredits/freeCredits——planId 实际缺席（套餐名在 subscriptions.data.planId），
+// 此处保留字段仅为容错，缺席按空串。
+type commandaiCreditsPayload struct {
+	PlanID           string  `json:"planId"`
+	MonthlyCredits   float64 `json:"monthlyCredits"`
+	PurchasedCredits float64 `json:"purchasedCredits"`
+	FreeCredits      float64 `json:"freeCredits"`
+}
+
+// commandaiWindowLimitsPayload 顶层 windowLimits 的原始形状。
+// 实测 windowLimits/sandboxAccess/sandboxMinutes 与 credits 平级（不在 credits 内），
+// 与 npm projectUsageView 的 e.credits?.windowLimits 一致。
+type commandaiWindowLimitsPayload struct {
+	Limited  bool                    `json:"limited"`
+	FiveHour *commandaiWindowPayload `json:"fiveHour"`
+	Weekly   *commandaiWindowPayload `json:"weekly"`
+}
+
+// commandaiCreditsResponse /alpha/billing/credits 的顶层原始形状。
+type commandaiCreditsResponse struct {
+	Credits        json.RawMessage               `json:"credits"`
+	WindowLimits   *commandaiWindowLimitsPayload `json:"windowLimits"`
+	SandboxAccess  bool                          `json:"sandboxAccess"`
+	SandboxMinutes *commandaiSandboxPayload      `json:"sandboxMinutes"`
+}
+
+// ParseCommandaiCredits 解析 GET /alpha/billing/credits。
+// 顶层结构（实测）：{credits:{…三池…}, windowLimits:{…}, sandboxAccess, sandboxMinutes}。
+// credits 对象缺席 = 显式失败；三池字段缺席按 0（合法场景：纯充值户）；
+// windowLimits / sandbox 缺席 = nil。
+func ParseCommandaiCredits(raw string) (models.CommandaiCredits, error) {
+	if err := CommandaiEnvelopeError(raw); err != nil {
+		return models.CommandaiCredits{}, err
+	}
+	var top commandaiCreditsResponse
+	if err := json.Unmarshal([]byte(raw), &top); err != nil {
+		return models.CommandaiCredits{}, fmt.Errorf("Commandai 积分 JSON 解析失败: %w", err)
+	}
+	if len(top.Credits) == 0 || strings.TrimSpace(string(top.Credits)) == "null" {
+		return models.CommandaiCredits{}, errors.New("未获取到 Commandai 积分信息（响应缺少 credits）")
+	}
+	var p commandaiCreditsPayload
+	if err := json.Unmarshal(top.Credits, &p); err != nil {
+		return models.CommandaiCredits{}, fmt.Errorf("Commandai 积分负载解析失败: %w", err)
+	}
+	out := models.CommandaiCredits{
+		PlanID:           strings.TrimSpace(p.PlanID),
+		MonthlyCredits:   p.MonthlyCredits,
+		PurchasedCredits: p.PurchasedCredits,
+		FreeCredits:      p.FreeCredits,
+		SandboxAccess:    top.SandboxAccess,
+	}
+	if top.WindowLimits != nil {
+		wl := &models.CommandaiWindowLimits{Limited: top.WindowLimits.Limited}
+		if top.WindowLimits.FiveHour != nil {
+			wl.FiveHour = &models.CommandaiWindowLimit{
+				Used:     top.WindowLimits.FiveHour.Used,
+				Cap:      top.WindowLimits.FiveHour.Cap,
+				Exceeded: top.WindowLimits.FiveHour.Exceeded,
+				ResetAt:  commandaiTimeOf(top.WindowLimits.FiveHour.ResetAt),
+			}
+			if wl.FiveHour.ResetAt == nil {
+				wl.FiveHour.ResetAtRaw = commandaiRawText(top.WindowLimits.FiveHour.ResetAt)
+			}
+		}
+		if top.WindowLimits.Weekly != nil {
+			wl.Weekly = &models.CommandaiWindowLimit{
+				Used:     top.WindowLimits.Weekly.Used,
+				Cap:      top.WindowLimits.Weekly.Cap,
+				Exceeded: top.WindowLimits.Weekly.Exceeded,
+				ResetAt:  commandaiTimeOf(top.WindowLimits.Weekly.ResetAt),
+			}
+			if wl.Weekly.ResetAt == nil {
+				wl.Weekly.ResetAtRaw = commandaiRawText(top.WindowLimits.Weekly.ResetAt)
+			}
+		}
+		out.WindowLimits = wl
+	}
+	if top.SandboxMinutes != nil {
+		out.SandboxMinutes = &models.CommandaiSandbox{
+			LimitMinutes: top.SandboxMinutes.LimitMinutes,
+			UsedMinutes:  top.SandboxMinutes.UsedMinutes,
+			ResetAt:      commandaiTimeOf(top.SandboxMinutes.ResetAt),
+		}
+		if out.SandboxMinutes.ResetAt == nil {
+			out.SandboxMinutes.ResetAtRaw = commandaiRawText(top.SandboxMinutes.ResetAt)
+		}
+	}
+	return out, nil
+}
+
+// ParseCommandaiSubscription 解析 GET /alpha/billing/subscriptions。
+// data 缺席 = 显式失败；status 不在合法集仍原样保留（渲染层标注）；
+// period 解析失败 = nil（原文存 Raw 字段）。
+func ParseCommandaiSubscription(raw string) (models.CommandaiSubscription, error) {
+	if err := CommandaiEnvelopeError(raw); err != nil {
+		return models.CommandaiSubscription{}, err
+	}
+	var top struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &top); err != nil {
+		return models.CommandaiSubscription{}, fmt.Errorf("Commandai 套餐 JSON 解析失败: %w", err)
+	}
+	if len(top.Data) == 0 || strings.TrimSpace(string(top.Data)) == "null" {
+		return models.CommandaiSubscription{}, errors.New("未获取到 Commandai 套餐信息（响应缺少 data）")
+	}
+	var p struct {
+		PlanID             string          `json:"planId"`
+		Status             string          `json:"status"`
+		CurrentPeriodStart json.RawMessage `json:"currentPeriodStart"`
+		CurrentPeriodEnd   json.RawMessage `json:"currentPeriodEnd"`
+	}
+	if err := json.Unmarshal(top.Data, &p); err != nil {
+		return models.CommandaiSubscription{}, fmt.Errorf("Commandai 套餐负载解析失败: %w", err)
+	}
+	out := models.CommandaiSubscription{
+		PlanID: strings.TrimSpace(p.PlanID),
+		Status: strings.TrimSpace(p.Status),
+	}
+	out.CurrentPeriodStart = commandaiTimeOf(p.CurrentPeriodStart)
+	out.CurrentPeriodEnd = commandaiTimeOf(p.CurrentPeriodEnd)
+	out.PeriodStartRaw = commandaiRawText(p.CurrentPeriodStart)
+	out.PeriodEndRaw = commandaiRawText(p.CurrentPeriodEnd)
+	return out, nil
+}
+
+// ParseCommandaiUsageSummary 解析 GET /alpha/usage/summary。
+// totalCost / totalCount 缺席 = 显式失败（不显示 0 误报——bai points_balance 先例）。
+func ParseCommandaiUsageSummary(raw string) (models.CommandaiUsageSummary, error) {
+	if err := CommandaiEnvelopeError(raw); err != nil {
+		return models.CommandaiUsageSummary{}, err
+	}
+	var p struct {
+		TotalCost   *float64 `json:"totalCost"`
+		TotalCount  *int64   `json:"totalCount"`
+		PeriodBasis string   `json:"periodBasis"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return models.CommandaiUsageSummary{}, fmt.Errorf("Commandai 本期消耗 JSON 解析失败: %w", err)
+	}
+	if p.TotalCost == nil || p.TotalCount == nil {
+		return models.CommandaiUsageSummary{}, errors.New("未获取到 Commandai 本期消耗（响应缺少 totalCost/totalCount）")
+	}
+	return models.CommandaiUsageSummary{
+		TotalCost:   *p.TotalCost,
+		TotalCount:  *p.TotalCount,
+		PeriodBasis: strings.TrimSpace(p.PeriodBasis),
+	}, nil
+}

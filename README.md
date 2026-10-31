@@ -2,7 +2,7 @@
 
 > [**中文版**](README_zh.md) | [**English**](#)
 
-A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history), OpenCode (Go plan windows + Zen billing), Qwen Token Plan (plan models + 5-hour / 7-day credit windows), AI Galaxy 智星云 GPU cloud (account balance + rented instance status), B.AI 白B.AI (credit balance + free flash channel watch), GPTZero (AI-detection monthly word quota), and LongCat 美团龙猫 (balance probe + model list), with multi-account support. Ported from the Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker): same data-layer logic, terminal output instead of an app UI.
+A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history), OpenCode (Go plan windows + Zen billing), Qwen Token Plan (plan models + 5-hour / 7-day credit windows), AI Galaxy 智星云 GPU cloud (account balance + rented instance status), B.AI 白B.AI (credit balance + free flash channel watch), GPTZero (AI-detection monthly word quota), LongCat 美团龙猫 (balance probe + model list), and Commandai Command Code (credit pools + model list), with multi-account support. Ported from the Android app [API Checkers](https://github.com/xieguaiwu/pocket-llm-api-checker): same data-layer logic, terminal output instead of an app UI.
 
 ## Features
 
@@ -14,7 +14,8 @@ A terminal CLI that checks LLM API usage — DeepSeek (balance + spend history),
 - **B.AI (白B.AI)** — credit balance from the console API (`usage.points` + `usage.summary`), plus the full model list (`/v1/models`) and a watch list for the known free-tier flash models — a missing one turns into a red warning because automated agents depend on them. Credits are shown as raw points with a nominal `≈ $` conversion (1 000 000 points = $1, read from the platform's own `creditsPerDollar`). A zero balance is red: inference requests fail once credits run out
 - **LongCat** — balance status (probe via minimal chat request: 200 = sufficient, 402 = insufficient) + available model list with capability fields (OpenAI-compatible `/v1/models`). With a console cookie it also shows Token resource pack and paygo balance from the console API (`longcat.chat/api/pay/quota/metering/*`). Without the cookie, balance is inferred from a minimal probe request.
 - **GPTZero** — monthly word quota for the AI-detection API (`GET /v2/users/me`): words used vs. plan allowance with a percent bar, overage ceiling, cycle start with an estimated next reset, all-time totals, and the per-document character limit
-- **Multi-account** — unlimited DeepSeek, OpenCode, Qwen, AI Galaxy, B.AI and GPTZero accounts, shown separately
+- **Commandai** — credit pools (monthly / purchased / free, in dollars) plus the 5-hour and weekly rolling windows with reset countdowns and a co-existing `已限流` badge when a window is actually exhausted, the current-period spend and request count, and the model list (`/provider/v1/models`). No inference probe — the quota has a first-class API, so nothing is spent on a health check
+- **Multi-account** — unlimited DeepSeek, OpenCode, Qwen, AI Galaxy, B.AI, GPTZero, LongCat and Commandai accounts, shown separately
 - Machine-readable `--json` output, `NO_COLOR` support
 - Zero third-party dependencies (Go stdlib only)
 
@@ -49,6 +50,8 @@ llm-api-check accounts add --type longcat --name "LongCat" --api-key <your-key> 
 llm-api-check longcat                      # LongCat balance + model list (+ console quota with cookie)
 llm-api-check accounts add --type gptzero --name "Paper scans" --api-key <your-key>
 llm-api-check gptzero                      # GPTZero monthly word quota (AI detection)
+llm-api-check accounts add --type commandai --name "Command Code" --api-key <your-key>
+llm-api-check commandai                    # Commandai credit pools + model list
 ```
 
 Download a prebuilt binary from [Releases](https://github.com/xieguiawu/llm-api-check/releases) (Linux and macOS, amd64 and arm64), verify it against `sha256sums.txt`, then put it on your `PATH`:
@@ -70,9 +73,10 @@ llm-api-check --version
 | `llm-api-check galaxy [name\|ID] [--no-refresh] [--limit N]` | AI Galaxy balance + active instances (`--limit` how many, default 10, max 100) |
 | `llm-api-check bai [name\|ID] [--no-refresh]` | B.AI credit balance, model list, free-tier flash watch |
 | `llm-api-check longcat [name\|ID] [--no-refresh]` | LongCat balance + model list |
+| `llm-api-check commandai [name\|ID] [--no-refresh]` | Commandai credit pools + model list |
 | `llm-api-check gptzero [name\|ID] [--no-refresh]` | GPTZero account + monthly word quota (AI detection) |
 | `llm-api-check accounts list` | List all accounts |
-| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat --name NAME [credential flags]` | Add account |
+| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat\|commandai --name NAME [credential flags]` | Add account |
 | `llm-api-check accounts remove --id ID \| --name NAME` | Remove account |
 | `llm-api-check accounts rename --id ID \| --name NAME --new-name NEW` | Rename account |
 | `llm-api-check config path` | Print config file path |
@@ -80,7 +84,7 @@ llm-api-check --version
 
 Global flags: `--json` (all output as JSON), `--no-color` (same as `NO_COLOR` env).
 
-Credential flags fall back in this order: flag → env var → TTY prompt (non-TTY errors out). Env vars: `LLM_API_CHECK_GO_API_KEY`, `LLM_API_CHECK_WORKSPACE_ID`, `LLM_API_CHECK_AUTH_COOKIE`, `LLM_API_CHECK_DEEPSEEK_API_KEY`, `LLM_API_CHECK_PLATFORM_TOKEN`, `LLM_API_CHECK_QWEN_API_KEY`, `LLM_API_CHECK_QWEN_COOKIE`, `LLM_API_CHECK_QWEN_REGION`, `LLM_API_CHECK_GALAXY_ACCESS_KEY`, `LLM_API_CHECK_GALAXY_SECRET_KEY`, `LLM_API_CHECK_BAI_API_KEY`, `LLM_API_CHECK_GPTZERO_API_KEY`, `LLM_API_CHECK_BL_BIN` (Bailian CLI path), `LLM_API_CHECK_QWEN_CLI` (`off` disables the CLI quota channel).
+Credential flags fall back in this order: flag → env var → TTY prompt (non-TTY errors out). Env vars: `LLM_API_CHECK_GO_API_KEY`, `LLM_API_CHECK_WORKSPACE_ID`, `LLM_API_CHECK_AUTH_COOKIE`, `LLM_API_CHECK_DEEPSEEK_API_KEY`, `LLM_API_CHECK_PLATFORM_TOKEN`, `LLM_API_CHECK_QWEN_API_KEY`, `LLM_API_CHECK_QWEN_COOKIE`, `LLM_API_CHECK_QWEN_REGION`, `LLM_API_CHECK_GALAXY_ACCESS_KEY`, `LLM_API_CHECK_GALAXY_SECRET_KEY`, `LLM_API_CHECK_BAI_API_KEY`, `LLM_API_CHECK_GPTZERO_API_KEY`, `LLM_API_CHECK_LONGCAT_API_KEY`, `LLM_API_CHECK_LONGCAT_COOKIE`, `COMMAND_CODE_API_KEY` (Commandai official name, preferred) / `LLM_API_CHECK_COMMANDAI_API_KEY` (fallback), `LLM_API_CHECK_BL_BIN` (Bailian CLI path), `LLM_API_CHECK_QWEN_CLI` (`off` disables the CLI quota channel).
 
 ## Where to get credentials
 
@@ -98,6 +102,7 @@ Credential flags fall back in this order: flag → env var → TTY prompt (non-T
 | LongCat API key | longcat.chat → sign in → API Keys → Create API Key. OpenAI-compatible format, Bearer auth. App Key channel has no public quota API — balance is probed via minimal chat request |
 | LongCat console cookie (optional) | Sign in to `longcat.chat` → DevTools → Application → Cookies → `passport_token_key`. Enables Token resource pack + paygo balance (console metering API). Treat as sensitive as a login session |
 | GPTZero API key | app.gptzero.me → sign in → API subscription page → create key (32-char hex, sent as `x-api-key`). Reads your own monthly word quota |
+| Commandai API key | commandcode.ai → sign in → Studio → create key. `Bearer` auth. The model list endpoint is unauthenticated, but the quota endpoints (`/alpha/*`) require the key |
 
 Qwen quota is console-session data. The tool tries the official Bailian CLI first (`bailian usage token-plan`; set `LLM_API_CHECK_QWEN_CLI=off` to disable), then falls back to a console cookie. Without either it still validates the key and lists plan models, and says so instead of showing invented numbers.
 
@@ -141,6 +146,11 @@ Notes:
 | LongCat Token pack | `POST https://longcat.chat/api/pay/quota/metering/token-packs/summary` | Cookie `passport_token_key`; envelope `{code,msg,data}`; `data.currentLot` = token pack (null = none) |
 | LongCat paygo balance | `POST https://longcat.chat/api/pay/quota/metering/api-usage/summary` | Cookie `passport_token_key`; envelope `{code,msg,data}`; `data.paygoBalance.primary` = balance |
 | GPTZero quota | `GET https://api.gptzero.me/v2/users/me` | API key (`x-api-key` header); billing unit is words |
+| Commandai models | `GET https://api.commandcode.ai/provider/v1/models` | Bearer (endpoint is unauthenticated in practice); OpenAI-compatible envelope `{object:"list",data:[…]}` |
+| Commandai identity | `GET https://api.commandcode.ai/alpha/whoami?limits=1` | Bearer; `user.userName` for display. `org` is `null` on personal accounts — `orgId` is then omitted from the quota calls (sending an empty `orgId` returns 400) |
+| Commandai credits | `GET https://api.commandcode.ai/alpha/billing/credits?orgId=…` | Bearer; nested `credits.{monthlyCredits,purchasedCredits,freeCredits}` (dollar floats) **plus** top-level `windowLimits`, `sandboxAccess`, `sandboxMinutes`. The plan id is *not* here — it lives in the subscription |
+| Commandai subscription | `GET https://api.commandcode.ai/alpha/billing/subscriptions?orgId=…` | Bearer; `data.{planId,status,currentPeriodStart,currentPeriodEnd}` (`currentPeriodStart` is ISO-8601; also passed back verbatim as the summary `since`) |
+| Commandai usage | `GET https://api.commandcode.ai/alpha/usage/summary?orgId=…&since=…` | Bearer; `totalCost` (USD), `totalCount`, `periodBasis`; `since` omitted when the period start is unknown |
 
 ## Security
 
@@ -152,6 +162,7 @@ Notes:
 - The LongCat App Key channel has no public quota API. The tool probes balance with a minimal chat request (max_tokens=1, a few cents at most). The API key grants access to your account's token balance — treat the config file as sensitive.
 - The LongCat console cookie (`passport_token_key`) carries your longcat.chat login session — it protects the same write APIs as the web console. Treat it as sensitive as a password; remove the account (`accounts remove`) when no longer needed. The daily free quota is not published by the platform and is not shown.
 - The Qwen console cookie carries your Alibaba Cloud login session. Treat that config file as sensitive, and remove the account (`accounts remove`) when you no longer need it. The Bailian CLI stores its session under `~/.bailian/config.json` (0600).
+- Commandai quota comes from undocumented CLI-private endpoints (`/alpha/*`). They accept a Bearer key today; a platform change can rename them without notice. The tool never sends an inference request, so a health check costs nothing. The error envelope takes priority over the HTTP status code, and `upgrade_required` (Go plan without API access) maps to a dedicated message.
 
 ## License
 

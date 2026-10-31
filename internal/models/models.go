@@ -8,8 +8,10 @@ package models
 
 import (
 	"errors"
+	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ── GPTZero（AI 检测额度） ────────────────────────────────────
@@ -610,4 +612,207 @@ type QwenSummary struct {
 	Period   QwenSummaryPeriod `json:"period"`
 	FreeTier []QwenFreeTier    `json:"freeTier"`
 	Usage    QwenUsageStats    `json:"usage"`
+}
+
+// ── Commandai（Command Code，commandcode.ai） ─────────────────
+
+// CommandaiAccount 单账号。key 于 commandcode.ai/studio 创建（Provider API 用）。
+type CommandaiAccount struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	ApiKey string `json:"api_key"`
+}
+
+// CommandaiModel 模型清单项（/provider/v1/models，字段实测原样）。
+type CommandaiModel struct {
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`
+	ContextLength      int64    `json:"context_length"`
+	SupportedEndpoints []string `json:"supported_endpoints"`
+	OwnedBy            string   `json:"owned_by"`
+}
+
+// CommandaiPlan 模型清单。
+type CommandaiPlan struct {
+	Models []CommandaiModel `json:"models"`
+}
+
+// CommandaiWindowLimit 单个滚动窗口（used/cap 美元；resetAt 多形状容错）。
+// Exceeded 为该窗口当前是否已用尽（实测字段 exceeded）——「已限流」徽章的唯一判据。
+// 注意 Limited（CommandaiWindowLimits.Limited）语义是「本套餐配置了额度限制、值得展示」，
+// 并非「当前已限流」：实测 Go 套餐 limited=true 而 exceeded=false。
+type CommandaiWindowLimit struct {
+	Used       float64    `json:"used"`
+	Cap        float64    `json:"cap"`
+	Exceeded   bool       `json:"exceeded"`
+	ResetAt    *time.Time `json:"-"` // 解析自原始 JSON（见 parsers.commandaiTimeOf）
+	ResetAtRaw string     `json:"-"` // 原文兜底（解析失败时渲染「未知」，不二次猜）
+}
+
+// CommandaiWindowLimits 5小时/每周滚动窗口（订阅套餐才有；Provider 套餐无）。
+// Limited 仅表示「本套餐有额度限制可展示」（npm projectUsageView 用它决定是否渲染
+// 「Usage limits」段），不代表窗口已用尽——已限流看各窗口的 Exceeded。
+type CommandaiWindowLimits struct {
+	Limited  bool                  `json:"limited"`
+	FiveHour *CommandaiWindowLimit `json:"fiveHour"`
+	Weekly   *CommandaiWindowLimit `json:"weekly"`
+}
+
+// CommandaiSandbox 云沙箱分钟数（可选）。
+type CommandaiSandbox struct {
+	LimitMinutes float64    `json:"limitMinutes"`
+	UsedMinutes  float64    `json:"usedMinutes"`
+	ResetAt      *time.Time `json:"-"`
+	ResetAtRaw   string     `json:"-"`
+}
+
+// CommandaiCredits 积分三池 + 窗口 + 沙箱（/alpha/billing/credits）。
+type CommandaiCredits struct {
+	PlanID           string                 `json:"planId"`
+	MonthlyCredits   float64                `json:"monthlyCredits"`
+	PurchasedCredits float64                `json:"purchasedCredits"`
+	FreeCredits      float64                `json:"freeCredits"`
+	WindowLimits     *CommandaiWindowLimits `json:"windowLimits"`
+	SandboxMinutes   *CommandaiSandbox      `json:"sandboxMinutes"`
+	SandboxAccess    bool                   `json:"sandboxAccess"`
+}
+
+// CommandaiSubscription 套餐与周期（/alpha/billing/subscriptions）。
+type CommandaiSubscription struct {
+	PlanID             string     `json:"planId"`
+	Status             string     `json:"status"`
+	CurrentPeriodStart *time.Time `json:"-"`
+	CurrentPeriodEnd   *time.Time `json:"-"`
+	// PeriodStartRaw 原文兜底 + repo summary 的 since 参数源（解析成功也回传原文）。
+	PeriodStartRaw string `json:"-"`
+	PeriodEndRaw   string `json:"-"`
+}
+
+// CommandaiUsageSummary 本期消耗（/alpha/usage/summary，since=currentPeriodStart）。
+type CommandaiUsageSummary struct {
+	TotalCount  int64   `json:"totalCount"`
+	PeriodBasis string  `json:"periodBasis"`
+	TotalCost   float64 `json:"totalCost"`
+}
+
+// CommandaiWhoami 身份（/alpha/whoami，白名单字段）。
+type CommandaiWhoami struct {
+	OrgID    string `json:"orgId"`
+	OrgLogin string `json:"orgLogin"`
+	UserName string `json:"userName"`
+}
+
+// CommandaiBilling 集中公式（§1.4），返回 totalPool/usagePercent/daysLeft。
+type CommandaiBilling struct {
+	TotalRemaining, TotalPool, Spent, UsagePercent float64
+	DaysLeft                                       int // -1 = 周期未知
+	HasBilling                                     bool
+}
+
+// commandaiPlanCredits 套餐月度积分映射（npm Er 表）。
+var commandaiPlanCredits = map[string]float64{
+	"individual-go":       10,
+	"individual-go-v1":    10,
+	"individual-goat":     70,
+	"individual-pro-v1":   80,
+	"individual-provider": 15,
+	"individual-max":      150,
+	"individual-ultra":    300,
+	"teams-pro":           40,
+}
+
+// commandaiPlanNames 套餐显示名（npm Mr 表）。
+var commandaiPlanNames = map[string]string{
+	"individual-go":       "Go",
+	"individual-go-v1":    "Go",
+	"individual-goat":     "GOAT",
+	"individual-pro-v1":   "Pro",
+	"individual-provider": "Provider",
+	"individual-max":      "Max",
+	"individual-ultra":    "Ultra",
+	"teams-pro":           "Teams Pro",
+}
+
+// commandaiPlanNormalize 套餐 id 归一：小写化 + 下划线转连字符（npm getPlanInfo 同款）。
+func commandaiPlanNormalize(planID string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(planID)), "_", "-")
+}
+
+// commandaiPlanLookup 按最长前缀命中套餐表；未知 → ok=false。
+func commandaiPlanLookup[T any](table map[string]T, planID string) (T, bool) {
+	var zero T
+	n := commandaiPlanNormalize(planID)
+	if n == "" {
+		return zero, false
+	}
+	best := ""
+	for k := range table {
+		if strings.HasPrefix(n, k) && len(k) > len(best) {
+			best = k
+		}
+	}
+	if best == "" {
+		return zero, false
+	}
+	return table[best], true
+}
+
+// CommandaiPlanDisplayName 套餐显示名（Er/Mr 映射 + 最长前缀匹配）。
+func CommandaiPlanDisplayName(planID string) string {
+	if v, ok := commandaiPlanLookup(commandaiPlanNames, planID); ok {
+		return v
+	}
+	return strings.TrimSpace(planID)
+}
+
+// CommandaiPlanMonthlyCredits 套餐月度积分映射（Er 表）；未知套餐 → ok=false。
+func CommandaiPlanMonthlyCredits(planID string) (float64, bool) {
+	return commandaiPlanLookup(commandaiPlanCredits, planID)
+}
+
+// CommandaiBillingOf 集中公式（见 §1.4）。now 用于 daysLeft 计算。
+func CommandaiBillingOf(c *CommandaiCredits, s *CommandaiSubscription, u *CommandaiUsageSummary, now time.Time) CommandaiBilling {
+	var b CommandaiBilling
+	if c == nil {
+		return b
+	}
+	b.HasBilling = true
+	monthly := math.Max(0, c.MonthlyCredits)
+	purchased := math.Max(0, c.PurchasedCredits)
+	free := math.Max(0, c.FreeCredits)
+	b.TotalRemaining = monthly + purchased + free
+	if u != nil {
+		b.Spent = u.TotalCost
+	}
+	planMonthly, hasPlan := 0.0, false
+	if s != nil && s.Status == "active" {
+		if v, ok := CommandaiPlanMonthlyCredits(s.PlanID); ok {
+			planMonthly, hasPlan = v, true
+		}
+	}
+	if hasPlan {
+		b.TotalPool = math.Max(planMonthly, c.MonthlyCredits) + c.PurchasedCredits + c.FreeCredits
+	} else {
+		b.TotalPool = b.Spent + b.TotalRemaining
+	}
+	if b.TotalPool > 0 {
+		pct := (b.TotalPool - b.TotalRemaining) / b.TotalPool * 100
+		if pct < 0 {
+			pct = 0
+		}
+		if pct > 100 {
+			pct = 100
+		}
+		b.UsagePercent = pct
+	}
+	if s != nil && s.CurrentPeriodEnd != nil {
+		days := int(math.Ceil(s.CurrentPeriodEnd.Sub(now).Hours() / 24))
+		if days < 0 {
+			days = 0
+		}
+		b.DaysLeft = days
+	} else {
+		b.DaysLeft = -1
+	}
+	return b
 }

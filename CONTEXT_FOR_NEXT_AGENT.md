@@ -1,5 +1,26 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-10-25：provider=commandai —— 真 key 冒烟 + 真实形状修正）
+- **provider=commandai（Command Code 平台，commandcode.ai）已全链路可用并落配置**：`llm-api-check commandai` 看积分三池（月度/充值/免费，单位=美元）+ 5小时/每周滚动窗口（重置倒计时）+ 套餐周期 + 本期消耗 + 模型清单（93 个含 supported_endpoints）。照 longcat 模板同构。
+  - ✅ **真机冒烟通过（真 key，2026-10-25）**：`~/.config/llm-api-check/config.json` 已落账号「命令」（id=a56a4ca8084c0cb508a5548cf3f6dec5，key 前缀 user_Wxg，真值源 rbw `api/commandai`，文件 0600）。实跑输出与 API 逐值一致：套餐 Go（active）· 本期剩 31 天 / 额度 $9.39 可用·总池 $10.00·6% / 5小时 $0.10/$3.00·3%·2小时36分后重置 / 每周 $0.61/$6.00·10% / 本期已花 $0.58·390 次 / 模型 93 个（Claude 11·OpenAI 82·双端点 72）。
+  - ✅ **环境变量按用户要求接官方名**：`accounts add --type commandai` 现在按 `--api-key` → `COMMAND_CODE_API_KEY`（官方，优先）→ `LLM_API_CHECK_COMMANDAI_API_KEY`（回退）→ TTY 顺序解析（新增 `resolveSecretFrom` 多变体，`resolveSecret` 保持原签名委托）。
+  - ⚠️ **真 key 冒烟暴露 3 处「计划假设 vs 实测」不符，已修**（详见 docs/plans/2026-10-25-commandai-provider.md §1.3/§1.4/§十一）：
+    1. **`org` 实测为 null**（个人账号），初版 parser 把 `org.id` 当必需字段 → 额度路整体失败。改为可空。
+    2. **带空 orgId 会 400**：实测 `?orgId=` → `400 BAD_REQUEST「Invalid UUID at "orgId"」`，省略则 200。repo 改为空值整参省略（`commandaiPath`，对齐 npm `buildUsageEndpoint`）。
+    3. **`windowLimits`/`sandboxAccess`/`sandboxMinutes` 与 `credits` 平级**，不在 `credits` 内（初版嵌套实现 → 窗口段恒不渲染）。
+    4. **`windowLimits.limited` ≠ 已限流**：npm `projectUsageView` 仅用 `S?.limited` 决定是否渲染「Usage limits」段（=「本套餐配置了额度限制、值得展示」）；实测个人 Go 套餐 `limited=true` 而两窗口 `exceeded=false`、用量仅 3%/10% —— 初版拿 `limited` 当限流判据会**误报**。改判各窗口 `exceeded`（新增字段，或 used≥cap 兜底）；徽章+倒计时并存规则不变。
+  - 🔑 **双通道**（三源交叉验证：官方文档 + npm command-code@1.88.0 dist/cli.mjs 逆向 + 真 key 实测）：模型面 `GET https://api.commandcode.ai/provider/v1/models`（实测免认证，仍带 Bearer；OpenAI 信封 `{object:"list",data:[…]}`，字段 name/context_length/supported_endpoints）；额度面 CLI 私有 `/alpha/*`：whoami?limits=1（org 可空）→ billing/credits ∥ billing/subscriptions 并发 → usage/summary&since=PeriodStartRaw（原文回传）。全 GET + Bearer。
+  - **信封优先于状态码**：`{success:false,error:{code,status,message,docs}}`；UNAUTHORIZED/authentication_error→ErrCommandaiAuth、upgrade_required（Go 套餐无 API）→ErrCommandaiUpgrade；message 先 SanitizeText 后 truncate。
+  - **数值语义**（npm projectUsageView 逐条照抄）：totalRemaining=三池之和（各项 max0）；totalPool=active 套餐时 max(planMonthly, monthlyCredits)+purchased+free（套餐映射 individual-provider=15/go=10/goat=70/pro-v1=80/max=150/ultra=300/teams-pro=40，最长前缀匹配），无套餐时=spent+remaining；usagePercent clamp 0-100；daysLeft=ceil((periodEnd-now)/86400)。
+  - **时间多形状容错**：resetAt/currentPeriod* 形状未一手确认 → commandaiTimeOf（>1e12 毫秒/≤1e12 秒/ISO 宽容解析，失败=nil + ResetAtRaw/PeriodStartRaw 原文兜底）。
+  - **不做推理探活**：额度有真值通道，探活烧真钱（pay-as-you-go）。
+  - 施工：models 8 型+parsers 6 函数+repo.CommandaiRepo（Quota 链 whoami→并发2→summary）+app 双路并发（Models ∥ Quota，无 key 降级不发额度请求）+render 详情/总览（徽章+倒计时并存）+main cmdCommandai/accounts add(list/remove/rename)/--json 掩码/exit code（认证失败=1）。
+  - 质量门：gofmt 0 / vet 0 / 7 包 -race 全绿；用例 **399 → 470**（commandai 71 个）；反向验证 4 做（掩码拆除→4 测例 FAIL / since 拆除→QuotaHappy FAIL / 无 key 守卫拆除→NoKey FAIL / totalPool max 拆除→MaxPoolEdge FAIL——原 ActivePlan 测例咬不住 max 分支，补 TestCommandaiBillingOfMaxPoolEdge 后钉死）。
+  - 真机冒烟（隔离 XDG，假 key）：models 实通 93 个 / 401 单行 exit 1 / --json 无泄漏 / accounts 生命周期（add/list/rename/remove）全通。
+  - 契约：docs/plans/2026-10-25-commandai-provider.md（§十一 已知未知**已回填**：org 可空 / resetAt=unix 毫秒 / period=ISO-8601 / 窗口带 exceeded）。
+  - 质量门（真 key 修正后重跑）：gofmt 0 / vet 0 / 7 包 -race 全绿；反向验证补做 2 项（拆 orgId 省略→`TestCommandaiQuotaOmitsEmptyOrgID` FAIL / 拆限流判据→`TestRenderCommandaiCapReachedFallback` FAIL），均已恢复。
+  - ⚠️ **实施期事故（教训已录 daily/2026-10-25）**：hephaestus 超时（产物完整，主控取证跳过 resume）；两轮 momus（opencode-go 429 限流、longcat 通道 720s 超时且**违反只读指令用 git checkout 弄丢 main.go 改动后 Python 重建**）→ 审查改由主控亲力，重建版漂移 2 处已修（writeCommandaiModels 双端点语义错用 msg∧chat（恒 0）→改 chat∧responses=72；accounts list Commandai 段重复插入→删一处）。审查任务今后禁派给会动 git 的 agent 或加强红线措辞。
+
 ## 最后一次完成的工作（2026-09-16：LongCat 控制台配额通道 + 三缺陷修复）
 - **LongCat 控制台 Cookie 配额通道（Phase 1 = Go CLI 完成）**：`longcat.chat` 控制台两个
   配额端点（认证仅需 Cookie `passport_token_key`）已接入，照 Qwen ConsoleCookie 模板全链同构。
@@ -221,7 +242,7 @@
 `~/Desktop/go-projects/pocket-llm-api-checker` 的同名 provider 正在并行施工（GalaxyRepo/GalaxyCard/GalaxyDetailScreen/SettingsScreen 录入 + 单测），契约以 Go 侧 plan 文档为准。真机冒烟与凭据录入由用户完成。
 
 ## 项目当前状态
-llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）**、**白B.AI（积分额度 + 免费 flash 通道模型清单）** 与 **GPTZero（AI 检测月度词数额度，2026-09-07 新增）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。**BAI 积分额度已通（2026-09-06）：走 `chat.b.ai` 控制台 tRPC，同一把 sk- key 作 Bearer，无需 Cookie；`api.b.ai` 本身仍只开放推理路径（其余 403）——不要再拿 api.b.ai 的 403 当「bai 无额度数据」的依据。**GPTZero 已通（2026-09-07）：`GET /v2/users/me` x-api-key 认证，计费单位是词。****
+llm-api-check v1.3.0+（commandai 未发版） — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）**、**白B.AI（积分额度 + 免费 flash 通道模型清单）**、**GPTZero（AI 检测月度词数额度，2026-09-07 新增）**、**LongCat（余额探活 + 控制台配额）** 与 **Commandai（Command Code 积分额度 + 模型清单，2026-10-25 新增）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。**BAI 积分额度已通（2026-09-06）：走 `chat.b.ai` 控制台 tRPC，同一把 sk- key 作 Bearer，无需 Cookie；`api.b.ai` 本身仍只开放推理路径（其余 403）——不要再拿 api.b.ai 的 403 当「bai 无额度数据」的依据。**GPTZero 已通（2026-09-07）：`GET /v2/users/me` x-api-key 认证，计费单位是词。****
 
 🔴 **Android 侧唯一权威 clone（2026-08-29 取证）= `~/Desktop/go-projects/pocket-llm-api-checker/`**（HEAD e1c1568，含 fastlane 元数据 + tag v1.0.0 + scripts/ 可复现构建 + docs/fdroid 草稿）。`~/Desktop/android-projects/api-checkers/` 是落后一提交的旧副本（HEAD cec6ef7，无 fastlane、无 tag），只做历史参考，**勿在其上开发**。
 
@@ -238,7 +259,9 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
   - ⚠️ 会话短寿命实测：OAuth 登录约几小时即过期（13:46 登录 14:0x 已报 Console session not logged in or has expired）→ 过期重跑 `bailian auth login --console` 即可（首次登录进程若卡住先 kill 再重开）
 
 ## 遗留问题 / 待办
-- [ ] **两轮改动未 commit**（2026-09-06 A-F 五任务 + 2026-09-07 gptzero）：均过全部质量门，等用户确认后提交（公开仓 push 须用户同意）
+- [ ] **commandai 未 commit**（2026-10-25）：470 用例全绿 + 冒烟通过，等用户确认后提交（公开仓 push 须用户同意）
+- [ ] **commandai 真机全量冒烟（待用户 key）**：commandcode.ai/studio 创建 key → `accounts add --type commandai` → 验证额度三池/窗口/套餐周期实值；拿 key 后第一时间 curl 四连 /alpha/* 回填一手响应样本，修正计划 §十一 悬置项（resetAt/currentPeriod 真实形状、429 信封 rateLimit 字段）
+- [ ] **两轮改动未 commit（历史）**（2026-09-06 A-F 五任务 + 2026-09-07 gptzero）：均过全部质量门，等用户确认后提交（公开仓 push 须用户同意）
 - [ ] **Android 真机冒烟（bai）**：本机无 adb 设备，用户手机装 9d0c9c2 包后录入 sk- key 验证 bai 卡/详情页/探活红行；Android commit 同样未 push
 - [ ] **bai order.listOrders / records 逐条视图（未做）**：充值流水与逐请求明细列表 UI 未接（--stats 已覆盖聚合视图）；需要时再加
 - [x] ~~**Bailian CLI 会话过期维护**：差异化文案未做~~ → **2026-08-30 已做**：会话失效单独立档，给出可复制的 `bailian auth login --console`（绝对路径）；不透传上游 `bl` hint。运维动作不变：过期重跑 `~/.local/share/bailian-cli/bin/bailian auth login --console`（浏览器 OAuth；登录进程卡住先 kill 再重开）。⚠️ `bailian auth status` 不校验会话有效性，判活看 `bailian usage token-plan`
@@ -278,4 +301,4 @@ llm-api-check v1.3.0 — Go CLI，复刻 Android app「API Checkers」（现名 
 - 图谱以最新 commit 为准；若 `graphify-out/needs_update` 存在说明已陈旧，先 update 再依赖它回答
 
 ## 最后更新时间
-2026-09-07 01:1x
+2026-10-25 13:4x
