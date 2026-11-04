@@ -52,6 +52,8 @@ llm-api-check accounts add --type gptzero --name "论文扫" --api-key <your-key
 llm-api-check gptzero                      # GPTZero 月度词数额度（AI 检测）
 llm-api-check accounts add --type commandai --name "命令" --api-key <your-key>
 llm-api-check commandai                    # Commandai 积分三池 + 模型清单
+llm-api-check accounts add --type codebuddy --name "CodeBuddy" --api-key <your-key>
+llm-api-check codebuddy                    # CodeBuddy 模型目录 + 本地用量台账
 ```
 
 可从 [Releases](https://github.com/xieguiawu/llm-api-check/releases) 下载预编译二进制（Linux / macOS，amd64 / arm64），与 `sha256sums.txt` 对校后放入 `PATH`：
@@ -74,9 +76,10 @@ llm-api-check --version
 | `llm-api-check bai [名称\|ID] [--no-refresh]` | 白B.AI 积分额度、模型清单、免费通道盯梢 |
 | `llm-api-check longcat [名称\|ID] [--no-refresh]` | LongCat 余额 + 模型清单 |
 | `llm-api-check commandai [名称\|ID] [--no-refresh]` | Commandai 积分三池 + 模型清单 |
+| `llm-api-check codebuddy [名称\|ID] [--no-refresh]` | CodeBuddy 模型目录 + 本地用量台账 |
 | `llm-api-check gptzero [名称\|ID] [--no-refresh]` | GPTZero 账号与月度词数额度（AI 检测） |
 | `llm-api-check accounts list` | 列出所有账号 |
-`llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat\|commandai --name 名称 [凭据 flags]` | 添加账号 |
+`llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat\|commandai\|codebuddy --name 名称 [凭据 flags]` | 添加账号 |
 | `llm-api-check accounts remove --id ID \| --name 名称` | 删除账号 |
 | `llm-api-check accounts rename --id ID \| --name 名称 --new-name 新名称` | 重命名账号 |
 | `llm-api-check config path` | 打印配置文件路径 |
@@ -103,6 +106,7 @@ llm-api-check --version
 | LongCat 控制台 Cookie（可选） | 登录 `longcat.chat` → DevTools → Application → Cookies → `passport_token_key`. 启用 Token 资源包 + 按量余额（控制台计量接口）。敏感度等同登录态 |
 | GPTZero API key | app.gptzero.me 登录 → API 订阅页 → 创建 key（32 位 hex，`x-api-key` 头认证）。读自己的月度词数额度 |
 | Commandai API key | commandcode.ai 登录 → Studio → 创建 key。`Bearer` 认证。模型清单接口实测免认证，但额度接口（`/alpha/*`）必须有 key |
+| CodeBuddy API key | codebuddy.ai 登录 → profile/keys → 创建 key（`ck_…`，`X-API-Key` 头认证）。环境变量 `CODEBUDDY_API_KEY`。**服务端无额度接口**——用量取自本地台账（见下） |
 
 Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证密钥并列出套餐模型，并明说缺什么，不会给出臆造的数字。
 
@@ -150,6 +154,9 @@ Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证�
 | Commandai 积分 | `GET https://api.commandcode.ai/alpha/billing/credits?orgId=…` | Bearer；嵌套 `credits.{monthlyCredits,purchasedCredits,freeCredits}`（美元浮点），**另有顶层** `windowLimits`、`sandboxAccess`、`sandboxMinutes`。planId 不在这里——在订阅里 |
 | Commandai 套餐 | `GET https://api.commandcode.ai/alpha/billing/subscriptions?orgId=…` | Bearer；`data.{planId,status,currentPeriodStart,currentPeriodEnd}`（`currentPeriodStart` 为 ISO-8601，同时原文回传作 summary 的 `since`） |
 | Commandai 本期消耗 | `GET https://api.commandcode.ai/alpha/usage/summary?orgId=…&since=…` | Bearer；`totalCost`（美元）、`totalCount`、`periodBasis`；周期起点未知时省略 `since` |
+| CodeBuddy 身份 | `GET https://www.codebuddy.ai/v2/accounts` | `X-API-Key`；信封 `{code,msg,data}`；`data.accounts[0].{uid,nickname,uin}`。401 两种形状：无 key 为 APISIX HTML，坏 key 为 `{"message":"not_found"}` |
+| CodeBuddy 模型目录 | `GET https://www.codebuddy.ai/v3/config` | `X-API-Key` **加** `X-User-Id`（任意非空值即可；不带则 `data.models` 回 `null`）；`data.models[].credits` 是倍率串（`"x0.34 credits"` / `"x0.00"` / `""`） |
+| CodeBuddy 用量 | 本地台账 `~/.codebuddy/projects/<slug>/<session>.jsonl` | 服务端无额度接口（60+ 路径组合实测全 401/404）。CLI 每次模型调用追加一行，带 `providerData.rawUsage.credit` = 该次实际扣的积分。工具聚合这些行；去重键 `(conversationRequestId, messageId)` |
 
 ## 安全说明
 
@@ -158,6 +165,7 @@ Qwen 配额属于控制台会话数据。未配 Cookie 时，工具仍会验证�
 - Zen billing 数据来自页面解析，若 opencode.ai 改版可能失效。Qwen 配额窗口来自百炼控制台 RPC，随控制台会话过期。
 - 白B.AI 积分额度走未文档化的控制台 API（`chat.b.ai/trpc/lambda/usage.*`）：它现在接受 API key，但控制台改版可能随时改过端点名。`api.b.ai` 本身仍只开放推理路径（其余 403）。
 - LongCat App Key 通道无公开配额 API。工具用最小推理请求（max_tokens=1）探测余额状态（约 $0.000002/次）。API key 可访问账户的 token 余额——请把配置文件当敏感文件对待。
+- CodeBuddy 完全没有额度接口。`codebuddy` 命令报的是本地 `~/.codebuddy` 台账里记录的积分合计，并在输出中明确标注这一点。它从不声称「剩余额度」，且只读这些文件——不写入、不修改 `~/.codebuddy` 下任何内容。
 - LongCat 控制台 Cookie（`passport_token_key`）即 longcat.chat 登录态——同源写接口亦受其保护。敏感度等同密码；不再需要时删账号（`accounts remove`）。平台未公开每日免费额度，工具不显示。
 - 智星云实例列表接口的响应体里带着实例 root/RDP/VNC 明文口令。解析层用显式白名单字段解码，这些口令不会进入数据类、`--json` 输出或终端渲染；工具也刻意不调用会回吐 SecretKey 的 `account/get_apikey_info`。
 - Qwen 控制台 Cookie 包含你的阿里云登录会话。请把配置文件当敏感文件对待，不再需要时用 `accounts remove` 删除该账号。

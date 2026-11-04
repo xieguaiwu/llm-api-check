@@ -1,32 +1,32 @@
-# Graph Report - LLM-api-check  (2026-10-25)
+# Graph Report - LLM-api-check  (2026-11-05)
 
 ## Corpus Check
-- 79 files · ~85,582 words
+- 89 files · ~98,562 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1318 nodes · 3727 edges · 54 communities (49 shown, 5 thin omitted)
-- Extraction: 83% EXTRACTED · 17% INFERRED · 0% AMBIGUOUS · INFERRED: 638 edges (avg confidence: 0.8)
+- 1505 nodes · 4229 edges · 64 communities (58 shown, 6 thin omitted)
+- Extraction: 83% EXTRACTED · 17% INFERRED · 0% AMBIGUOUS · INFERRED: 712 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `d4c92cd1`
+- Built from commit: `188e9170`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- render.go
+- Colorizer
 - parsers_test.go
 - main.go
-- QwenRepo
-- models_test.go
+- parsers/codebuddy_test.go
+- NormalizeQwenRegion
 - HandlerFunc
 - NewWithRepos
 - parsers/galaxy_test.go
 - runCLI
 - llm-api-check
 - LLM API Check CLI Implementation Plan
-- repo/bai_test.go
+- RenderOverview
 - 二、契约（2026-08-29 真实凭据实测通过）
 - F-Droid 发布调查与安卓发表计划（2026-08-24）
 - Qwen Token Plan provider 设计（2026-08-29）
@@ -41,44 +41,53 @@
 - Config
 - ParseGptzeroUsage
 - GPTZero provider 设计（AI 检测额度）—— 2026-09-07
-- cmdStatus
+- Load
 - qwen_cli_test.go
-- parsers/longcat_test.go
+- QwenRepo
 - baseTime
 - parsers/bai_test.go
-- Load
+- config_test.go
 - LongCat 控制台配额通道实施计划（Phase 1 = Go CLI）
 - app/bai_test.go
 - Commandai Provider Implementation Plan
-- CommandaiResult
-- models/commandai_test.go
+- parsers/longcat_test.go
+- CommandaiBillingOf
 - app/longcat_test.go
 - NewGptzeroRepo
 - LongCat Provider Implementation Plan
-- doGet
+- render.go
 - AggregateBaiUsage
-- render/commandai_test.go
+- RenderCommandaiDetail
 - newCommandaiApp
-- defaultClient
-- GptzeroResult
+- CodeBuddy Provider Implementation Plan
+- RenderBaiDetail
 - Account
-- DeepSeekAccount
-- CommandaiBillingOf
+- app/codebuddy_test.go
+- CommandaiWindowLimit
 - isTTY
 - isTTY
 - 2026-10-25.md
+- RenderCodebuddyDetail
+- CodebuddyLedger
+- RenderGptzeroDetail
+- repo/codebuddy_test.go
+- provider=codebuddy：服务端无额度接口 → 本地台账计算
+- LongCatAccount
+- CodebuddyResult
+- LongCatQuota
+- unixMillisOrZero
 
 ## God Nodes (most connected - your core abstractions)
-1. `New()` - 87 edges
-2. `runCLI()` - 62 edges
-3. `withConfigDir()` - 51 edges
-4. `Config` - 36 edges
-5. `Colorizer` - 32 edges
-6. `RenderOverview()` - 31 edges
-7. `baseTime()` - 29 edges
-8. `RenderLongCatDetail()` - 28 edges
-9. `NewWithRepos()` - 26 edges
-10. `RenderCommandaiDetail()` - 26 edges
+1. `New()` - 91 edges
+2. `runCLI()` - 69 edges
+3. `withConfigDir()` - 57 edges
+4. `Config` - 40 edges
+5. `Colorizer` - 35 edges
+6. `RenderOverview()` - 35 edges
+7. `RenderCommandaiDetail()` - 29 edges
+8. `baseTime()` - 29 edges
+9. `NewWithRepos()` - 28 edges
+10. `RenderLongCatDetail()` - 28 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `TestBaiJSONPointsAndExitCode()` --calls--> `exitCodeForResults()`  [INFERRED]
@@ -87,39 +96,39 @@
   bai_main_test.go → main.go
 - `cmdBai()` --calls--> `New()`  [INFERRED]
   main.go → internal/app/app.go
-- `cmdCommandai()` --calls--> `New()`  [INFERRED]
+- `cmdCodebuddy()` --calls--> `New()`  [INFERRED]
   main.go → internal/app/app.go
-- `cmdDeepSeek()` --calls--> `New()`  [INFERRED]
+- `cmdCommandai()` --calls--> `New()`  [INFERRED]
   main.go → internal/app/app.go
 
 ## Import Cycles
 - None detected.
 
-## Communities (54 total, 5 thin omitted)
+## Communities (64 total, 6 thin omitted)
 
-### Community 0 - "render.go"
-Cohesion: 0.05
-Nodes (122): LongCatResult, Builder, GptzeroPercentUsed(), PlanDisplayName(), alignedLabelColumn(), baiAllFlash(), baiWithPoints(), T (+114 more)
+### Community 0 - "Colorizer"
+Cohesion: 0.21
+Nodes (29): Builder, clampPercent64(), ColorForPercent(), CurrencySymbol(), firstBalanceInfo(), Fmt(), FormatCountdown(), formatInt() (+21 more)
 
 ### Community 1 - "parsers_test.go"
-Cohesion: 0.10
-Nodes (50): AggregateCost(), Time, normalizeRefDate(), ParseDeepSeekBalance(), ParseDeepSeekCost(), ParseGoUsage(), ParseQwenModels(), ParseQwenUsage() (+42 more)
+Cohesion: 0.09
+Nodes (53): AggregateCost(), clampPercent(), Time, normalizeRefDate(), ParseDeepSeekBalance(), ParseDeepSeekCost(), ParseGoUsage(), ParseQwenModels() (+45 more)
 
 ### Community 2 - "main.go"
-Cohesion: 0.10
-Nodes (34): cmdAccountsAdd(), cmdAccountsList(), filterBai(), filterCommandai(), filterGalaxy(), filterLongCat(), T, Time (+26 more)
+Cohesion: 0.12
+Nodes (37): cmdAccountsAdd(), cmdAccountsList(), filterGalaxy(), T, main(), maskSecret(), promptTTY(), publicBaiAccount() (+29 more)
 
-### Community 3 - "QwenRepo"
-Cohesion: 0.15
-Nodes (17): ExtractQwenSECToken(), galaxyError(), cookieValue(), Duration, joinErrors(), NewQwenRepo(), normalizeCookieHeader(), QwenEndpointsFor() (+9 more)
+### Community 3 - "parsers/codebuddy_test.go"
+Cohesion: 0.14
+Nodes (29): cbLedgerLine(), T, itoa(), TestCodebuddyAuthErrorText(), TestParseCodebuddyAccountsBusinessError(), TestParseCodebuddyAccountsDedupAndSanitize(), TestParseCodebuddyAccountsHappy(), TestParseCodebuddyAccountsMissingData() (+21 more)
 
-### Community 4 - "models_test.go"
-Cohesion: 0.33
-Nodes (9): TestCommandaiCreditsJSONTags(), QwenRegionDisplayName(), contains(), T, TestAccountHelpers(), TestAccountJSONTags(), TestBalanceJSONTags(), TestNormalizeQwenRegion() (+1 more)
+### Community 4 - "NormalizeQwenRegion"
+Cohesion: 0.31
+Nodes (9): NormalizeQwenRegion(), QwenRegionDisplayName(), contains(), T, TestAccountHelpers(), TestAccountJSONTags(), TestBalanceJSONTags(), TestNormalizeQwenRegion() (+1 more)
 
 ### Community 5 - "HandlerFunc"
-Cohesion: 0.08
-Nodes (77): HandlerFunc, NewCommandaiRepo(), Mutex, Server, T, newCMQuotaServer(), TestCommandaiModelsDedupSort(), TestCommandaiModelsEmptyKeyAllowed() (+69 more)
+Cohesion: 0.05
+Nodes (110): HandlerFunc, baiRecordsEnvelope(), baiRepoAt(), fmtInt(), Request, Server, T, itoaB() (+102 more)
 
 ### Community 6 - "NewWithRepos"
 Cohesion: 0.12
@@ -127,11 +136,11 @@ Nodes (43): Repos, NewWithRepos(), Duration, Int32, Server, T, newTestServer(), 
 
 ### Community 7 - "parsers/galaxy_test.go"
 Cohesion: 0.07
-Nodes (60): GalaxyResult, AggregateGalaxyCost(), GalaxyDeadlineUnix(), galaxyMissingField(), GalaxyRFC3339(), GalaxySign(), GalaxyStatusActive(), GalaxyStatusText() (+52 more)
+Nodes (58): AggregateGalaxyCost(), GalaxyDeadlineUnix(), galaxyMissingField(), GalaxyRFC3339(), GalaxySign(), GalaxyStatusActive(), GalaxyStatusText(), GalaxyStringToSign() (+50 more)
 
 ### Community 8 - "runCLI"
-Cohesion: 0.08
-Nodes (77): T, TestBaiAccountsLifecycle(), TestBaiAddFromEnv(), TestBaiJSONPointsAndExitCode(), TestUsageTextMentionsBai(), T, TestCommandaiAccountsListMasked(), TestCommandaiAddAndDetail() (+69 more)
+Cohesion: 0.07
+Nodes (88): T, TestBaiAccountsLifecycle(), TestBaiAddFromEnv(), TestBaiJSONPointsAndExitCode(), TestUsageTextMentionsBai(), codebuddyTestAccount(), T, TestCodebuddyAddAndDetail() (+80 more)
 
 ### Community 9 - "llm-api-check"
 Cohesion: 0.09
@@ -141,9 +150,9 @@ Nodes (20): Commands, Data sources, Features, Install, License, llm-api-check, Q
 Cohesion: 0.11
 Nodes (18): A. OpenCode Go usage（官方 API，API key 认证，无需 cookie）, Acceptance（验收标准）, B. OpenCode Zen billing（页面 scrape，workspaceId + auth cookie）, C. DeepSeek 余额（官方 API，API key 认证）, D. DeepSeek 消费明细（platform 页面 API，浏览器登录 token）, Global Constraints, LLM API Check CLI Implementation Plan, Task 1: 项目脚手架 + 数据模型 (+10 more)
 
-### Community 11 - "repo/bai_test.go"
-Cohesion: 0.14
-Nodes (30): baiRecordsEnvelope(), baiRepoAt(), fmtInt(), Request, Server, T, itoaB(), newBaiConsole() (+22 more)
+### Community 11 - "RenderOverview"
+Cohesion: 0.17
+Nodes (29): T, TestFormatTokenCount(), TestRenderLongCatDetail(), TestRenderLongCatDetailClampConsumedRatio(), TestRenderLongCatDetailConsoleError(), TestRenderLongCatDetailEmptyBalance(), TestRenderLongCatDetailError(), TestRenderLongCatDetailExpiryFallback() (+21 more)
 
 ### Community 12 - "二、契约（2026-08-29 真实凭据实测通过）"
 Cohesion: 0.14
@@ -159,31 +168,31 @@ Nodes (10): Qwen Token Plan provider 设计（2026-08-29）, 一-b.1 错误文�
 
 ### Community 15 - "CONTEXT_FOR_NEXT_AGENT.md"
 Cohesion: 0.10
-Nodes (18): 历史工作记录, 待办：Android 对等实现, 技术要点（下一位 Agent 必读）, 最后一次完成的工作（2026-08-29 14:10）, 最后一次完成的工作（2026-08-29 18:50）, 最后一次完成的工作（2026-08-30 14:35）, 最后一次完成的工作（2026-08-30 15:0x）, 最后一次完成的工作（2026-09-04 17:5x） (+10 more)
+Nodes (19): 历史工作记录, 待办：Android 对等实现, 技术要点（下一位 Agent 必读）, 最后一次完成的工作（2026-08-29 14:10）, 最后一次完成的工作（2026-08-29 18:50）, 最后一次完成的工作（2026-08-30 14:35）, 最后一次完成的工作（2026-08-30 15:0x）, 最后一次完成的工作（2026-09-04 17:5x） (+11 more)
 
 ### Community 16 - "parsers/commandai_test.go"
-Cohesion: 0.13
-Nodes (36): T, TestCommandaiEnvelopeAbsent(), TestCommandaiEnvelopeMessageSanitized(), TestCommandaiTimeOfShapes(), TestErrCommandaiAuthMessage(), TestParseCommandaiCreditsAbsent(), TestParseCommandaiCreditsHappy(), TestParseCommandaiCreditsPoolsAbsent() (+28 more)
+Cohesion: 0.08
+Nodes (47): CommandaiResult, Time, T, TestCommandaiEnvelopeAbsent(), TestCommandaiEnvelopeMessageSanitized(), TestCommandaiTimeOfShapes(), TestErrCommandaiAuthMessage(), TestParseCommandaiCreditsAbsent() (+39 more)
 
 ### Community 17 - "New"
-Cohesion: 0.19
-Nodes (13): AccountResult, App, BaiResult, DeepSeekResult, QwenResult, Result, errMsg(), Mutex (+5 more)
+Cohesion: 0.16
+Nodes (15): AccountResult, App, BaiResult, DeepSeekResult, GalaxyResult, GptzeroResult, LongCatResult, QwenResult (+7 more)
 
 ### Community 22 - "models.go"
-Cohesion: 0.14
-Nodes (21): BaiDollar(), BaiModel, BaiPlan, BaiProbe, DeepSeekBalance, DeepSeekBalanceInfo, DeepSeekCostDay, GptzeroCounters (+13 more)
+Cohesion: 0.12
+Nodes (24): BaiDollar(), CommandaiBilling, CommandaiModel, DeepSeekBalance, DeepSeekBalanceInfo, DeepSeekCostDay, GalaxyCost, GalaxyCostEntry (+16 more)
 
 ### Community 23 - "BAI provider 设计（白B.AI · api.b.ai）—— 2026-09-04"
 Cohesion: 0.12
 Nodes (15): BAI provider 设计（白B.AI · api.b.ai）—— 2026-09-04, 一、背景与需求, 七、测试与质量门, 三、数据模型（models）, 二-b、积分额度通道（chat.b.ai tRPC，2026-09-06 真实 key 实测）, 二、契约（2026-09-04 真实 key 实测）, 五、渲染, 八、用量分析 --stats（usage.records，2026-09-06 真实 key 实测） (+7 more)
 
 ### Community 24 - "parsers.go"
-Cohesion: 0.12
-Nodes (31): baiEnvelopeOf(), baiPayloadOf(), clampPercent(), RawMessage, gptzeroCountersOf(), int64Of(), parseAmount(), ParseBaiMonthlySpent() (+23 more)
+Cohesion: 0.10
+Nodes (41): baiEnvelopeOf(), baiPayloadOf(), CodebuddyEnvelopeError(), commandaiRawText(), RawMessage, gptzeroCountersOf(), int64Of(), mergeCodebuddyAcc() (+33 more)
 
 ### Community 25 - "Config"
-Cohesion: 0.09
-Nodes (9): Config, Time, filterQwen(), publicQwenAccount(), publicQwenAccounts(), publicQwenResult(), publicQwenResults(), resultsFromAccounts() (+1 more)
+Cohesion: 0.07
+Nodes (13): Config, Time, filterBai(), filterCommandai(), filterDeepSeek(), filterGptzero(), filterQwen(), resultsFromAccounts() (+5 more)
 
 ### Community 26 - "ParseGptzeroUsage"
 Cohesion: 0.44
@@ -193,29 +202,29 @@ Nodes (10): T, TestParseGptzeroUsageBrokenJSON(), TestParseGptzeroUsageDropsAPIK
 Cohesion: 0.17
 Nodes (11): 2.1 请求, 2.2 响应（白名单字段）, 2.3 错误语义（实测）, 2.4 额度口径, GPTZero provider 设计（AI 检测额度）—— 2026-09-07, 一、背景, 三、数据模型（models）, 二、契约（2026-09-07 真实 key 实测） (+3 more)
 
-### Community 28 - "cmdStatus"
-Cohesion: 0.41
-Nodes (23): DefaultPath(), cmdAccounts(), cmdAccountsRemove(), cmdAccountsRename(), cmdBai(), cmdCommandai(), cmdConfig(), cmdDeepSeek() (+15 more)
+### Community 28 - "Load"
+Cohesion: 0.34
+Nodes (27): checkPermissions(), DefaultPath(), Load(), NewIDE(), cmdAccounts(), cmdAccountsRemove(), cmdAccountsRename(), cmdBai() (+19 more)
 
 ### Community 29 - "qwen_cli_test.go"
-Cohesion: 0.09
-Nodes (41): Cmd, Context, NormalizeQwenRegion(), DetectQwenCLI(), Duration, QwenCLIDefaultLoginCmd(), qwenCLIEnvelopeOf(), qwenCLIErrorEnvelope() (+33 more)
+Cohesion: 0.10
+Nodes (40): Cmd, Context, DetectQwenCLI(), Duration, QwenCLIDefaultLoginCmd(), qwenCLIEnvelopeOf(), qwenCLIErrorEnvelope(), qwenCLIRewriteBin() (+32 more)
 
-### Community 30 - "parsers/longcat_test.go"
-Cohesion: 0.07
-Nodes (55): T, TestErrLongCatAuth(), TestParseLongCatModelsCapabilityFields(), TestParseLongCatModelsCapabilityFieldsAbsent(), TestParseLongCatModelsDedup(), TestParseLongCatModelsEmpty(), TestParseLongCatModelsHappy(), TestParseLongCatModelsInvalidJSON() (+47 more)
+### Community 30 - "QwenRepo"
+Cohesion: 0.05
+Nodes (53): ExtractQwenSECToken(), Client, longCatHeaders(), NewLongCatRepo(), normalizeConsoleCookie(), Server, T, newLongCatConsoleRepo() (+45 more)
 
 ### Community 31 - "baseTime"
-Cohesion: 0.13
-Nodes (41): galaxyResult(), T, TestGalaxyOverviewLowBalanceRed(), TestGalaxySpanShort(), TestGalaxyStatusColor(), TestGalaxyUnitPriceTrims(), TestPadToUsesDisplayWidth(), TestRenderGalaxyDetailSections() (+33 more)
+Cohesion: 0.11
+Nodes (47): galaxyResult(), T, TestGalaxyOverviewLowBalanceRed(), TestGalaxySpanShort(), TestGalaxyStatusColor(), TestGalaxyUnitPriceTrims(), TestPadToUsesDisplayWidth(), TestRenderGalaxyDetailSections() (+39 more)
 
 ### Community 32 - "parsers/bai_test.go"
-Cohesion: 0.20
-Nodes (20): fmtInt(), T, TestBaiPlanMissingFreeFlash(), TestParseBaiErrorEnvelopeSanitized(), TestParseBaiModelsEmptyData(), TestParseBaiModelsErrorEnvelope(), TestParseBaiModelsHappy(), TestParseBaiMonthlySpent() (+12 more)
+Cohesion: 0.22
+Nodes (19): fmtInt(), T, TestBaiPlanMissingFreeFlash(), TestParseBaiErrorEnvelopeSanitized(), TestParseBaiModelsEmptyData(), TestParseBaiModelsErrorEnvelope(), TestParseBaiModelsHappy(), TestParseBaiMonthlySpent() (+11 more)
 
-### Community 33 - "Load"
-Cohesion: 0.26
-Nodes (17): checkPermissions(), Load(), NewIDE(), T, TestDefaultPathHome(), TestDefaultPathXDG(), TestLoadCorruptJSON(), TestLoadLegacyConfigWithoutQwen() (+9 more)
+### Community 33 - "config_test.go"
+Cohesion: 0.31
+Nodes (14): T, TestDefaultPathHome(), TestDefaultPathXDG(), TestLoadCorruptJSON(), TestLoadLegacyConfigWithoutQwen(), TestLoadMissingFileEmpty(), TestLoadWidePermissionWarns(), TestNewID() (+6 more)
 
 ### Community 34 - "LongCat 控制台配额通道实施计划（Phase 1 = Go CLI）"
 Cohesion: 0.12
@@ -229,13 +238,13 @@ Nodes (19): baiStubResp, baiAllOK(), baiAllOK2(), boolJSON(), Int32, Server, T, 
 Cohesion: 0.11
 Nodes (17): 1.1 Base 与认证, 1.2 模型面（实测免认证，HTTP 200）, 1.3 额度面（/alpha/*，CLI 私有，全部 GET + Bearer）, 1.4 数值语义（npm `projectUsageView` 公式，逐条照抄）, Commandai Provider Implementation Plan, Global Constraints, 一、线协议（三源验证，2026-10-25）, 七、main 接线（Task 5：main.go） (+9 more)
 
-### Community 37 - "CommandaiResult"
-Cohesion: 0.24
-Nodes (7): CommandaiResult, Client, CommandaiModel, CommandaiPlan, CommandaiUsageSummary, CommandaiWhoami, CommandaiRepo
+### Community 37 - "parsers/longcat_test.go"
+Cohesion: 0.19
+Nodes (24): T, TestErrLongCatAuth(), TestParseLongCatModelsCapabilityFields(), TestParseLongCatModelsCapabilityFieldsAbsent(), TestParseLongCatModelsDedup(), TestParseLongCatModelsEmpty(), TestParseLongCatModelsHappy(), TestParseLongCatModelsInvalidJSON() (+16 more)
 
-### Community 38 - "models/commandai_test.go"
+### Community 38 - "CommandaiBillingOf"
 Cohesion: 0.21
-Nodes (16): T, TestCommandaiAccountJSONTags(), TestCommandaiBillingOfActivePlan(), TestCommandaiBillingOfMaxPoolEdge(), TestCommandaiBillingOfNegativeClamped(), TestCommandaiBillingOfNilCredits(), TestCommandaiBillingOfNoPlan(), TestCommandaiPlanDisplayName() (+8 more)
+Nodes (18): T, TestCommandaiAccountJSONTags(), TestCommandaiBillingOfActivePlan(), TestCommandaiBillingOfMaxPoolEdge(), TestCommandaiBillingOfNegativeClamped(), TestCommandaiBillingOfNilCredits(), TestCommandaiBillingOfNoPlan(), TestCommandaiCreditsJSONTags() (+10 more)
 
 ### Community 39 - "app/longcat_test.go"
 Cohesion: 0.33
@@ -249,61 +258,93 @@ Nodes (10): Client, gptzeroHeaders(), NewGptzeroRepo(), T, TestGptzeroUsageAuthE
 Cohesion: 0.18
 Nodes (10): 1. App Key 无配额接口；控制台 Cookie 可读资源包/余额, 2. 探活成本, 3. 免费额度, LongCat Provider Implementation Plan, 关键设计决策, 已知限制, 平台特征, 数据模型 (+2 more)
 
-### Community 42 - "doGet"
-Cohesion: 0.20
-Nodes (7): goWindows(), baiHeaders(), doGet(), GoUsage, GoWindow, windowEntry, BaiRepo
+### Community 42 - "render.go"
+Cohesion: 0.10
+Nodes (35): PlanDisplayName(), baiDay(), baiDollarText(), baiLabel(), codebuddyDefaultModel(), codebuddyModelText(), codebuddyMultiplierRange(), codebuddyTimeText() (+27 more)
 
 ### Community 43 - "AggregateBaiUsage"
 Cohesion: 0.36
 Nodes (8): baiRec(), T, TestAggregateBaiUsage(), TestAggregateBaiUsageTiesAndEmpty(), AggregateBaiUsage(), BaiModelUsage, BaiRecord, BaiUsageStats
 
-### Community 44 - "render/commandai_test.go"
-Cohesion: 0.33
-Nodes (12): cmFixture(), T, Time, TestRenderCommandaiDetailHappy(), TestRenderCommandaiError(), TestRenderCommandaiExhaustedRed(), TestRenderCommandaiLimitedBadgeAndCountdownCoexist(), TestRenderCommandaiModelsCount() (+4 more)
+### Community 44 - "RenderCommandaiDetail"
+Cohesion: 0.31
+Nodes (17): cmFixture(), T, Time, TestRenderCommandaiCapReachedFallback(), TestRenderCommandaiDetailHappy(), TestRenderCommandaiError(), TestRenderCommandaiExceededBadge(), TestRenderCommandaiExhaustedRed() (+9 more)
 
 ### Community 45 - "newCommandaiApp"
 Cohesion: 0.38
 Nodes (11): Server, T, newCommandaiApp(), newCommandaiAppServer(), TestRefreshAllIncludesCommandai(), TestRefreshCommandaiAccountNotFound(), TestRefreshCommandaiAuthSingleLine(), TestRefreshCommandaiHappy() (+3 more)
 
-### Community 46 - "defaultClient"
-Cohesion: 0.33
-Nodes (7): defaultClient(), Client, Time, NewDeepSeekRepo(), NewOpenCodeRepo(), DeepSeekRepo, OpenCodeRepo
+### Community 46 - "CodeBuddy Provider Implementation Plan"
+Cohesion: 0.10
+Nodes (20): 1.1 Base 与认证, 1.2 身份面（`GET /v2/accounts`）, 1.3 目录面（`GET /v3/config`）, 1.4 额度面：**服务端不存在**（穷举证据，2026-11-05）, 1.5 台账面（本地用量真值源）, 1.6 积分与倍率的关系（实测拟合，用于交叉校验而非展示预测）, 1.7 错误语义（实测）, CodeBuddy Provider Implementation Plan (+12 more)
 
-### Community 47 - "GptzeroResult"
-Cohesion: 0.33
-Nodes (7): GptzeroResult, filterGptzero(), publicGptzeroAccount(), publicGptzeroAccounts(), publicGptzeroResult(), publicGptzeroResults(), GptzeroAccount
+### Community 47 - "RenderBaiDetail"
+Cohesion: 0.29
+Nodes (19): alignedLabelColumn(), baiAllFlash(), baiWithPoints(), T, TestRenderBaiDetailAllFlashPresent(), TestRenderBaiDetailErrorAndEmpty(), TestRenderBaiDetailMissingFlashWarns(), TestRenderBaiDetailPoints() (+11 more)
 
 ### Community 48 - "Account"
 Cohesion: 0.29
 Nodes (6): filterAccounts(), publicAccount(), publicAccountResult(), publicAccountResults(), publicAccounts(), Account
 
-### Community 49 - "DeepSeekAccount"
-Cohesion: 0.29
-Nodes (6): filterDeepSeek(), publicDeepSeekAccount(), publicDeepSeekAccounts(), publicDeepSeekResult(), publicDeepSeekResults(), DeepSeekAccount
+### Community 49 - "app/codebuddy_test.go"
+Cohesion: 0.35
+Nodes (15): cbAppServer(), cbTestApp(), cbWriteLedger(), Server, T, Time, itoaMs(), TestCodebuddyAuthFailedEmpty() (+7 more)
 
-### Community 50 - "CommandaiBillingOf"
-Cohesion: 0.36
-Nodes (8): CommandaiBillingOf(), Time, CommandaiBilling, CommandaiCredits, CommandaiSandbox, CommandaiSubscription, CommandaiWindowLimit, CommandaiWindowLimits
+### Community 50 - "CommandaiWindowLimit"
+Cohesion: 0.70
+Nodes (5): commandaiAnyWindowExceeded(), commandaiFirstExceeded(), commandaiWindowExceeded(), CommandaiWindowLimit, CommandaiWindowLimits
+
+### Community 54 - "RenderCodebuddyDetail"
+Cohesion: 0.33
+Nodes (15): cbRenderFixture(), T, Time, TestCodebuddyMultiplierRange(), TestRenderCodebuddyDetailEmptyLedger(), TestRenderCodebuddyDetailHappy(), TestRenderCodebuddyDetailManyModels(), TestRenderCodebuddyDetailNilLedger() (+7 more)
+
+### Community 55 - "CodebuddyLedger"
+Cohesion: 0.19
+Nodes (13): T, TestCodebuddyHasUsage(), TestCodebuddyLedgerRoot(), TestCodebuddyWindowOf(), TestParseCodebuddyMultiplier(), CodebuddyHasUsage(), CodebuddyLedgerRoot(), CodebuddyWindowOf() (+5 more)
+
+### Community 56 - "RenderGptzeroDetail"
+Cohesion: 0.33
+Nodes (13): GptzeroPercentUsed(), T, gzResult(), TestRenderGptzeroDetailBadLastResetNoCrash(), TestRenderGptzeroDetailErrorOnly(), TestRenderGptzeroDetailHappy(), TestRenderGptzeroDetailNoKey(), TestRenderGptzeroDetailOverageRed() (+5 more)
+
+### Community 57 - "repo/codebuddy_test.go"
+Cohesion: 0.31
+Nodes (13): Server, T, Time, itoaMs(), newCbServer(), TestCodebuddyAccountsAuthHTML(), TestCodebuddyAccountsAuthJSON(), TestCodebuddyAccountsHappy() (+5 more)
+
+### Community 58 - "provider=codebuddy：服务端无额度接口 → 本地台账计算"
+Cohesion: 0.22
+Nodes (8): 2026-11-05, provider=codebuddy：服务端无额度接口 → 本地台账计算, 关键发现（穷举实测，非猜测）, 协议细节（四源交叉验证）, 台账即真值源, 施工, 渲染铁律（写进代码注释 + 测试断言）, 踩坑
+
+### Community 59 - "LongCatAccount"
+Cohesion: 0.29
+Nodes (6): filterLongCat(), publicLongCatAccount(), publicLongCatAccounts(), publicLongCatResult(), publicLongCatResults(), LongCatAccount
+
+### Community 60 - "CodebuddyResult"
+Cohesion: 0.33
+Nodes (5): CodebuddyResult, filterCodebuddy(), publicCodebuddyResult(), publicCodebuddyResults(), CodebuddyAccount
+
+### Community 61 - "LongCatQuota"
+Cohesion: 0.29
+Nodes (7): estimateToModel(), lotToModel(), LongCatEstimate, LongCatLot, LongCatQuota, longCatEstimatePayload, longCatLotPayload
 
 ## Knowledge Gaps
-- **141 isolated node(s):** `github.com/xieguiawu/llm-api-check`, `commandaiEnvelope`, `build-dist.sh script`, `最后一次完成的工作（2026-10-25：provider=commandai）`, `最后一次完成的工作（2026-09-16：LongCat 控制台配额通道 + 三缺陷修复）` (+136 more)
+- **169 isolated node(s):** `github.com/xieguiawu/llm-api-check`, `commandaiEnvelope`, `commandaiCreditsPayload`, `codebuddyErrorEnvelope`, `build-dist.sh script` (+164 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **5 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **6 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `New()` connect `New` to `parsers_test.go`, `QwenRepo`, `HandlerFunc`, `NewWithRepos`, `parsers/galaxy_test.go`, `repo/bai_test.go`, `parsers/commandai_test.go`, `parsers.go`, `Config`, `ParseGptzeroUsage`, `cmdStatus`, `qwen_cli_test.go`, `parsers/longcat_test.go`, `parsers/bai_test.go`, `app/bai_test.go`, `app/longcat_test.go`, `NewGptzeroRepo`, `doGet`, `newCommandaiApp`, `defaultClient`, `GptzeroResult`?**
-  _High betweenness centrality (0.336) - this node is a cross-community bridge._
-- **Why does `runCLI()` connect `runCLI` to `cmdStatus`?**
-  _High betweenness centrality (0.068) - this node is a cross-community bridge._
-- **Why does `run()` connect `cmdStatus` to `runCLI`, `main.go`?**
-  _High betweenness centrality (0.068) - this node is a cross-community bridge._
-- **Are the 74 inferred relationships involving `New()` (e.g. with `NewCommandaiRepo()` and `NewGalaxyRepo()`) actually correct?**
-  _`New()` has 74 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 66 inferred relationships involving `HandlerFunc` (e.g. with `newTestServer()` and `qwenServer()`) actually correct?**
-  _`HandlerFunc` has 66 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 26 inferred relationships involving `runCLI()` (e.g. with `TestBaiAccountsLifecycle()` and `TestBaiAddFromEnv()`) actually correct?**
-  _`runCLI()` has 26 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 22 inferred relationships involving `withConfigDir()` (e.g. with `TestBaiAccountsLifecycle()` and `TestBaiAddFromEnv()`) actually correct?**
-  _`withConfigDir()` has 22 INFERRED edges - model-reasoned connections that need verification._
+- **Why does `New()` connect `New` to `parsers_test.go`, `parsers/codebuddy_test.go`, `NormalizeQwenRegion`, `HandlerFunc`, `NewWithRepos`, `parsers/galaxy_test.go`, `parsers/commandai_test.go`, `parsers.go`, `Config`, `ParseGptzeroUsage`, `Load`, `qwen_cli_test.go`, `QwenRepo`, `parsers/bai_test.go`, `app/bai_test.go`, `parsers/longcat_test.go`, `app/longcat_test.go`, `NewGptzeroRepo`, `newCommandaiApp`?**
+  _High betweenness centrality (0.302) - this node is a cross-community bridge._
+- **Why does `Config` connect `Config` to `app/bai_test.go`, `NewWithRepos`, `parsers/galaxy_test.go`, `runCLI`, `Load`, `Account`, `New`, `LongCatAccount`, `CodebuddyResult`?**
+  _High betweenness centrality (0.062) - this node is a cross-community bridge._
+- **Why does `runCLI()` connect `runCLI` to `Load`?**
+  _High betweenness centrality (0.061) - this node is a cross-community bridge._
+- **Are the 77 inferred relationships involving `New()` (e.g. with `NewCodebuddyRepo()` and `NewCommandaiRepo()`) actually correct?**
+  _`New()` has 77 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 68 inferred relationships involving `HandlerFunc` (e.g. with `newTestServer()` and `qwenServer()`) actually correct?**
+  _`HandlerFunc` has 68 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 33 inferred relationships involving `runCLI()` (e.g. with `TestBaiAccountsLifecycle()` and `TestBaiAddFromEnv()`) actually correct?**
+  _`runCLI()` has 33 INFERRED edges - model-reasoned connections that need verification._
+- **Are the 28 inferred relationships involving `withConfigDir()` (e.g. with `TestBaiAccountsLifecycle()` and `TestBaiAddFromEnv()`) actually correct?**
+  _`withConfigDir()` has 28 INFERRED edges - model-reasoned connections that need verification._

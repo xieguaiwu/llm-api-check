@@ -98,6 +98,23 @@ func (r CommandaiResult) AuthFailed() bool {
 	return strings.Contains(r.Error, parsers.ErrCommandaiAuth.Error())
 }
 
+// CodebuddyResult 单个 CodeBuddy 账号的刷新结果。
+// Identity = 身份（/v2/accounts）；Catalog = 模型目录（/v3/config，需 uid）；
+// Ledger = 本机台账聚合——**本 provider 唯一的额度来源**，服务端不提供余额接口。
+// Ledger 与账号无关（同一台机器一份），但按账号携带以便渲染层单点取值。
+type CodebuddyResult struct {
+	Account  models.CodebuddyAccount   `json:"account"`
+	Identity *models.CodebuddyIdentity `json:"identity,omitempty"`
+	Catalog  *models.CodebuddyCatalog  `json:"catalog,omitempty"`
+	Ledger   *models.CodebuddyLedger   `json:"ledger,omitempty"`
+	Error    string                    `json:"error,omitempty"`
+}
+
+// AuthFailed 是否为凭据认证失败（exit code 判据）。
+func (r CodebuddyResult) AuthFailed() bool {
+	return strings.Contains(r.Error, parsers.ErrCodebuddyAuth.Error())
+}
+
 // GalaxyResult 单个智星云账号的刷新结果（对应 GalaxyUi）。
 // Balance 必需；Status/Instances/Cost 任一失败只影响该段（错误合并进 Error）。
 type GalaxyResult struct {
@@ -130,6 +147,7 @@ type Result struct {
 	Gptzero     []GptzeroResult
 	LongCat     []LongCatResult
 	Commandai   []CommandaiResult
+	Codebuddy   []CodebuddyResult
 	LastUpdated time.Time
 }
 
@@ -143,6 +161,7 @@ type Repos struct {
 	Gptzero   *repo.GptzeroRepo
 	LongCat   *repo.LongCatRepo
 	Commandai *repo.CommandaiRepo
+	Codebuddy *repo.CodebuddyRepo
 }
 
 // GalaxyInstanceLimit 单次刷新展示的活跃实例上限（防止大账号拉穿）
@@ -169,6 +188,7 @@ func New(cfg *config.Config) *App {
 			Gptzero:   repo.NewGptzeroRepo(),
 			LongCat:   repo.NewLongCatRepo(),
 			Commandai: repo.NewCommandaiRepo(),
+			Codebuddy: repo.NewCodebuddyRepo(),
 		},
 		Cfg: cfg,
 	}
@@ -204,6 +224,7 @@ func (a *App) RefreshAll() (Result, error) {
 	gzAccounts := append([]models.GptzeroAccount(nil), a.Cfg.GptzeroAccounts...)
 	lcAccounts := append([]models.LongCatAccount(nil), a.Cfg.LongCatAccounts...)
 	cmAccounts := append([]models.CommandaiAccount(nil), a.Cfg.CommandaiAccounts...)
+	cbAccounts := append([]models.CodebuddyAccount(nil), a.Cfg.CodebuddyAccounts...)
 	dsRes := make([]DeepSeekResult, len(dsAccounts))
 	accRes := make([]AccountResult, len(accounts))
 	qwenRes := make([]QwenResult, len(qwenAccounts))
@@ -212,6 +233,7 @@ func (a *App) RefreshAll() (Result, error) {
 	gzRes := make([]GptzeroResult, len(gzAccounts))
 	lcRes := make([]LongCatResult, len(lcAccounts))
 	cmRes := make([]CommandaiResult, len(cmAccounts))
+	cbRes := make([]CodebuddyResult, len(cbAccounts))
 	var wg sync.WaitGroup
 	for i, acc := range dsAccounts {
 		wg.Add(1)
@@ -269,10 +291,17 @@ func (a *App) RefreshAll() (Result, error) {
 			cmRes[i] = a.refreshCommandai(acc)
 		}(i, acc)
 	}
+	for i, acc := range cbAccounts {
+		wg.Add(1)
+		go func(i int, acc models.CodebuddyAccount) {
+			defer wg.Done()
+			cbRes[i] = a.refreshCodebuddy(acc)
+		}(i, acc)
+	}
 	wg.Wait()
 	now := time.Now()
 	a.Cfg.SetLastUpdate("all", now.UnixMilli())
-	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, Gptzero: gzRes, LongCat: lcRes, Commandai: cmRes, LastUpdated: now}, nil
+	return Result{DeepSeek: dsRes, Accounts: accRes, Qwen: qwenRes, Galaxy: galaxyRes, Bai: baiRes, Gptzero: gzRes, LongCat: lcRes, Commandai: cmRes, Codebuddy: cbRes, LastUpdated: now}, nil
 }
 
 // RefreshDeepSeek 按 id 刷新单个 DeepSeek 账号（对应 refreshDeepSeekNow）
@@ -805,4 +834,89 @@ func errMsg(e error) string {
 		return ""
 	}
 	return e.Error()
+}
+
+// RefreshCodebuddy 按 id 刷新单个 CodeBuddy 账号（身份 + 模型目录 + 本地台账）。
+func (a *App) RefreshCodebuddy(id string) (CodebuddyResult, error) {
+	var acc models.CodebuddyAccount
+	found := false
+	for _, x := range a.Cfg.CodebuddyAccounts {
+		if x.ID == id {
+			acc = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return CodebuddyResult{}, errors.New("账号不存在或已被删除")
+	}
+	return a.refreshCodebuddy(acc), nil
+}
+
+// refreshCodebuddy 三路取数：身份 → （目录 ∥ 台账）。
+//
+// 身份必须先完成：uid 是目录面 X-User-Id 的唯一来源（缺失时服务端 data.models=null）。
+// 台账不依赖 key，所以身份失败时它照跑——未登录也能看本机用量。
+// 认证失败时 Error 单行化为 ErrCodebuddyAuth 原文（不叠目录/台账错误）。
+func (a *App) refreshCodebuddy(acc models.CodebuddyAccount) CodebuddyResult {
+	res := CodebuddyResult{Account: acc}
+	if a.Repos == nil || a.Repos.Codebuddy == nil {
+		res.Error = "Codebuddy 仓库未初始化"
+		return res
+	}
+
+	var idErr error
+	if strings.TrimSpace(acc.ApiKey) == "" {
+		idErr = errors.New("未配置 API Key（账号与模型目录不可用）")
+	} else {
+		ids, err := a.Repos.Codebuddy.Accounts(acc.ApiKey)
+		if err != nil {
+			idErr = err
+		} else if len(ids) == 0 {
+			idErr = errors.New("CodeBuddy 返回空账号列表")
+		} else {
+			identity := ids[0]
+			res.Identity = &identity
+		}
+	}
+
+	var (
+		wg      sync.WaitGroup
+		catalog models.CodebuddyCatalog
+		catErr  error
+		ledger  models.CodebuddyLedger
+		ledErr  error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		uid := ""
+		if res.Identity != nil {
+			uid = res.Identity.UID
+		}
+		if strings.TrimSpace(acc.ApiKey) == "" || uid == "" {
+			catErr = errors.New("缺少 API Key 或账号 uid，模型目录不可用")
+			return
+		}
+		catalog, catErr = a.Repos.Codebuddy.Catalog(acc.ApiKey, uid)
+	}()
+	go func() {
+		defer wg.Done()
+		ledger, ledErr = a.Repos.Codebuddy.Ledger(time.Now())
+	}()
+	wg.Wait()
+
+	if catErr == nil {
+		res.Catalog = &catalog
+	}
+	if ledErr == nil {
+		res.Ledger = &ledger
+	}
+
+	if errors.Is(idErr, parsers.ErrCodebuddyAuth) {
+		res.Error = idErr.Error()
+	} else {
+		res.Error = joinErrors(idErr, catErr, ledErr)
+	}
+	return res
 }

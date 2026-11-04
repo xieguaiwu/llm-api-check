@@ -1,5 +1,22 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
+## 最后一次完成的工作（2026-11-05：provider=codebuddy —— 无额度接口 → 本地台账计算）
+- **provider=codebuddy（腾讯 CodeBuddy 国际版，codebuddy.ai）全链路可用并落配置**：`llm-api-check codebuddy` 看身份 + 28 模型目录（含 credits 倍率）+ **本地用量台账**（累计积分/时间窗/按模型/会话数）。照 longcat/commandai 模板同构，但额度来源完全不同。
+  - 🔑 **核心发现：服务端没有额度接口**（穷举实测，60+ 路径组合）：`/billing/meter/*` 全部 401 APISIX（需网页 Cookie）、`/v2/userinfo` 400「only temporary api keys are supported」、`/v2|/v3` × {usage,quota,credit(s),billing,plan,subscription,member,entitlement,balance,wallet,limits,resource} × {GET,POST} 全 404、`/console/*` 302 登录页。npm 包 `@tencent-ai/codebuddy-code@2.179.3` 的 `dist/codebuddy.js` 里也没有任何额度查询调用（`fetchQuota`/`creditBalance`/`usageSummary` 零命中）。→ **额度只能从本地台账算**。
+  - 🔑 **台账 = 唯一用量真值源**：`~/.codebuddy/projects/<slug>/<sessionId>.jsonl`，CLI 每次模型调用追加一行，`providerData.rawUsage.credit` 是该次**实际扣除的积分**（服务端真值，非本地估算）。实测 663 条记录 → 52.85 积分；最小二乘拟合 R²=0.9981（留出集误差 −1.0%），确认 `credit` 与 token 用量线性一致。
+  - **认证头是 `X-API-Key`**（不是 Bearer；来自 `dist/codebuddy.js` 的 `API_KEY_HEADER`）。`/v3/config` 另需 **`X-User-Id`**（任意非空值即可，缺失则 `data.models=null`）——uid 从 `/v2/accounts` 取。
+  - **401 两种形状**（都要归一为 `ErrCodebuddyAuth`）：无 key → APISIX HTML；坏 key → `{"message":"not_found"}`。
+  - **`credits` 三种形状**：`""`（未标注，**不是免费**）、`"x0.34 credits"`、`"x0.00"`。解析为倍率 float + `HasMultiplier` 标志；空串渲染时不显示倍率（显示 `x0.00` 会被读成免费）。
+  - **台账解析 7 条规则**（parsers.ParseCodebuddyLedger）：①只认 `credit` 存在且有限非负 ②去重键 `(conversationRequestId,messageId)`，双空退化行 id/内容哈希 ③timestamp 缺失 → 计入「全部」但不进日期窗 ④模型名 `requestModelId→model→"(未知模型)"` ⑤坏行计 `SkippedLines` 不中断 ⑥root 不存在 = 空台账（合法状态）⑦全程只读。
+  - **行分类三态**：`billed`（计费）/ `unbilled`（合法但不计费：reasoning/工具结果/快照，实测 1601 行）/ `corrupt`（JSON 损坏）。分开计数——否则 `SkippedLines` 会显示 70% 坏行，误导成台账损坏。
+  - 施工：models 6 型+3 函数+`CodebuddyLedgerRoot` / parsers 3 解析器+台账扫描 / repo.CodebuddyRepo（Accounts ∥ Catalog ∥ Ledger）/ app 三路（身份串行→目录∥台账并发，认证失败单行化）/ render 详情+总览 / main cmdCodebuddy + accounts add/list/remove/rename + `--json` 掩码。
+  - 质量门：gofmt 0 / vet 0 / 7 包 `-race` 全绿；用例 **478 → 531**（codebuddy 53 个）；**反向验证 6 做**（拆 credit 校验→UnbilledVsCorrupt FAIL / 拆去重→Dedup FAIL / 拆 X-User-Id→CatalogSendsUID FAIL / 拆 401 JSON 分支→AuthJSON FAIL / 拆掩码→2 例 FAIL / 拆「全部」窗无时间戳计入→MissingTimestamp FAIL）。
+  - 真机冒烟（真 key，隔离 XDG）：身份 xieguaiwu·uid e54c80ec…·个人 / 28 模型（默认 Auto·倍率 x0.00–x6.67）/ 台账 52.85 积分 663 次 / 假 key → 单行 401 exit 1 / `--json` 无泄漏 / accounts 生命周期全通。
+  - **真实台账快照回归**：`TestParseCodebuddyLedgerRealSnapshot`（设 `LLM_API_CHECK_CB_LEDGER_ROOT` 启用）断言 663 次 / 52.85 积分 / 0 坏行——解析规则漂移会立即失败。
+  - 契约：docs/plans/2026-11-05-codebuddy-provider.md（§1.4 穷举证据 / §1.5 台账 7 规则 / §十一 已知未知）。
+  - ⚠️ **测试环境坑**：本机已导出 `COMMAND_CODE_API_KEY`，会让既有 `TestCommandaiAddAndDetail` 失败（用例期望缺 key exit 2）。跑测试须 `env -u COMMAND_CODE_API_KEY -u CODEBUDDY_API_KEY go test ./...`。
+  - ⚠️ **渲染铁律**：不得把台账求和写成「余额/剩余额度」。详情页固定输出「服务端不提供额度接口」+「本地台账 …（数据源：<路径>）」，用户可自行复核。
+
 ## 最后一次完成的工作（2026-10-25：provider=commandai —— 真 key 冒烟 + 真实形状修正）
 - **provider=commandai（Command Code 平台，commandcode.ai）已全链路可用并落配置**：`llm-api-check commandai` 看积分三池（月度/充值/免费，单位=美元）+ 5小时/每周滚动窗口（重置倒计时）+ 套餐周期 + 本期消耗 + 模型清单（93 个含 supported_endpoints）。照 longcat 模板同构。
   - ✅ **真机冒烟通过（真 key，2026-10-25）**：`~/.config/llm-api-check/config.json` 已落账号「命令」（id=a56a4ca8084c0cb508a5548cf3f6dec5，key 前缀 user_Wxg，真值源 rbw `api/commandai`，文件 0600）。实跑输出与 API 逐值一致：套餐 Go（active）· 本期剩 31 天 / 额度 $9.39 可用·总池 $10.00·6% / 5小时 $0.10/$3.00·3%·2小时36分后重置 / 每周 $0.61/$6.00·10% / 本期已花 $0.58·390 次 / 模型 93 个（Claude 11·OpenAI 82·双端点 72）。

@@ -33,6 +33,7 @@ type Config struct {
 	GptzeroAccounts   []models.GptzeroAccount   `json:"gptzero_accounts"`
 	LongCatAccounts   []models.LongCatAccount   `json:"longcat_accounts"`
 	CommandaiAccounts []models.CommandaiAccount `json:"commandai_accounts"`
+	CodebuddyAccounts []models.CodebuddyAccount `json:"codebuddy_accounts"`
 	LastUpdate        map[string]int64          `json:"last_update"`
 }
 
@@ -272,6 +273,28 @@ func (c *Config) DeleteLongCatAccount(id string) {
 		}
 	}
 	c.LongCatAccounts = kept
+}
+
+// SaveCodebuddyAccount 按 id upsert（同 SaveQwenAccount 逻辑）
+func (c *Config) SaveCodebuddyAccount(a models.CodebuddyAccount) {
+	for i, x := range c.CodebuddyAccounts {
+		if x.ID == a.ID {
+			c.CodebuddyAccounts[i] = a
+			return
+		}
+	}
+	c.CodebuddyAccounts = append(c.CodebuddyAccounts, a)
+}
+
+// DeleteCodebuddyAccount 按 id 删除（同 DeleteQwenAccount 逻辑）
+func (c *Config) DeleteCodebuddyAccount(id string) {
+	kept := c.CodebuddyAccounts[:0]
+	for _, x := range c.CodebuddyAccounts {
+		if x.ID != id {
+			kept = append(kept, x)
+		}
+	}
+	c.CodebuddyAccounts = kept
 }
 
 // SaveCommandaiAccount 按 id upsert（同 SaveQwenAccount 逻辑）

@@ -41,6 +41,7 @@ const (
 	envLcAPIKey    = "LLM_API_CHECK_LONGCAT_API_KEY"
 	envLcCookie    = "LLM_API_CHECK_LONGCAT_COOKIE"
 	envCmAPIKey    = "LLM_API_CHECK_COMMANDAI_API_KEY"
+	envCbAPIKey    = "LLM_API_CHECK_CODEBUDDY_API_KEY"
 )
 
 const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan、智星云算力云、白B.AI、GPTZero 与 LongCat 使用情况（复刻 Android 版 API Checkers）
@@ -56,8 +57,9 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   llm-api-check gptzero [名称|ID]          GPTZero 账号详情：月度词数额度（AI 检测扫描的配额盯梢）
   llm-api-check longcat [名称|ID]           LongCat 账号详情：余额状态 + 模型清单（美团龙猫 API）
   llm-api-check commandai [名称|ID]         Commandai 账号详情：积分额度 + 模型清单（Command Code API）
+  llm-api-check codebuddy [名称|ID]         CodeBuddy 账号详情：模型目录 + 本地用量台账（腾讯 CodeBuddy）
   llm-api-check accounts list              列出所有账号
-  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai --name 名称 [凭据 flags]
+  llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai|codebuddy --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
   llm-api-check accounts rename --id ID | --name 名称 --new-name 新名称
   llm-api-check config path                打印配置文件路径
@@ -96,6 +98,10 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
             --console-cookie 可选：longcat.chat 控制台 Cookie（passport_token_key=…），
             提供后显示 Token 资源包与按量余额（配额信息，每日免费额度平台未公开）
   Commandai: --api-key
+  CodeBuddy: --api-key
+            环境变量 CODEBUDDY_API_KEY（官方）/ LLM_API_CHECK_CODEBUDDY_API_KEY
+            额度说明：CodeBuddy 服务端无额度查询接口，用量取自本机台账
+            （~/.codebuddy/projects 下 CLI 会话记录的每次调用积分）
             环境变量 COMMAND_CODE_API_KEY（官方名，优先）/ LLM_API_CHECK_COMMANDAI_API_KEY（回退）
             commandcode.ai/studio 创建（Bearer 认证）；
             查看积分额度（月度/充值/免费三池 + 5小时/每周滚动窗口）+ 模型清单
@@ -156,6 +162,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return cmdLongCat(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "commandai":
 		return cmdCommandai(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
+	case "codebuddy":
+		return cmdCodebuddy(rest[1:], stdin, stdout, stderr, jsonOut, noColor)
 	case "accounts":
 		return cmdAccounts(rest[1:], stdin, stdout, stderr, jsonOut)
 	case "config":
@@ -218,6 +226,7 @@ func cmdStatus(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut
 			"gptzero":          sliceOrEmpty(publicGptzeroResults(res.Gptzero)),
 			"longcat":          sliceOrEmpty(publicLongCatResults(res.LongCat)),
 			"commandai":        sliceOrEmpty(publicCommandaiResults(res.Commandai)),
+			"codebuddy":        sliceOrEmpty(publicCodebuddyResults(res.Codebuddy)),
 			"last_updated":     unixMillisOrZero(res.LastUpdated),
 			"security_warning": sw,
 		})
@@ -253,6 +262,9 @@ func resultsFromAccounts(cfg *config.Config) app.Result {
 	}
 	for _, acc := range cfg.CommandaiAccounts {
 		res.Commandai = append(res.Commandai, app.CommandaiResult{Account: acc})
+	}
+	for _, acc := range cfg.CodebuddyAccounts {
+		res.Codebuddy = append(res.Codebuddy, app.CodebuddyResult{Account: acc})
 	}
 	return res
 }
@@ -299,6 +311,14 @@ func exitCodeForResults(res app.Result) int {
 			return 1
 		}
 		if r.Error != "" && r.Plan == nil && r.Credits == nil && r.Subscription == nil && r.Summary == nil && r.Whoami == nil {
+			return 1
+		}
+	}
+	for _, r := range res.Codebuddy {
+		if r.AuthFailed() {
+			return 1
+		}
+		if r.Error != "" && r.Identity == nil && r.Catalog == nil && r.Ledger == nil {
 			return 1
 		}
 	}
@@ -981,6 +1001,7 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 			"gptzero_accounts":   sliceOrEmpty(publicGptzeroAccounts(cfg.GptzeroAccounts)),
 			"longcat_accounts":   sliceOrEmpty(publicLongCatAccounts(cfg.LongCatAccounts)),
 			"commandai_accounts": sliceOrEmpty(publicCommandaiAccounts(cfg.CommandaiAccounts)),
+			"codebuddy_accounts": sliceOrEmpty(publicCodebuddyAccounts(cfg.CodebuddyAccounts)),
 		})
 		return 0
 	}
@@ -1053,6 +1074,15 @@ func cmdAccountsList(stdout, stderr io.Writer, jsonOut bool) int {
 		}
 		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
 	}
+
+	fmt.Fprintf(stdout, "CodeBuddy 账号 (%d):\n", len(cfg.CodebuddyAccounts))
+	for _, a := range cfg.CodebuddyAccounts {
+		ready := "未配置"
+		if strings.TrimSpace(a.ApiKey) != "" {
+			ready = "API Key 已配置"
+		}
+		fmt.Fprintf(stdout, "  %s  %s  [%s]\n", a.ID, a.Name, ready)
+	}
 	return 0
 }
 
@@ -1071,12 +1101,12 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 	galaxyAK := fs.String("access-key", "", "智星云 AccessKey")
 	galaxySK := fs.String("secret-key", "", "智星云 SecretKey")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai --name 名称 [凭据 flags]")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai|codebuddy --name 名称 [凭据 flags]")
 		return 2
 	}
-	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" && *typ != "bai" && *typ != "gptzero" && *typ != "longcat" && *typ != "commandai" {
-		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen、galaxy、bai、gptzero 或 longcat")
-		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat --name 名称 [凭据 flags]")
+	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" && *typ != "bai" && *typ != "gptzero" && *typ != "longcat" && *typ != "commandai" && *typ != "codebuddy" {
+		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen、galaxy、bai、gptzero、longcat、commandai 或 codebuddy")
+		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai|codebuddy --name 名称 [凭据 flags]")
 		return 2
 	}
 	if strings.TrimSpace(*name) == "" {
@@ -1284,6 +1314,33 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		}
 		return 0
 	}
+	// codebuddy（腾讯 CodeBuddy）：--api-key 必填（X-API-Key 认证）
+	if *typ == "codebuddy" {
+		// 官方环境变量名优先（CODEBUDDY_API_KEY），本工具前缀名回退。
+		key, err := resolveSecretFrom(*apiKey, "api-key",
+			[]string{"CODEBUDDY_API_KEY", envCbAPIKey}, "CodeBuddy API Key: ", true, stdin, stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 2
+		}
+		acc := models.CodebuddyAccount{
+			ID:     accID,
+			Name:   strings.TrimSpace(*name),
+			ApiKey: key,
+		}
+		cfg.SaveCodebuddyAccount(acc)
+		if err := cfg.Save(config.DefaultPath()); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		if jsonOut {
+			writeJSON(stdout, map[string]any{"codebuddy_account": publicCodebuddyAccount(acc)})
+		} else {
+			fmt.Fprintf(stdout, "已添加 CodeBuddy 账号「%s」(id=%s)\n", acc.Name, acc.ID)
+		}
+		return 0
+	}
+
 	// commandai（Command Code）：--api-key 必填（额度面 Bearer 认证；模型面免认证）
 	if *typ == "commandai" {
 		// 官方环境变量名优先（全局已导出），历史名回退。
@@ -1447,6 +1504,12 @@ func cmdAccountsRemove(args []string, stdout, stderr io.Writer, jsonOut bool) in
 			removed++
 		}
 	}
+	for _, a := range cfg.CodebuddyAccounts {
+		if match(a.ID, a.Name) {
+			cfg.DeleteCodebuddyAccount(a.ID)
+			removed++
+		}
+	}
 	if removed == 0 {
 		fmt.Fprintln(stderr, "错误: 未找到匹配的账号")
 		return 1
@@ -1545,6 +1608,13 @@ func cmdAccountsRename(args []string, stdout, stderr io.Writer, jsonOut bool) in
 	}
 	for i := range cfg.CommandaiAccounts {
 		a := &cfg.CommandaiAccounts[i]
+		if match(a.ID, a.Name) {
+			a.Name = strings.TrimSpace(*newName)
+			renamed++
+		}
+	}
+	for i := range cfg.CodebuddyAccounts {
+		a := &cfg.CodebuddyAccounts[i]
 		if match(a.ID, a.Name) {
 			a.Name = strings.TrimSpace(*newName)
 			renamed++
@@ -2009,6 +2079,124 @@ func publicLongCatAccount(a models.LongCatAccount) map[string]any {
 		"apiKey":        maskSecret(a.ApiKey),
 		"consoleCookie": maskSecret(a.ConsoleCookie),
 	}
+}
+
+// ── Codebuddy public（--json 输出，mask 凭据） ─────────────────
+
+func publicCodebuddyResults(rs []app.CodebuddyResult) []map[string]any {
+	out := make([]map[string]any, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, publicCodebuddyResult(r))
+	}
+	return out
+}
+
+func publicCodebuddyResult(r app.CodebuddyResult) map[string]any {
+	m := map[string]any{
+		"account": publicCodebuddyAccount(r.Account),
+	}
+	if r.Identity != nil {
+		m["identity"] = r.Identity
+	}
+	if r.Catalog != nil {
+		m["catalog"] = r.Catalog
+	}
+	if r.Ledger != nil {
+		m["ledger"] = r.Ledger
+	}
+	if r.Error != "" {
+		m["error"] = r.Error
+	}
+	return m
+}
+
+func publicCodebuddyAccounts(as []models.CodebuddyAccount) []map[string]any {
+	out := make([]map[string]any, 0, len(as))
+	for _, a := range as {
+		out = append(out, publicCodebuddyAccount(a))
+	}
+	return out
+}
+
+func publicCodebuddyAccount(a models.CodebuddyAccount) map[string]any {
+	return map[string]any{
+		"id":     a.ID,
+		"name":   a.Name,
+		"apiKey": maskSecret(a.ApiKey),
+	}
+}
+
+// cmdCodebuddy CodeBuddy 账号详情：身份 + 模型目录 + 本地用量台账。
+func cmdCodebuddy(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonOut, noColor bool) int {
+	fs := flag.NewFlagSet("codebuddy", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noRefresh := fs.Bool("no-refresh", false, "不刷新，只显示已配置账号")
+	if err := fs.Parse(moveFlags(args)); err != nil {
+		fmt.Fprintln(stderr, "用法: llm-api-check codebuddy [名称|ID] [--no-refresh]")
+		return 2
+	}
+	if fs.NArg() > 1 {
+		fmt.Fprintln(stderr, "用法: llm-api-check codebuddy [名称|ID] [--no-refresh]")
+		return 2
+	}
+	path := config.DefaultPath()
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "错误: %v\n", err)
+		return 1
+	}
+	warnSecurity(stderr, noColor)
+	accounts := cfg.CodebuddyAccounts
+	if fs.NArg() == 1 {
+		filtered, ok := filterCodebuddy(accounts, fs.Arg(0))
+		if !ok {
+			fmt.Fprintf(stderr, "账号不存在: %s\n", fs.Arg(0))
+			return 1
+		}
+		accounts = filtered
+	}
+	a := app.New(cfg)
+	results := make([]app.CodebuddyResult, 0, len(accounts))
+	for _, acc := range accounts {
+		var r app.CodebuddyResult
+		if *noRefresh {
+			r = app.CodebuddyResult{Account: acc}
+		} else if r, err = a.RefreshCodebuddy(acc.ID); err != nil {
+			fmt.Fprintf(stderr, "错误: %v\n", err)
+			return 1
+		}
+		results = append(results, r)
+	}
+	res := app.Result{Codebuddy: results}
+	if jsonOut {
+		if len(results) == 1 {
+			writeJSON(stdout, map[string]any{"codebuddy": publicCodebuddyResult(results[0])})
+		} else {
+			writeJSON(stdout, map[string]any{"codebuddy": publicCodebuddyResults(results)})
+		}
+		return exitCodeForResults(res)
+	}
+	c := colorizer(noColor)
+	var b strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(render.RenderCodebuddyDetail(r, time.Now(), c))
+	}
+	fmt.Fprint(stdout, b.String())
+	return exitCodeForResults(res)
+}
+
+// filterCodebuddy 按 id 或 name 精确匹配（任一命中即包含）
+func filterCodebuddy(list []models.CodebuddyAccount, q string) ([]models.CodebuddyAccount, bool) {
+	var out []models.CodebuddyAccount
+	for _, a := range list {
+		if a.ID == q || a.Name == q {
+			out = append(out, a)
+		}
+	}
+	return out, len(out) > 0
 }
 
 // ── Commandai public（--json 输出，mask 凭据） ─────────────────

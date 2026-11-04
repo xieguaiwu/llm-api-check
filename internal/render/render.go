@@ -162,7 +162,7 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	} else {
 		fmt.Fprintf(&b, "LLM API Check — 更新于 %s\n", lastUpdated.Format("15:04"))
 	}
-	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 && len(res.Gptzero) == 0 && len(res.LongCat) == 0 && len(res.Commandai) == 0 {
+	if len(ds) == 0 && len(accs) == 0 && len(qwen) == 0 && len(galaxy) == 0 && len(bai) == 0 && len(res.Gptzero) == 0 && len(res.LongCat) == 0 && len(res.Commandai) == 0 && len(res.Codebuddy) == 0 {
 		b.WriteString("\n未配置任何账号，运行 llm-api-check accounts add --help 添加\n")
 		return b.String()
 	}
@@ -197,6 +197,10 @@ func RenderOverview(res app.Result, now time.Time, c Colorizer) string {
 	for _, r := range res.Commandai {
 		fmt.Fprintf(&b, "\nCommandai (%s)\n", r.Account.Name)
 		writeCommandaiOverview(&b, r, now, c)
+	}
+	for _, r := range res.Codebuddy {
+		fmt.Fprintf(&b, "\nCodeBuddy (%s)\n", r.Account.Name)
+		writeCodebuddyOverview(&b, r, c)
 	}
 	return b.String()
 }
@@ -1711,4 +1715,240 @@ func writeGptzeroOverview(b *strings.Builder, r app.GptzeroResult, c Colorizer) 
 	if r.Error != "" {
 		b.WriteString(c.Red("  "+r.Error) + "\n")
 	}
+}
+
+// ── Codebuddy（腾讯 CodeBuddy，codebuddy.ai） ─────────────────
+
+// codebuddyLabel CodeBuddy 标签列（显示宽度补位，禁 %-Ns 对中文）。
+type codebuddyLabel string
+
+func (l codebuddyLabel) pad() string { return padTo(string(l), 8) }
+
+// codebuddyTimeText unix 毫秒 → "2026-11-05 00:47"（本地时区）；0 → 空串。
+func codebuddyTimeText(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).Format("2006-01-02 15:04")
+}
+
+// codebuddyMultiplierRange 目录里 credits 倍率的区间文本（"x0.00–x6.67"）。
+// 只统计有标注（HasMultiplier）的模型；全部未标注 → 空串。
+func codebuddyMultiplierRange(ms []models.CodebuddyModel) string {
+	var lo, hi float64
+	found := false
+	for _, m := range ms {
+		if !m.HasMultiplier {
+			continue
+		}
+		if !found {
+			lo, hi, found = m.CreditsMultiplier, m.CreditsMultiplier, true
+			continue
+		}
+		if m.CreditsMultiplier < lo {
+			lo = m.CreditsMultiplier
+		}
+		if m.CreditsMultiplier > hi {
+			hi = m.CreditsMultiplier
+		}
+	}
+	if !found {
+		return ""
+	}
+	if lo == hi {
+		return "倍率 x" + Fmt(lo)
+	}
+	return "倍率 x" + Fmt(lo) + "–x" + Fmt(hi)
+}
+
+// codebuddyDefaultModel 默认模型 id（isDefault=true；无则空串）。
+func codebuddyDefaultModel(ms []models.CodebuddyModel) string {
+	for _, m := range ms {
+		if m.IsDefault {
+			if strings.TrimSpace(m.Name) != "" {
+				return m.Name
+			}
+			return m.ID
+		}
+	}
+	return ""
+}
+
+// writeCodebuddyModels 模型段：总数 + 默认模型 + 倍率区间 + 前 6 个明细。
+func writeCodebuddyModels(b *strings.Builder, cat *models.CodebuddyCatalog) {
+	ms := cat.Models
+	line := fmt.Sprintf("  %s %d 个", codebuddyLabel("模型").pad(), len(ms))
+	var extras []string
+	if def := codebuddyDefaultModel(ms); def != "" {
+		extras = append(extras, "默认 "+def)
+	}
+	if rng := codebuddyMultiplierRange(ms); rng != "" {
+		extras = append(extras, rng)
+	}
+	if len(extras) > 0 {
+		line += "（" + strings.Join(extras, " · ") + "）"
+	}
+	b.WriteString(line + "\n")
+
+	const limit = 6
+	n := len(ms)
+	if n > limit {
+		n = limit
+	}
+	parts := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		parts = append(parts, codebuddyModelText(ms[i]))
+	}
+	detail := "    " + strings.Join(parts, " · ")
+	if len(ms) > limit {
+		detail += fmt.Sprintf(" …等 %d 个", len(ms)-limit)
+	}
+	b.WriteString(detail + "\n")
+}
+
+// codebuddyModelText 单个模型展示：名称（上下文 · 倍率原文）。
+// 倍率原文为空 → 不显示（"未标注" 比 "x0.00" 更诚实，后者会被读成免费）。
+func codebuddyModelText(m models.CodebuddyModel) string {
+	name := strings.TrimSpace(m.Name)
+	if name == "" {
+		name = m.ID
+	}
+	var parts []string
+	if m.MaxInputTokens > 0 {
+		parts = append(parts, commandaiContextText(m.MaxInputTokens))
+	}
+	if m.HasMultiplier {
+		parts = append(parts, "x"+Fmt(m.CreditsMultiplier))
+	}
+	if len(parts) == 0 {
+		return name
+	}
+	return name + "（" + strings.Join(parts, " · ") + "）"
+}
+
+// writeCodebuddyLedger 台账段：累计积分 + 时间窗 + 按模型明细。
+//
+// **文案铁律**：必须写明「本地台账」与目录来源。服务端无额度接口（见计划 §1.4），
+// 把台账求和呈现为「余额/剩余额度」是虚构数据。
+func writeCodebuddyLedger(b *strings.Builder, l *models.CodebuddyLedger, c Colorizer) {
+	if !models.CodebuddyHasUsage(l) {
+		b.WriteString("  " + c.Gray("本地台账 暂无记录（未在 ~/.codebuddy 下运行过 CodeBuddy CLI）") + "\n")
+		return
+	}
+	// 累计行：积分 + 调用次数 + 数据源路径（用户要能自己复核）
+	fmt.Fprintf(b, "  %s 累计 %s 积分 · %s 次调用（数据源：%s）\n",
+		codebuddyLabel("本地台账").pad(), Fmt(l.Total.Credits), formatInt(l.Total.Calls), l.Root)
+	// 时间窗：0 记录的行不渲染（避免 0 误导成「今日没用」）
+	for _, w := range l.Windows {
+		if w.Days == 0 || w.Calls == 0 {
+			continue
+		}
+		fmt.Fprintf(b, "  %s %s 积分 · %s 次\n",
+			codebuddyLabel(w.Label).pad(), Fmt(w.Credits), formatInt(w.Calls))
+	}
+	// 最近活动 + 会话数
+	if ts := codebuddyTimeText(l.LastUsed); ts != "" {
+		fmt.Fprintf(b, "  %s %s（%s 个会话）\n", codebuddyLabel("最近").pad(), ts, formatInt(int64(l.Sessions)))
+	}
+	// 按模型：前 5 个（按积分降序），超出折叠
+	const limit = 5
+	n := len(l.ByModel)
+	if n > limit {
+		n = limit
+	}
+	if n > 0 {
+		parts := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			m := l.ByModel[i]
+			parts = append(parts, fmt.Sprintf("%s %s（%s 次）", m.Model, Fmt(m.Credits), formatInt(m.Calls)))
+		}
+		line := "  " + codebuddyLabel("按模型").pad() + strings.Join(parts, " · ")
+		if len(l.ByModel) > limit {
+			line += fmt.Sprintf(" …等 %d 个", len(l.ByModel)-limit)
+		}
+		b.WriteString(line + "\n")
+	}
+	// 扫描健康度：有坏行才提示（坏行意味着台账可能被并发写截断，聚合偏低）
+	if l.SkippedLines > 0 {
+		b.WriteString("  " + c.Gray(fmt.Sprintf("  台账含 %d 行无法解析（CLI 并发写截断），已跳过", l.SkippedLines)) + "\n")
+	}
+}
+
+// writeCodebuddyOverview 总览页单账号段：身份 + 模型数 + 台账累计积分 + 错误。
+func writeCodebuddyOverview(b *strings.Builder, r app.CodebuddyResult, c Colorizer) {
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type codebuddy --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return
+	}
+	var parts []string
+	if r.Identity != nil {
+		who := r.Identity.Nickname
+		if who == "" {
+			who = r.Identity.UID
+		}
+		parts = append(parts, who)
+	}
+	if r.Catalog != nil {
+		parts = append(parts, fmt.Sprintf("模型 %d 个", len(r.Catalog.Models)))
+	}
+	if r.Ledger != nil {
+		if models.CodebuddyHasUsage(r.Ledger) {
+			parts = append(parts, fmt.Sprintf("台账累计 %s 积分 / %s 次",
+				Fmt(r.Ledger.Total.Credits), formatInt(r.Ledger.Total.Calls)))
+		} else {
+			parts = append(parts, c.Gray("台账无记录"))
+		}
+	}
+	if len(parts) > 0 {
+		b.WriteString("  " + strings.Join(parts, " · ") + "\n")
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red("  "+r.Error) + "\n")
+	} else if r.Identity == nil && r.Catalog == nil && r.Ledger == nil {
+		b.WriteString(c.Gray("  暂无数据") + "\n")
+	}
+}
+
+// RenderCodebuddyDetail CodeBuddy 账号详情：身份 + 模型目录 + 本地台账用量。
+// 额度无服务端通道——「本地台账」段是唯一用量数据，渲染必须标注来源。
+func RenderCodebuddyDetail(r app.CodebuddyResult, now time.Time, c Colorizer) string {
+	_ = now // 时间窗在解析层已按 now 切好，渲染不再重算
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (CodeBuddy)\n", r.Account.Name)
+	if strings.TrimSpace(r.Account.ApiKey) == "" {
+		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type codebuddy --help 添加") + "\n")
+		if r.Error != "" {
+			b.WriteString(c.Red("  "+r.Error) + "\n")
+		}
+		return b.String()
+	}
+	b.WriteString("CodeBuddy · 模型目录 + 本地用量台账（服务端不提供额度接口）\n")
+	if r.Identity != nil {
+		kind := "个人"
+		if strings.TrimSpace(r.Identity.AccountType) != "" {
+			kind = r.Identity.AccountType
+		}
+		line := "  " + codebuddyLabel("账号").pad() + r.Identity.Nickname
+		if r.Identity.Nickname == "" {
+			line = "  " + codebuddyLabel("账号").pad() + r.Identity.UID
+		}
+		if r.Identity.UID != "" {
+			line += " · uid " + r.Identity.UID
+		}
+		line += " · " + kind
+		b.WriteString(line + "\n")
+	}
+	if r.Catalog != nil && len(r.Catalog.Models) > 0 {
+		writeCodebuddyModels(&b, r.Catalog)
+	}
+	if r.Ledger != nil {
+		writeCodebuddyLedger(&b, r.Ledger, c)
+	}
+	if r.Error != "" {
+		b.WriteString(c.Red(r.Error) + "\n")
+	}
+	return b.String()
 }

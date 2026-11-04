@@ -52,6 +52,8 @@ llm-api-check accounts add --type gptzero --name "Paper scans" --api-key <your-k
 llm-api-check gptzero                      # GPTZero monthly word quota (AI detection)
 llm-api-check accounts add --type commandai --name "Command Code" --api-key <your-key>
 llm-api-check commandai                    # Commandai credit pools + model list
+llm-api-check accounts add --type codebuddy --name "CodeBuddy" --api-key <your-key>
+llm-api-check codebuddy                    # CodeBuddy model catalog + local usage ledger
 ```
 
 Download a prebuilt binary from [Releases](https://github.com/xieguiawu/llm-api-check/releases) (Linux and macOS, amd64 and arm64), verify it against `sha256sums.txt`, then put it on your `PATH`:
@@ -74,9 +76,10 @@ llm-api-check --version
 | `llm-api-check bai [name\|ID] [--no-refresh]` | B.AI credit balance, model list, free-tier flash watch |
 | `llm-api-check longcat [name\|ID] [--no-refresh]` | LongCat balance + model list |
 | `llm-api-check commandai [name\|ID] [--no-refresh]` | Commandai credit pools + model list |
+| `llm-api-check codebuddy [name\|ID] [--no-refresh]` | CodeBuddy model catalog + local usage ledger |
 | `llm-api-check gptzero [name\|ID] [--no-refresh]` | GPTZero account + monthly word quota (AI detection) |
 | `llm-api-check accounts list` | List all accounts |
-| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat\|commandai --name NAME [credential flags]` | Add account |
+| `llm-api-check accounts add --type opencode\|deepseek\|qwen\|galaxy\|bai\|gptzero\|longcat\|commandai\|codebuddy --name NAME [credential flags]` | Add account |
 | `llm-api-check accounts remove --id ID \| --name NAME` | Remove account |
 | `llm-api-check accounts rename --id ID \| --name NAME --new-name NEW` | Rename account |
 | `llm-api-check config path` | Print config file path |
@@ -103,6 +106,7 @@ Credential flags fall back in this order: flag → env var → TTY prompt (non-T
 | LongCat console cookie (optional) | Sign in to `longcat.chat` → DevTools → Application → Cookies → `passport_token_key`. Enables Token resource pack + paygo balance (console metering API). Treat as sensitive as a login session |
 | GPTZero API key | app.gptzero.me → sign in → API subscription page → create key (32-char hex, sent as `x-api-key`). Reads your own monthly word quota |
 | Commandai API key | commandcode.ai → sign in → Studio → create key. `Bearer` auth. The model list endpoint is unauthenticated, but the quota endpoints (`/alpha/*`) require the key |
+| CodeBuddy API key | codebuddy.ai → sign in → profile/keys → create key (`ck_…`, sent as `X-API-Key`). Env var `CODEBUDDY_API_KEY`. There is no quota endpoint — usage comes from the local ledger (see below) |
 
 Qwen quota is console-session data. The tool tries the official Bailian CLI first (`bailian usage token-plan`; set `LLM_API_CHECK_QWEN_CLI=off` to disable), then falls back to a console cookie. Without either it still validates the key and lists plan models, and says so instead of showing invented numbers.
 
@@ -151,6 +155,9 @@ Notes:
 | Commandai credits | `GET https://api.commandcode.ai/alpha/billing/credits?orgId=…` | Bearer; nested `credits.{monthlyCredits,purchasedCredits,freeCredits}` (dollar floats) **plus** top-level `windowLimits`, `sandboxAccess`, `sandboxMinutes`. The plan id is *not* here — it lives in the subscription |
 | Commandai subscription | `GET https://api.commandcode.ai/alpha/billing/subscriptions?orgId=…` | Bearer; `data.{planId,status,currentPeriodStart,currentPeriodEnd}` (`currentPeriodStart` is ISO-8601; also passed back verbatim as the summary `since`) |
 | Commandai usage | `GET https://api.commandcode.ai/alpha/usage/summary?orgId=…&since=…` | Bearer; `totalCost` (USD), `totalCount`, `periodBasis`; `since` omitted when the period start is unknown |
+| CodeBuddy identity | `GET https://www.codebuddy.ai/v2/accounts` | `X-API-Key`; envelope `{code,msg,data}`; `data.accounts[0].{uid,nickname,uin}`. 401 arrives as APISIX HTML without a key and as `{"message":"not_found"}` with a bad key |
+| CodeBuddy catalog | `GET https://www.codebuddy.ai/v3/config` | `X-API-Key` **plus** `X-User-Id` (any non-empty value; omit it and `data.models` comes back `null`); `data.models[].credits` is the multiplier string (`"x0.34 credits"`, `"x0.00"`, or `""`) |
+| CodeBuddy usage | Local ledger `~/.codebuddy/projects/<slug>/<session>.jsonl` | No server-side quota API exists (60+ endpoint combinations probed, all 401/404). Each CLI model call appends one JSON line carrying `providerData.rawUsage.credit` — the credits that call actually consumed. The tool aggregates those lines; dedup key is `(conversationRequestId, messageId)` |
 
 ## Security
 
@@ -160,6 +167,7 @@ Notes:
 - B.AI credits come from an undocumented console API (`chat.b.ai/trpc/lambda/usage.*`). It accepts the API key today; a console redesign can rename the procedures without notice. `api.b.ai` itself still blocks everything except inference paths (403).
 - AI Galaxy returns instance root/RDP/VNC passwords inside the instance list. The decoder uses an explicit field whitelist, so those secrets never reach the data model, `--json` output or the UI. The tool also never calls `account/get_apikey_info`, which would echo your SecretKey back.
 - The LongCat App Key channel has no public quota API. The tool probes balance with a minimal chat request (max_tokens=1, a few cents at most). The API key grants access to your account's token balance — treat the config file as sensitive.
+- CodeBuddy has no quota API at all. The `codebuddy` command reports the sum of the credits recorded in your local `~/.codebuddy` ledger, and labels it as such. It never claims a remaining balance, and it only reads those files — nothing under `~/.codebuddy` is written or modified.
 - The LongCat console cookie (`passport_token_key`) carries your longcat.chat login session — it protects the same write APIs as the web console. Treat it as sensitive as a password; remove the account (`accounts remove`) when no longer needed. The daily free quota is not published by the platform and is not shown.
 - The Qwen console cookie carries your Alibaba Cloud login session. Treat that config file as sensitive, and remove the account (`accounts remove`) when you no longer need it. The Bailian CLI stores its session under `~/.bailian/config.json` (0600).
 - Commandai quota comes from undocumented CLI-private endpoints (`/alpha/*`). They accept a Bearer key today; a platform change can rename them without notice. The tool never sends an inference request, so a health check costs nothing. The error envelope takes priority over the HTTP status code, and `upgrade_required` (Go plan without API access) maps to a dedicated message.

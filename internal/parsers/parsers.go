@@ -3,10 +3,16 @@
 package parsers
 
 import (
+	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -1552,4 +1558,443 @@ func ParseCommandaiUsageSummary(raw string) (models.CommandaiUsageSummary, error
 		TotalCount:  *p.TotalCount,
 		PeriodBasis: strings.TrimSpace(p.PeriodBasis),
 	}, nil
+}
+
+// ── Codebuddy（腾讯 CodeBuddy，codebuddy.ai） ──────────────────
+
+// ErrCodebuddyAuth CodeBuddy key 无效或已过期（401，HTML 或 {"message":"not_found"}）。
+var ErrCodebuddyAuth = errors.New("CodeBuddy API Key 无效或已过期，请到 codebuddy.ai/profile/keys 创建或核对 API key")
+
+// codebuddyErrorEnvelope 业务错误信封（code!=0 时 msg 为可读文本）。
+type codebuddyErrorEnvelope struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+}
+
+// CodebuddyEnvelopeError 把 code!=0 的业务信封归一为 Go error（无信封/成功 → nil）。
+// msg 先 SanitizeText 后截断 200（防 ANSI 注入 + 终端污染）。
+func CodebuddyEnvelopeError(raw string) error {
+	var env codebuddyErrorEnvelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return nil
+	}
+	if env.Code == 0 {
+		return nil
+	}
+	msg := truncate(SanitizeText(strings.TrimSpace(env.Msg)), 200)
+	if msg == "" {
+		return fmt.Errorf("CodeBuddy 返回错误（code=%d）", env.Code)
+	}
+	return fmt.Errorf("CodeBuddy 返回错误（code=%d）：%s", env.Code, msg)
+}
+
+// ParseCodebuddyAccounts 解析 GET /v2/accounts。
+// 401 的两种形状（APISIX HTML / {"message":"not_found"}）在 repo 层归一为
+// ErrCodebuddyAuth；此处只处理 code!=0 的业务错误与结构缺失。
+// accounts 缺席或 null → 显式错误（不得静默当 0 账号，那会误报「未登录」为「无账号」）。
+func ParseCodebuddyAccounts(raw string) ([]models.CodebuddyIdentity, error) {
+	if err := CodebuddyEnvelopeError(raw); err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Data struct {
+			Accounts json.RawMessage `json:"accounts"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, fmt.Errorf("CodeBuddy 账号 JSON 解析失败: %w", err)
+	}
+	if len(payload.Data.Accounts) == 0 || strings.TrimSpace(string(payload.Data.Accounts)) == "null" {
+		return nil, errors.New("未获取到 CodeBuddy 账号信息（响应缺少 data.accounts）")
+	}
+	var items []struct {
+		UID          string `json:"uid"`
+		Nickname     string `json:"nickname"`
+		UIN          string `json:"uin"`
+		Type         string `json:"type"`
+		AccountType  string `json:"accountType"`
+		IsAmbassador bool   `json:"isAmbassador"`
+	}
+	if err := json.Unmarshal(payload.Data.Accounts, &items); err != nil {
+		return nil, fmt.Errorf("CodeBuddy 账号负载解析失败: %w", err)
+	}
+	out := make([]models.CodebuddyIdentity, 0, len(items))
+	seen := map[string]bool{}
+	for _, it := range items {
+		uid := strings.TrimSpace(it.UID)
+		if uid == "" || seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		out = append(out, models.CodebuddyIdentity{
+			UID:          uid,
+			Nickname:     SanitizeText(strings.TrimSpace(it.Nickname)),
+			UIN:          strings.TrimSpace(it.UIN),
+			Type:         strings.TrimSpace(it.Type),
+			AccountType:  strings.TrimSpace(it.AccountType),
+			IsAmbassador: it.IsAmbassador,
+		})
+	}
+	return out, nil
+}
+
+// ParseCodebuddyCatalog 解析 GET /v3/config 的 data.models。
+// models 为 null → 显式错误：实测该形状只出现在 X-User-Id 缺失时（服务端按未登录
+// 身份返回空配置），当成「0 模型」会掩盖真实原因。空数组 [] → 合法 0 模型。
+func ParseCodebuddyCatalog(raw string) (models.CodebuddyCatalog, error) {
+	if err := CodebuddyEnvelopeError(raw); err != nil {
+		return models.CodebuddyCatalog{}, err
+	}
+	var payload struct {
+		Data struct {
+			Models json.RawMessage `json:"models"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return models.CodebuddyCatalog{}, fmt.Errorf("CodeBuddy 配置 JSON 解析失败: %w", err)
+	}
+	if len(payload.Data.Models) == 0 || strings.TrimSpace(string(payload.Data.Models)) == "null" {
+		return models.CodebuddyCatalog{}, errors.New("未获取到 CodeBuddy 模型目录（响应 data.models 为空——多为账号 uid 缺失，X-User-Id 未带）")
+	}
+	var items []struct {
+		ID              string          `json:"id"`
+		Name            string          `json:"name"`
+		Vendor          string          `json:"vendor"`
+		MaxInputTokens  json.RawMessage `json:"maxInputTokens"`
+		MaxOutputTokens json.RawMessage `json:"maxOutputTokens"`
+		Credits         string          `json:"credits"`
+		IsDefault       bool            `json:"isDefault"`
+	}
+	if err := json.Unmarshal(payload.Data.Models, &items); err != nil {
+		return models.CodebuddyCatalog{}, fmt.Errorf("CodeBuddy 模型目录负载解析失败: %w", err)
+	}
+	out := make([]models.CodebuddyModel, 0, len(items))
+	seen := map[string]bool{}
+	for _, it := range items {
+		id := strings.TrimSpace(it.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		m := models.CodebuddyModel{
+			ID:         id,
+			Name:       SanitizeText(strings.TrimSpace(it.Name)),
+			Vendor:     strings.TrimSpace(it.Vendor),
+			CreditsRaw: strings.TrimSpace(it.Credits),
+			IsDefault:  it.IsDefault,
+		}
+		m.CreditsMultiplier, m.HasMultiplier = models.ParseCodebuddyMultiplier(m.CreditsRaw)
+		m.MaxInputTokens, _ = rawInt64(it.MaxInputTokens)
+		m.MaxOutputTokens, _ = rawInt64(it.MaxOutputTokens)
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return models.CodebuddyCatalog{Models: out}, nil
+}
+
+// codebuddyLedgerAcc 台账累加器（模型维度与时间窗维度共用同一形状）。
+type codebuddyLedgerAcc struct {
+	calls      int64
+	credits    float64
+	prompt     int64
+	completion int64
+	cacheHit   int64
+	lastUsed   int64
+}
+
+// codebuddyLedgerWindows 时间窗定义（顺序即渲染顺序）。Days=0 表示全部。
+var codebuddyLedgerWindows = []struct {
+	Label string
+	Days  int
+}{
+	{"今日", 1},
+	{"近7天", 7},
+	{"近30天", 30},
+	{"全部", 0},
+}
+
+// codebuddyLedgerEntry 一行有效记录（去重后）。
+type codebuddyLedgerEntry struct {
+	Model      string
+	Credits    float64
+	Prompt     int64
+	Completion int64
+	CacheHit   int64
+	Timestamp  int64 // unix 毫秒；0 = 未知
+}
+
+// ParseCodebuddyLedger 扫描 CodeBuddy CLI 的本地台账并聚合积分。
+//
+// 数据源：<root>/<cwd-slug>/<sessionId>.jsonl，每行是一次模型调用的记录，
+// providerData.rawUsage.credit 为该次调用实际扣除的积分（服务端真值，非本地估算）。
+//
+// 规则（与计划 §1.5 逐条对应）：
+//  1. 只认 providerData.rawUsage.credit 存在且为有限非负数的行；
+//  2. 去重键 = (conversationRequestId, messageId)，两者皆空时退化为行 id；
+//     重复出现只计首见（防会话 fork/resume 重复计入）；
+//  3. timestamp 缺失（<=0）→ 计入「全部」，但不进任何时间窗；
+//  4. 模型名取 requestModelId → model → "(未知模型)"；
+//  5. JSON 损坏行计入 SkippedLines 后继续（CLI 追加写可能留半行）；
+//  6. root 不存在 → 空台账且不报错（未用过 CLI 是合法状态）；
+//  7. 全程只读，绝不写 ~/.codebuddy。
+//
+// now 用于时间窗切分（注入以便测试）。
+func ParseCodebuddyLedger(root string, now time.Time) (models.CodebuddyLedger, error) {
+	ledger := models.CodebuddyLedger{Root: root}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ledger, nil
+		}
+		return ledger, fmt.Errorf("读取 CodeBuddy 台账目录失败: %w", err)
+	}
+
+	byModel := map[string]*codebuddyLedgerAcc{}
+	winAgg := make([]codebuddyLedgerAcc, len(codebuddyLedgerWindows))
+	seen := map[string]bool{}
+	total := codebuddyLedgerAcc{}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, entry.Name())
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			ledger.SkippedLines++
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
+				continue
+			}
+			ledger.Files++
+			ledger.Sessions++
+			scanCodebuddyLedgerFile(filepath.Join(dir, f.Name()), now, &ledger, byModel, seen, winAgg, &total)
+		}
+	}
+
+	ledger.Windows = make([]models.CodebuddyWindow, 0, len(codebuddyLedgerWindows))
+	for i, def := range codebuddyLedgerWindows {
+		a := winAgg[i]
+		ledger.Windows = append(ledger.Windows, models.CodebuddyWindow{
+			Label:      def.Label,
+			Days:       def.Days,
+			Calls:      a.calls,
+			Credits:    roundCredits(a.credits),
+			Prompt:     a.prompt,
+			Completion: a.completion,
+			CacheHit:   a.cacheHit,
+		})
+	}
+	ledger.Total = models.CodebuddyWindow{
+		Label:      "全部",
+		Days:       0,
+		Calls:      total.calls,
+		Credits:    roundCredits(total.credits),
+		Prompt:     total.prompt,
+		Completion: total.completion,
+		CacheHit:   total.cacheHit,
+	}
+	ledger.LastUsed = total.lastUsed
+	ledger.ByModel = make([]models.CodebuddyModelUsage, 0, len(byModel))
+	for name, a := range byModel {
+		ledger.ByModel = append(ledger.ByModel, models.CodebuddyModelUsage{
+			Model:      name,
+			Calls:      a.calls,
+			Credits:    roundCredits(a.credits),
+			Prompt:     a.prompt,
+			Completion: a.completion,
+			CacheHit:   a.cacheHit,
+			LastUsed:   a.lastUsed,
+		})
+	}
+	sort.Slice(ledger.ByModel, func(i, j int) bool {
+		if ledger.ByModel[i].Credits != ledger.ByModel[j].Credits {
+			return ledger.ByModel[i].Credits > ledger.ByModel[j].Credits
+		}
+		return ledger.ByModel[i].Model < ledger.ByModel[j].Model
+	})
+	return ledger, nil
+}
+
+// scanCodebuddyLedgerFile 扫描单个会话文件并累加（ParseCodebuddyLedger 的内部实现）。
+// 文件读失败计入 SkippedLines，不中断整轮扫描（单文件权限/竞态不应拖垮全量聚合）。
+func scanCodebuddyLedgerFile(path string, now time.Time, ledger *models.CodebuddyLedger,
+	byModel map[string]*codebuddyLedgerAcc, seen map[string]bool,
+	winAgg []codebuddyLedgerAcc, total *codebuddyLedgerAcc) {
+	f, err := os.Open(path)
+	if err != nil {
+		ledger.SkippedLines++
+		return
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	// 单行实测 ~1.5KB（含工具结果可到数百 KB）；默认 64KB 上限会截断大行，
+	// 抬高到 4MB 并允许长行，避免把合法记录误判为坏行。
+	sc.Buffer(make([]byte, 0, 1<<20), 4<<20)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		ledger.Lines++
+		e, kind := parseCodebuddyLedgerLine(line)
+		switch kind {
+		case codebuddyLineCorrupt:
+			ledger.SkippedLines++
+			continue
+		case codebuddyLineUnbilled:
+			// 合法行但不计费（reasoning / 工具结果 / 快照 / 无 rawUsage）：
+			// 单独计数，不算「损坏」，否则 SkippedLines 会误导成台账有 70% 坏行。
+			ledger.UnbilledLines++
+			continue
+		}
+		key := e.Key
+		if seen[key] {
+			ledger.Duplicates++
+			continue
+		}
+		seen[key] = true
+		acc := codebuddyLedgerAcc{
+			calls:      1,
+			credits:    e.Credits,
+			prompt:     e.Prompt,
+			completion: e.Completion,
+			cacheHit:   e.CacheHit,
+			lastUsed:   e.Timestamp,
+		}
+		mergeCodebuddyAcc(total, acc)
+		m := byModel[e.Model]
+		if m == nil {
+			m = &codebuddyLedgerAcc{}
+			byModel[e.Model] = m
+		}
+		mergeCodebuddyAcc(m, acc)
+		// 「全部」窗无条件计入（含无时间戳的行）；有日期的窗才按 cutoff 过滤——
+		// 否则 timestamp 缺失的行会掉出「全部」，与 Total 口径不一致。
+		cutoffDays := func(days int) int64 {
+			return now.Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+		}
+		for i, def := range codebuddyLedgerWindows {
+			switch {
+			case def.Days == 0:
+				mergeCodebuddyAcc(&winAgg[i], acc)
+			case e.Timestamp > 0 && e.Timestamp >= cutoffDays(def.Days):
+				mergeCodebuddyAcc(&winAgg[i], acc)
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		ledger.SkippedLines++ // 读流错误（半行截断之外的 I/O 故障）
+	}
+}
+
+// mergeCodebuddyAcc 把单次记录并入累加器（lastUsed 取最大时间戳）。
+func mergeCodebuddyAcc(dst *codebuddyLedgerAcc, src codebuddyLedgerAcc) {
+	dst.calls += src.calls
+	dst.credits += src.credits
+	dst.prompt += src.prompt
+	dst.completion += src.completion
+	dst.cacheHit += src.cacheHit
+	if src.lastUsed > dst.lastUsed {
+		dst.lastUsed = src.lastUsed
+	}
+}
+
+// codebuddyLineKind 台账行的分类（决定计入还是计数）。
+type codebuddyLineKind int
+
+const (
+	// codebuddyLineBilled 计入聚合的计费行。
+	codebuddyLineBilled codebuddyLineKind = iota
+	// codebuddyLineUnbilled 合法但不计费（reasoning/工具结果/快照/无 rawUsage）。
+	codebuddyLineUnbilled
+	// codebuddyLineCorrupt JSON 损坏或 credit 字段值非法。
+	codebuddyLineCorrupt
+)
+
+// codebuddyLedgerEntryWithKey 解析结果 + 去重键。
+type codebuddyLedgerEntryWithKey struct {
+	codebuddyLedgerEntry
+	Key string
+}
+
+// parseCodebuddyLedgerLine 解析一行台账记录。
+// 只提取聚合所需字段：不读取 prompt 文本、工具参数等会话内容。
+// credit 用 RawMessage 单独探测——0 积分是合法值（免费模型实测回 credit=0），
+// 与「字段缺席」必须区分。
+func parseCodebuddyLedgerLine(line []byte) (codebuddyLedgerEntryWithKey, codebuddyLineKind) {
+	var row struct {
+		ID           string `json:"id"`
+		Timestamp    int64  `json:"timestamp"`
+		ProviderData *struct {
+			ConversationRequestID string `json:"conversationRequestId"`
+			MessageID             string `json:"messageId"`
+			Model                 string `json:"model"`
+			RequestModelID        string `json:"requestModelId"`
+			RawUsage              *struct {
+				PromptTokens         int64           `json:"prompt_tokens"`
+				CompletionTokens     int64           `json:"completion_tokens"`
+				PromptCacheHitTokens int64           `json:"prompt_cache_hit_tokens"`
+				Credit               json.RawMessage `json:"credit"`
+			} `json:"rawUsage"`
+		} `json:"providerData"`
+	}
+	if err := json.Unmarshal(line, &row); err != nil {
+		return codebuddyLedgerEntryWithKey{}, codebuddyLineCorrupt
+	}
+	if row.ProviderData == nil || row.ProviderData.RawUsage == nil {
+		// reasoning / 工具结果 / 会话快照等行：合法但不计费。
+		return codebuddyLedgerEntryWithKey{}, codebuddyLineUnbilled
+	}
+	creditRaw := bytes.TrimSpace(row.ProviderData.RawUsage.Credit)
+	if len(creditRaw) == 0 || string(creditRaw) == "null" {
+		return codebuddyLedgerEntryWithKey{}, codebuddyLineUnbilled
+	}
+	var credit float64
+	if err := json.Unmarshal(creditRaw, &credit); err != nil {
+		return codebuddyLedgerEntryWithKey{}, codebuddyLineCorrupt
+	}
+	if math.IsNaN(credit) || math.IsInf(credit, 0) || credit < 0 {
+		return codebuddyLedgerEntryWithKey{}, codebuddyLineCorrupt
+	}
+
+	model := strings.TrimSpace(row.ProviderData.RequestModelID)
+	if model == "" {
+		model = strings.TrimSpace(row.ProviderData.Model)
+	}
+	if model == "" {
+		model = "(未知模型)"
+	}
+
+	key := strings.TrimSpace(row.ProviderData.ConversationRequestID) + "\x00" +
+		strings.TrimSpace(row.ProviderData.MessageID)
+	if key == "\x00" {
+		// 两字段皆空：退化为行 id；行 id 也空 → 不可去重，用内容哈希兜底。
+		if id := strings.TrimSpace(row.ID); id != "" {
+			key = "id\x00" + id
+		} else {
+			sum := sha256.Sum256(line)
+			key = "sha\x00" + hex.EncodeToString(sum[:16])
+		}
+	}
+
+	return codebuddyLedgerEntryWithKey{
+		codebuddyLedgerEntry: codebuddyLedgerEntry{
+			Model:      SanitizeText(model),
+			Credits:    credit,
+			Prompt:     row.ProviderData.RawUsage.PromptTokens,
+			Completion: row.ProviderData.RawUsage.CompletionTokens,
+			CacheHit:   row.ProviderData.RawUsage.PromptCacheHitTokens,
+			Timestamp:  row.Timestamp,
+		},
+		Key: key,
+	}, codebuddyLineBilled
+}
+
+// roundCredits 积分保留 2 位小数（服务端按 0.01 计费，浮点累加会产生 1e-15 级尾差）。
+func roundCredits(v float64) float64 {
+	return math.Round(v*100) / 100
 }

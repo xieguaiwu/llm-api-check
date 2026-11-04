@@ -9,7 +9,10 @@ package models
 import (
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -815,4 +818,150 @@ func CommandaiBillingOf(c *CommandaiCredits, s *CommandaiSubscription, u *Comman
 		b.DaysLeft = -1
 	}
 	return b
+}
+
+// ── Codebuddy（腾讯 CodeBuddy，codebuddy.ai） ─────────────────
+//
+// 与其它 provider 的根本差异：**服务端没有额度查询接口**（2026-11-05 穷举实测，
+// 见 docs/plans/2026-11-05-codebuddy-provider.md §1.4）。余额/剩余额度一律不可得，
+// 额度只能从本机台账（~/.codebuddy/projects/*/*.jsonl 的 providerData.rawUsage.credit）
+// 聚合得出。渲染层必须标注「本地台账」，禁止呈现为账户余额。
+
+// CodebuddyAccount 单账号。key 于 codebuddy.ai/profile/keys 创建（X-API-Key 头认证）。
+type CodebuddyAccount struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	ApiKey string `json:"api_key"`
+}
+
+// CodebuddyIdentity 身份（GET /v2/accounts 白名单子集）。
+// AccountType 空串表示个人账号；enterprise 场景下另有 enterpriseId（本期不取）。
+type CodebuddyIdentity struct {
+	UID          string `json:"uid"`
+	Nickname     string `json:"nickname"`
+	UIN          string `json:"uin"`
+	Type         string `json:"type"`
+	AccountType  string `json:"accountType"`
+	IsAmbassador bool   `json:"isAmbassador"`
+}
+
+// CodebuddyModel 模型目录项（GET /v3/config data.models[]）。
+// CreditsMultiplier 来自三种原始形状："x0.34 credits" / "x0.00" / ""（空串）。
+// HasMultiplier=false 表示原始为空串——语义是「未标注倍率」，不是「免费」。
+type CodebuddyModel struct {
+	ID                string  `json:"id"`
+	Name              string  `json:"name"`
+	Vendor            string  `json:"vendor"`
+	MaxInputTokens    int64   `json:"maxInputTokens"`
+	MaxOutputTokens   int64   `json:"maxOutputTokens"`
+	CreditsMultiplier float64 `json:"creditsMultiplier"`
+	CreditsRaw        string  `json:"creditsRaw"`
+	HasMultiplier     bool    `json:"hasMultiplier"`
+	IsDefault         bool    `json:"isDefault"`
+}
+
+// CodebuddyCatalog 模型目录（GET /v3/config）。
+type CodebuddyCatalog struct {
+	Models []CodebuddyModel `json:"models"`
+}
+
+// CodebuddyModelUsage 单模型台账聚合。
+type CodebuddyModelUsage struct {
+	Model      string  `json:"model"`
+	Calls      int64   `json:"calls"`
+	Credits    float64 `json:"credits"`
+	Prompt     int64   `json:"promptTokens"`
+	Completion int64   `json:"completionTokens"`
+	CacheHit   int64   `json:"cacheHitTokens"`
+	LastUsed   int64   `json:"lastUsed"` // unix 毫秒；0 = 该模型无带时间戳记录
+}
+
+// CodebuddyWindow 单个时间窗的台账聚合（Label 用于渲染，Days=0 表示全部）。
+type CodebuddyWindow struct {
+	Label      string  `json:"label"`
+	Days       int     `json:"days"`
+	Calls      int64   `json:"calls"`
+	Credits    float64 `json:"credits"`
+	Prompt     int64   `json:"promptTokens"`
+	Completion int64   `json:"completionTokens"`
+	CacheHit   int64   `json:"cacheHitTokens"`
+}
+
+// CodebuddyLedger 本地台账聚合结果（本 provider 唯一的额度来源）。
+// Lines 是扫描到的含 rawUsage 的行数；Duplicates 是被去重键折叠掉的重复行数；
+// SkippedLines 是 JSON 损坏/半行（CLI 追加写可能截断）的行数。
+type CodebuddyLedger struct {
+	Root          string                `json:"root"`
+	Files         int                   `json:"files"`
+	Sessions      int                   `json:"sessions"`
+	Lines         int                   `json:"lines"`
+	SkippedLines  int                   `json:"skippedLines"`
+	UnbilledLines int                   `json:"unbilledLines"`
+	Duplicates    int                   `json:"duplicates"`
+	Total         CodebuddyWindow       `json:"total"`
+	Windows       []CodebuddyWindow     `json:"windows"`
+	ByModel       []CodebuddyModelUsage `json:"byModel"`
+	LastUsed      int64                 `json:"lastUsed"` // unix 毫秒；0 = 无记录
+}
+
+// CodebuddyLedgerRoot 台账根目录：$CODEBUDDY_CONFIG_DIR/projects，
+// 未设时 ~/.codebuddy/projects（与 CodeBuddy CLI 自身的配置目录同源）。
+func CodebuddyLedgerRoot() string {
+	base := strings.TrimSpace(os.Getenv("CODEBUDDY_CONFIG_DIR"))
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "."
+		}
+		base = filepath.Join(home, ".codebuddy")
+	}
+	return filepath.Join(base, "projects")
+}
+
+// ParseCodebuddyMultiplier 解析目录面 credits 字段的三种形状：
+//
+//	"x0.34 credits" → (0.34, true)
+//	"x0.00"         → (0,    true)   ← 显式标注 0 倍率
+//	""              → (0,    false)  ← 未标注，不是免费
+//	"×0.59 credits" → (0.59, true)   ← 全角乘号容错
+//
+// 无法解析的非空串 → (0, false) 并保留原文供渲染（CreditsRaw），不猜数值。
+func ParseCodebuddyMultiplier(raw string) (float64, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	s = strings.TrimPrefix(s, "×")
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "x"), "X")
+	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(strings.TrimSuffix(s, "credits"))
+	s = strings.TrimSpace(strings.TrimSuffix(s, "credit"))
+	if s == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		// 负倍率无意义：目录若下发负值说明格式变了，宁可当未标注也不渲染负倍率。
+		return 0, false
+	}
+	return v, true
+}
+
+// CodebuddyWindowOf 按标签取时间窗（"今日"/"近7天"/"近30天"/"全部"）。
+// 标签不存在 → 零值窗口（Calls=0），渲染层据此跳过该行。
+func CodebuddyWindowOf(l *CodebuddyLedger, label string) CodebuddyWindow {
+	if l == nil {
+		return CodebuddyWindow{Label: label}
+	}
+	for _, w := range l.Windows {
+		if w.Label == label {
+			return w
+		}
+	}
+	return CodebuddyWindow{Label: label}
+}
+
+// CodebuddyHasUsage 台账是否含任何有效记录（渲染层区分「空台账」与「0 积分」）。
+func CodebuddyHasUsage(l *CodebuddyLedger) bool {
+	return l != nil && l.Total.Calls > 0
 }
