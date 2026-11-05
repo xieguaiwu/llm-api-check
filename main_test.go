@@ -14,10 +14,35 @@ import (
 )
 
 // 用隔离 XDG_CONFIG_HOME 跑命令级测试，避免污染真实配置
+// hostCredentialEnv 宿主环境里可能存在的官方凭据变量名。
+//
+// 这些名字是**厂商官方**变量（用户日常就在 shell 里导出），不是本工具的
+// LLM_API_CHECK_* 前缀变量。它们会绕过「缺凭据」分支，使 accounts add 的
+// 「缺 key → exit 2」用例静默变成 exit 0。
+//
+// 实测复犯：本机导出 COMMAND_CODE_API_KEY 后 TestCommandaiAddAndDetail 失败；
+// 同理 CODEBUDDY_API_KEY 会破坏 codebuddy 的缺 key 用例。凡是新增接受官方
+// 环境变量名的 provider，必须把该名字加进本表——否则开发机上测试结果取决于
+// 该开发者 shell 里恰好导出了什么。
+var hostCredentialEnv = []string{
+	"COMMAND_CODE_API_KEY", // Commandai 官方名
+	"CODEBUDDY_API_KEY",    // CodeBuddy 官方名
+}
+
+// isolateHostEnv 把宿主凭据变量清空，使「缺凭据」路径可被确定性地测到。
+// 需要验证官方变量优先级的用例应在调用后自行 t.Setenv 覆盖（后者生效）。
+func isolateHostEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range hostCredentialEnv {
+		t.Setenv(name, "")
+	}
+}
+
 func withConfigDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	isolateHostEnv(t)
 	return dir
 }
 

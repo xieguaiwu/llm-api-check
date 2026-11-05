@@ -14,7 +14,7 @@
   - 真机冒烟（真 key，隔离 XDG）：身份 xieguaiwu·uid e54c80ec…·个人 / 28 模型（默认 Auto·倍率 x0.00–x6.67）/ 台账 52.85 积分 663 次 / 假 key → 单行 401 exit 1 / `--json` 无泄漏 / accounts 生命周期全通。
   - **真实台账快照回归**：`TestParseCodebuddyLedgerRealSnapshot`（设 `LLM_API_CHECK_CB_LEDGER_ROOT` 启用）断言 663 次 / 52.85 积分 / 0 坏行——解析规则漂移会立即失败。
   - 契约：docs/plans/2026-11-05-codebuddy-provider.md（§1.4 穷举证据 / §1.5 台账 7 规则 / §十一 已知未知）。
-  - ⚠️ **测试环境坑**：本机已导出 `COMMAND_CODE_API_KEY`，会让既有 `TestCommandaiAddAndDetail` 失败（用例期望缺 key exit 2）。跑测试须 `env -u COMMAND_CODE_API_KEY -u CODEBUDDY_API_KEY go test ./...`。
+  - ✅ **测试环境坑已修根因（2026-11-05 追加）**：本机导出 `COMMAND_CODE_API_KEY` 曾让 `TestCommandaiAddAndDetail` 失败（期望缺 key exit 2，实际 exit 0）。根因不是用例错，而是 `withConfigDir` 只隔离了 `XDG_CONFIG_HOME`，没隔离**厂商官方**凭据变量——宿主 shell 导出过官方名，所有「缺凭据 → 应报错」用例就静默通过。修法：`main_test.go` 新增 `hostCredentialEnv` 表 + `isolateHostEnv(t)`，由 `withConfigDir` 统一调用；需要验证官方变量优先级的用例在调用后自行 `t.Setenv` 覆盖（后者生效）。**新增接受官方环境变量名的 provider 必须把该名字加进 `hostCredentialEnv`**，否则开发机上测试结果取决于该开发者 shell 里恰好导出了什么。反向验证：拆掉 `isolateHostEnv` 调用 → `TestCommandaiAddAndDetail` 与 `TestCodebuddyAddMissingKey` 同时 FAIL。现在 `go test ./...` 无需任何 `env -u`。
   - ⚠️ **渲染铁律**：不得把台账求和写成「余额/剩余额度」。详情页固定输出「服务端不提供额度接口」+「本地台账 …（数据源：<路径>）」，用户可自行复核。
 
 ## 最后一次完成的工作（2026-10-25：provider=commandai —— 真 key 冒烟 + 真实形状修正）
