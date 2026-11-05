@@ -78,6 +78,60 @@ func TestUnknownCommandExit2(t *testing.T) {
 	}
 }
 
+// 缺陷回归：顶层命令名大小写不敏感（2026-11-05 修复）。
+// provider 品牌名天然带大写（CodeBuddy / LongCat / CommandAI / OpenCode /
+// DeepSeek / GPTZero），照品牌名输入报「未知命令：CodeBuddy」是真实故障。
+func TestCommandNameCaseInsensitive(t *testing.T) {
+	withConfigDir(t)
+	for _, name := range []string{"codebuddy", "CodeBuddy", "CODEBUDDY", "CoDeBuDdY"} {
+		code, out, errOut := runCLI(t, "", name, "--json")
+		if code != 0 {
+			t.Fatalf("%s exit=%d err=%s", name, code, errOut)
+		}
+		if strings.Contains(errOut, "未知命令") {
+			t.Errorf("%s 不应报未知命令: %s", name, errOut)
+		}
+		if !strings.Contains(out, `"codebuddy"`) {
+			t.Errorf("%s 应输出 codebuddy 段: %s", name, out)
+		}
+	}
+	// 其他 provider 品牌名同样应命中
+	for _, tc := range []struct{ input, key string }{
+		{"LongCat", `"longcat"`},
+		{"CommandAI", `"commandai"`},
+		{"OpenCode", `"accounts"`},
+	} {
+		code, out, errOut := runCLI(t, "", tc.input, "--json")
+		if code != 0 {
+			t.Fatalf("%s exit=%d err=%s", tc.input, code, errOut)
+		}
+		if !strings.Contains(out, tc.key) {
+			t.Errorf("%s 应输出 %s 段: %s", tc.input, tc.key, out)
+		}
+	}
+	// accounts 子命令同样大小写不敏感
+	if code, _, _ := runCLI(t, "", "accounts", "LIST"); code != 0 {
+		t.Errorf("accounts LIST exit=%d, want 0", code)
+	}
+	// --type 大小写不敏感
+	code, out, errOut := runCLI(t, "", "accounts", "add", "--type", "CodeBuddy",
+		"--name", "大小写测试", "--api-key", "ck_case_test")
+	if code != 0 {
+		t.Fatalf("--type CodeBuddy exit=%d err=%s", code, errOut)
+	}
+	if !strings.Contains(out, "已添加 CodeBuddy") {
+		t.Errorf("应提示已添加 CodeBuddy: %s", out)
+	}
+	// 未知命令仍 exit 2 且回显原始输入
+	code, _, errOut = runCLI(t, "", "Frobnicate")
+	if code != 2 {
+		t.Errorf("未知命令 exit=%d, want 2", code)
+	}
+	if !strings.Contains(errOut, "未知命令：Frobnicate") {
+		t.Errorf("应回显原始输入: %q", errOut)
+	}
+}
+
 func TestStatusEmptyConfigExit0(t *testing.T) {
 	withConfigDir(t)
 	code, out, _ := runCLI(t, "", "status", "--no-refresh")

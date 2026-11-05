@@ -133,7 +133,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(rest) == 0 {
 		return cmdStatus(nil, stdin, stdout, stderr, jsonOut, noColor)
 	}
-	switch rest[0] {
+	// 命令名大小写不敏感：provider 品牌名（CodeBuddy / LongCat / CommandAI /
+	// OpenCode / DeepSeek / GPTZero）天然带大写，照品牌名输入不应报「未知命令」。
+	// 错误消息仍回显用户原始输入，便于对照。
+	switch cmd := strings.ToLower(rest[0]); cmd {
 	case "--version", "-V", "version":
 		if jsonOut {
 			writeJSON(stdout, map[string]any{"name": "llm-api-check", "version": version})
@@ -969,7 +972,7 @@ func cmdAccounts(args []string, stdin io.Reader, stdout, stderr io.Writer, jsonO
 		fmt.Fprintln(stderr, "用法: llm-api-check accounts <list|add|remove|rename>")
 		return 2
 	}
-	switch args[0] {
+	switch sub := strings.ToLower(args[0]); sub {
 	case "list":
 		return cmdAccountsList(stdout, stderr, jsonOut)
 	case "add":
@@ -1104,6 +1107,8 @@ func cmdAccountsAdd(args []string, stdin io.Reader, stdout, stderr io.Writer, js
 		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai|codebuddy --name 名称 [凭据 flags]")
 		return 2
 	}
+	// --type 大小写不敏感（用户可能照品牌名写 --type CodeBuddy）。
+	*typ = strings.ToLower(strings.TrimSpace(*typ))
 	if *typ != "opencode" && *typ != "deepseek" && *typ != "qwen" && *typ != "galaxy" && *typ != "bai" && *typ != "gptzero" && *typ != "longcat" && *typ != "commandai" && *typ != "codebuddy" {
 		fmt.Fprintln(stderr, "错误: --type 必须是 opencode、deepseek、qwen、galaxy、bai、gptzero、longcat、commandai 或 codebuddy")
 		fmt.Fprintln(stderr, "用法: llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai|codebuddy --name 名称 [凭据 flags]")
