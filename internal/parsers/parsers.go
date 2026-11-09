@@ -1218,7 +1218,7 @@ func ParseGptzeroUsage(raw string) (models.GptzeroUsage, error) {
 // ── Commandai（Command Code，commandcode.ai） ──────────────────
 
 // ErrCommandaiAuth Commandai key 无效或已过期（401 / 认证类错误信封）。
-var ErrCommandaiAuth = errors.New("Commandai API Key 无效或已过期，请到 commandcode.ai/studio 创建或核对 API key")
+var ErrCommandaiAuth = errors.New("Commandai API Key 无效或已过期，请到 commandcode.ai/studio 创建或核对 API key，或运行 cmd login 后重试")
 
 // ErrCommandaiUpgrade 当前套餐不含 API 访问（Go 套餐），需升级到 GOAT 或更高。
 var ErrCommandaiUpgrade = errors.New("当前套餐不含 API 访问（Go 套餐），请升级到 GOAT 或更高")
@@ -1690,6 +1690,118 @@ func ParseCodebuddyCatalog(raw string) (models.CodebuddyCatalog, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return models.CodebuddyCatalog{Models: out}, nil
+}
+
+// codebuddyQuotaAccountPayload 积分包原始形状（POST /v2/billing/meter/get-user-resource）。
+// 服务端同时给整数与 *Precise 字符串（后者 8 位小数），解析优先取 Precise。
+type codebuddyQuotaAccountPayload struct {
+	PackageName                string  `json:"PackageName"`
+	PackageCode                string  `json:"PackageCode"`
+	Status                     int     `json:"Status"`
+	CapacityRemain             float64 `json:"CapacityRemain"`
+	CapacitySize               float64 `json:"CapacitySize"`
+	CapacityUsed               float64 `json:"CapacityUsed"`
+	CycleCapacityRemain        float64 `json:"CycleCapacityRemain"`
+	CycleCapacitySize          float64 `json:"CycleCapacitySize"`
+	CycleCapacityUsed          float64 `json:"CycleCapacityUsed"`
+	CapacityRemainPrecise      string  `json:"CapacityRemainPrecise"`
+	CapacitySizePrecise        string  `json:"CapacitySizePrecise"`
+	CapacityUsedPrecise        string  `json:"CapacityUsedPrecise"`
+	CycleCapacityRemainPrecise string  `json:"CycleCapacityRemainPrecise"`
+	CycleCapacitySizePrecise   string  `json:"CycleCapacitySizePrecise"`
+	CycleCapacityUsedPrecise   string  `json:"CycleCapacityUsedPrecise"`
+	CycleStartTime             string  `json:"CycleStartTime"`
+	CycleEndTime               string  `json:"CycleEndTime"`
+	ExpiredTime                string  `json:"ExpiredTime"`
+}
+
+// codebuddyPreciseValue 优先用 *Precise 字符串；缺失/非法/非有限值回退整数。
+func codebuddyPreciseValue(num float64, precise string) float64 {
+	s := strings.TrimSpace(precise)
+	if s == "" {
+		return num
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return num
+	}
+	return v
+}
+
+// ParseCodebuddyQuota 解析 POST /v2/billing/meter/get-user-resource。
+//
+// 只汇总 Status==0（生效）的积分包；过期/耗尽包（Status==3）不进结果。
+// 每个包的剩余/总量优先取 CycleCapacity*（本周期口径），三项全缺失时回退
+// Capacity*（一次性发放包两者相等）。只有 remain>0 的包计入 Remaining/Total/Used
+// 分母——与官方用量页一致，避免已用尽历史包把剩余百分比拉低。
+// Accounts 缺席 = 显式失败；空数组 = 合法「无积分包」（HasActive=false）。
+func ParseCodebuddyQuota(raw string) (models.CodebuddyQuota, error) {
+	if err := CodebuddyEnvelopeError(raw); err != nil {
+		return models.CodebuddyQuota{}, err
+	}
+	var payload struct {
+		Data struct {
+			Response struct {
+				Data struct {
+					Accounts json.RawMessage `json:"Accounts"`
+				} `json:"Data"`
+			} `json:"Response"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return models.CodebuddyQuota{}, fmt.Errorf("CodeBuddy 额度 JSON 解析失败: %w", err)
+	}
+	accounts := payload.Data.Response.Data.Accounts
+	if len(accounts) == 0 || strings.TrimSpace(string(accounts)) == "null" {
+		return models.CodebuddyQuota{}, errors.New("未获取到 CodeBuddy 积分额度（响应缺少 data.Response.Data.Accounts）")
+	}
+	var items []codebuddyQuotaAccountPayload
+	if err := json.Unmarshal(accounts, &items); err != nil {
+		return models.CodebuddyQuota{}, fmt.Errorf("CodeBuddy 额度负载解析失败: %w", err)
+	}
+	out := models.CodebuddyQuota{Packages: make([]models.CodebuddyQuotaPackage, 0, len(items))}
+	for _, it := range items {
+		if it.Status != 0 {
+			continue
+		}
+		remain := codebuddyPreciseValue(it.CycleCapacityRemain, it.CycleCapacityRemainPrecise)
+		size := codebuddyPreciseValue(it.CycleCapacitySize, it.CycleCapacitySizePrecise)
+		used := codebuddyPreciseValue(it.CycleCapacityUsed, it.CycleCapacityUsedPrecise)
+		if remain == 0 && size == 0 && used == 0 {
+			remain = codebuddyPreciseValue(it.CapacityRemain, it.CapacityRemainPrecise)
+			size = codebuddyPreciseValue(it.CapacitySize, it.CapacitySizePrecise)
+			used = codebuddyPreciseValue(it.CapacityUsed, it.CapacityUsedPrecise)
+		}
+		out.HasActive = true
+		out.Packages = append(out.Packages, models.CodebuddyQuotaPackage{
+			PackageName: SanitizeText(strings.TrimSpace(it.PackageName)),
+			PackageCode: strings.TrimSpace(it.PackageCode),
+			Status:      it.Status,
+			Remain:      remain,
+			Size:        size,
+			Used:        used,
+			CycleStart:  strings.TrimSpace(it.CycleStartTime),
+			CycleEnd:    strings.TrimSpace(it.CycleEndTime),
+			ExpiredTime: strings.TrimSpace(it.ExpiredTime),
+		})
+		if remain > 0 {
+			out.Remaining += remain
+			out.Total += size
+			out.Used += used
+		}
+	}
+	// 到期早的排前面；无到期时间排最后；同到期按名称。
+	sort.SliceStable(out.Packages, func(i, j int) bool {
+		a, b := out.Packages[i], out.Packages[j]
+		if (a.CycleEnd == "") != (b.CycleEnd == "") {
+			return a.CycleEnd != ""
+		}
+		if a.CycleEnd != b.CycleEnd {
+			return a.CycleEnd < b.CycleEnd
+		}
+		return a.PackageName < b.PackageName
+	})
+	return out, nil
 }
 
 // codebuddyLedgerAcc 台账累加器（模型维度与时间窗维度共用同一形状）。

@@ -142,6 +142,107 @@ func TestParseCodebuddyCatalogEmptyArray(t *testing.T) {
 	}
 }
 
+// ── ParseCodebuddyQuota ──────────────────────────────────────
+
+const cbQuotaHappy = `{"code":0,"msg":"OK","requestId":"r1","data":{"Response":{"Data":{
+	"TotalCount":3,"TotalDosage":670,"Accounts":[
+	{"PackageName":"Bonus Pack","PackageCode":"TCACA_code_006","Status":3,
+	 "CapacityRemain":0,"CapacitySize":250,"CapacityUsed":250,
+	 "CycleCapacityRemain":0,"CycleCapacitySize":250,"CycleCapacityUsed":250,
+	 "CycleEndTime":"2026-11-18 21:08:45"},
+	{"PackageName":"Pro Plan Monthly Subscription","PackageCode":"TCACA_code_002","Status":3,
+	 "CapacityRemain":0,"CapacitySize":1000,"CapacityUsed":1000,
+	 "CycleCapacityRemain":0,"CycleCapacitySize":1000,"CycleCapacityUsed":1000,
+	 "CycleEndTime":"2026-12-04 21:10:06"},
+	{"PackageName":"Plan Bonus Quota","PackageCode":"TCACA_code_037","Status":0,
+	 "CapacityRemain":570,"CapacitySize":1000,"CapacityUsed":429,
+	 "CycleCapacityRemain":570,"CycleCapacitySize":1000,"CycleCapacityUsed":429,
+	 "CapacityRemainPrecise":"570.06000063","CapacitySizePrecise":"1000",
+	 "CapacityUsedPrecise":"429.93999937",
+	 "CycleCapacityRemainPrecise":"570.06000063","CycleCapacitySizePrecise":"1000",
+	 "CycleCapacityUsedPrecise":"429.93999937",
+	 "CycleStartTime":"2026-11-04 21:10:07","CycleEndTime":"2026-12-04 21:10:06"}
+	]}}}}`
+
+func TestParseCodebuddyQuotaHappy(t *testing.T) {
+	q, err := ParseCodebuddyQuota(cbQuotaHappy)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if !q.HasActive {
+		t.Fatal("应标记存在生效积分包")
+	}
+	// 只汇总 Status==0 的包；Precise 优先于整数字段。
+	if q.Remaining != 570.06000063 {
+		t.Errorf("Remaining=%v, want 570.06000063", q.Remaining)
+	}
+	if q.Total != 1000 {
+		t.Errorf("Total=%v, want 1000", q.Total)
+	}
+	if q.Used != 429.93999937 {
+		t.Errorf("Used=%v, want 429.93999937", q.Used)
+	}
+	if len(q.Packages) != 1 || q.Packages[0].PackageName != "Plan Bonus Quota" {
+		t.Fatalf("积分包明细错: %+v", q.Packages)
+	}
+	if pct := models.CodebuddyQuotaPercentUsed(&q); pct != 43 {
+		t.Errorf("已用百分比=%d, want 43", pct)
+	}
+}
+
+func TestParseCodebuddyQuotaAllExhausted(t *testing.T) {
+	// Status==0 但本周期余额为 0：HasActive=true（区分「无包」与「已用尽」），
+	// Total=0（已耗尽包不进分母），百分比返回 -1。
+	raw := `{"code":0,"data":{"Response":{"Data":{"Accounts":[
+		{"PackageName":"Pro","Status":0,"CycleCapacityRemain":0,
+		 "CycleCapacitySize":1000,"CycleCapacityUsed":1000}]}}}}`
+	q, err := ParseCodebuddyQuota(raw)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if !q.HasActive || q.Remaining != 0 || q.Total != 0 {
+		t.Errorf("耗尽态解析错: %+v", q)
+	}
+	if pct := models.CodebuddyQuotaPercentUsed(&q); pct != -1 {
+		t.Errorf("Total=0 时百分比应 -1, got %d", pct)
+	}
+}
+
+func TestParseCodebuddyQuotaEmptyAccounts(t *testing.T) {
+	q, err := ParseCodebuddyQuota(`{"code":0,"data":{"Response":{"Data":{"Accounts":[]}}}}`)
+	if err != nil {
+		t.Fatalf("空数组应为合法无包: %v", err)
+	}
+	if q.HasActive || len(q.Packages) != 0 {
+		t.Errorf("无包时应为空: %+v", q)
+	}
+	if _, err := ParseCodebuddyQuota(`{"code":0,"data":{"Response":{"Data":{}}}}`); err == nil {
+		t.Fatal("缺 Accounts 应显式报错")
+	}
+}
+
+func TestParseCodebuddyQuotaEnvelopeError(t *testing.T) {
+	if _, err := ParseCodebuddyQuota(`{"code":10001,"msg":"not logged in"}`); err == nil {
+		t.Fatal("业务错误信封应报错")
+	}
+}
+
+func TestParseCodebuddyQuotaFallbackCapacity(t *testing.T) {
+	// CycleCapacity* 三项全缺失 → 回退 Capacity*（一次性发放包）。
+	raw := `{"code":0,"data":{"Response":{"Data":{"Accounts":[
+		{"PackageName":"Bonus","Status":0,"CapacityRemain":12.5,
+		 "CapacitySize":50,"CapacityUsed":37.5,
+		 "CapacityRemainPrecise":"12.50","CapacitySizePrecise":"50",
+		 "CapacityUsedPrecise":"37.50"}]}}}}`
+	q, err := ParseCodebuddyQuota(raw)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if q.Remaining != 12.5 || q.Total != 50 || q.Used != 37.5 {
+		t.Errorf("回退 Capacity* 失败: %+v", q)
+	}
+}
+
 // ── ParseCodebuddyLedger ─────────────────────────────────────
 
 // cbLedgerLine 构造一行台账记录。

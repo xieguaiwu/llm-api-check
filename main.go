@@ -44,7 +44,7 @@ const (
 	envCbAPIKey    = "LLM_API_CHECK_CODEBUDDY_API_KEY"
 )
 
-const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan、智星云算力云、白B.AI、GPTZero 与 LongCat 使用情况（复刻 Android 版 API Checkers）
+const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token Plan、智星云算力云、白B.AI、GPTZero、LongCat、Commandai 与 CodeBuddy 使用情况（复刻 Android 版 API Checkers）
 
 用法:
   llm-api-check                            刷新全部账号并显示总览（等同 status）
@@ -57,7 +57,7 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
   llm-api-check gptzero [名称|ID]          GPTZero 账号详情：月度词数额度（AI 检测扫描的配额盯梢）
   llm-api-check longcat [名称|ID]           LongCat 账号详情：余额状态 + 模型清单（美团龙猫 API）
   llm-api-check commandai [名称|ID]         Commandai 账号详情：积分额度 + 模型清单（Command Code API）
-  llm-api-check codebuddy [名称|ID]         CodeBuddy 账号详情：模型目录 + 本地用量台账（腾讯 CodeBuddy）
+  llm-api-check codebuddy [名称|ID]         CodeBuddy 账号详情：积分额度 + 模型目录 + 本地台账（腾讯 CodeBuddy）
   llm-api-check accounts list              列出所有账号
   llm-api-check accounts add --type opencode|deepseek|qwen|galaxy|bai|gptzero|longcat|commandai|codebuddy --name 名称 [凭据 flags]
   llm-api-check accounts remove --id ID | --name 名称
@@ -98,15 +98,14 @@ const usageText = `llm-api-check — 查看 DeepSeek API、OpenCode、Qwen Token
             --console-cookie 可选：longcat.chat 控制台 Cookie（passport_token_key=…），
             提供后显示 Token 资源包与按量余额（配额信息，每日免费额度平台未公开）
   Commandai: --api-key
-  CodeBuddy: --api-key
-            环境变量 CODEBUDDY_API_KEY（官方）/ LLM_API_CHECK_CODEBUDDY_API_KEY
-            额度说明：CodeBuddy 服务端无额度查询接口，用量取自本机台账
-            （~/.codebuddy/projects 下 CLI 会话记录的每次调用积分）
             环境变量 COMMAND_CODE_API_KEY（官方名，优先）/ LLM_API_CHECK_COMMANDAI_API_KEY（回退）
             commandcode.ai/studio 创建（Bearer 认证）；
             查看积分额度（月度/充值/免费三池 + 5小时/每周滚动窗口）+ 模型清单
-
-退出码: 0 成功；1 任一账号完全失败；2 用法错误
+            配置 key 失效时自动回退 ~/.commandcode/auth.json（cmd login 写入的 CLI 登录态）
+  CodeBuddy: --api-key
+            环境变量 CODEBUDDY_API_KEY（官方）/ LLM_API_CHECK_CODEBUDDY_API_KEY
+            额度说明：CodeBuddy 额度取自服务端积分包接口，本机台账作按模型用量明细
+            （~/.codebuddy/projects 下 CLI 会话记录的每次调用积分）
 
 退出码: 0 成功；1 任一账号完全失败；2 用法错误
 `
@@ -2106,6 +2105,9 @@ func publicCodebuddyResult(r app.CodebuddyResult) map[string]any {
 	if r.Catalog != nil {
 		m["catalog"] = r.Catalog
 	}
+	if r.Quota != nil {
+		m["quota"] = r.Quota
+	}
 	if r.Ledger != nil {
 		m["ledger"] = r.Ledger
 	}
@@ -2232,6 +2234,9 @@ func publicCommandaiResult(r app.CommandaiResult) map[string]any {
 	}
 	if r.Summary != nil {
 		m["summary"] = r.Summary
+	}
+	if r.QuotaKeySource != "" {
+		m["quotaKeySource"] = r.QuotaKeySource
 	}
 	if r.Error != "" {
 		m["error"] = r.Error

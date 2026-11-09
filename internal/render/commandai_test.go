@@ -45,7 +45,7 @@ func TestRenderCommandaiDetailHappy(t *testing.T) {
 	c := Colorizer{Disabled: true}
 	out := RenderCommandaiDetail(r, now, c)
 	for _, want := range []string{
-		"Commandai", "测试号", "Provider", "active", "12 天后重置",
+		"Commandai", "测试号", "alice", "org acme", "Provider", "active", "12 天后重置",
 		"13.20", "1.80", "42 次请求",
 		"5小时窗口", "已限流", "2小时13分后重置",
 		"沙箱", "47.00/120.00",
@@ -140,6 +140,19 @@ func TestRenderCommandaiExhaustedRed(t *testing.T) {
 	out := RenderCommandaiDetail(r, now, Colorizer{Disabled: true})
 	if !strings.Contains(out, "额度已耗尽") {
 		t.Errorf("exhausted line missing:\n%s", out)
+	}
+}
+
+func TestRenderCommandaiCLIFallbackNote(t *testing.T) {
+	r, now := cmFixture()
+	r.QuotaKeySource = "cli"
+	out := RenderCommandaiDetail(r, now, Colorizer{Disabled: true})
+	if !strings.Contains(out, "已回退 Command Code CLI 登录凭据") {
+		t.Errorf("详情应说明额度凭据来源:\n%s", out)
+	}
+	overview := RenderOverview(app.Result{Commandai: []app.CommandaiResult{r}}, now, Colorizer{Disabled: true})
+	if !strings.Contains(overview, "Command Code CLI 登录态") {
+		t.Errorf("总览应说明额度凭据来源:\n%s", overview)
 	}
 }
 

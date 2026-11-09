@@ -2,6 +2,7 @@ package repo
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -154,6 +155,55 @@ func TestCodebuddyCatalogHTTPError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP 500") {
 		t.Errorf("错误应含状态码: %v", err)
+	}
+}
+
+// cbQuotaBody 实测响应形状（只保留额度包字段）。
+const cbQuotaBody = `{"code":0,"msg":"OK","data":{"Response":{"Data":{"Accounts":[
+	{"PackageName":"Plan Bonus Quota","PackageCode":"TCACA_code_037","Status":0,
+	 "CycleCapacityRemain":570,"CycleCapacitySize":1000,"CycleCapacityUsed":429,
+	 "CycleCapacityRemainPrecise":"570.06000063","CycleCapacitySizePrecise":"1000",
+	 "CycleCapacityUsedPrecise":"429.93999937","CycleEndTime":"2026-12-04 21:10:06"}]}}}}`
+
+func TestCodebuddyQuotaHappy(t *testing.T) {
+	var gotMethod, gotPath, gotAuth, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cbQuotaBody))
+	}))
+	defer srv.Close()
+	r := &CodebuddyRepo{BaseURL: srv.URL, Client: srv.Client()}
+	q, err := r.Quota("ck-test")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if q.Remaining != 570.06000063 || q.Total != 1000 {
+		t.Errorf("额度解析错: %+v", q)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v2/billing/meter/get-user-resource" {
+		t.Errorf("请求契约错: %s %s", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer ck-test" {
+		t.Errorf("Authorization 头错: %q", gotAuth)
+	}
+	if !strings.Contains(gotBody, `"ProductCode":"p_tcaca"`) || !strings.Contains(gotBody, `"Status":[0,3]`) {
+		t.Errorf("请求体缺关键字段: %s", gotBody)
+	}
+}
+
+func TestCodebuddyQuotaAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(cbApisixHTML))
+	}))
+	defer srv.Close()
+	r := &CodebuddyRepo{BaseURL: srv.URL, Client: srv.Client()}
+	if _, err := r.Quota("ck-bad"); !errors.Is(err, parsers.ErrCodebuddyAuth) {
+		t.Fatalf("401 应归一为 ErrCodebuddyAuth, got %v", err)
 	}
 }
 

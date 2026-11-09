@@ -8,9 +8,11 @@ package repo
 //     但 /v3/config 的鉴权走 X-API-Key）
 //   - 身份面：GET /v2/accounts
 //   - 目录面：GET /v3/config —— 必须带 X-User-Id，否则 data.models 为 null
-//   - 额度面：**服务端不存在**（§1.4 穷举证据）。额度只能从本机台账聚合：
-//     ~/.codebuddy/projects/<slug>/<sessionId>.jsonl 的 providerData.rawUsage.credit
-//   - 不做推理探活（无真值通道，探活烧真钱且得不出额度）
+//   - 额度面：POST /v2/billing/meter/get-user-resource（API key 可用，2026-11-08
+//     实测；返回每个积分包的剩余/总量/已用，是本 provider 的余额真值）
+//   - 台账面：~/.codebuddy/projects/<slug>/<sessionId>.jsonl 的
+//     providerData.rawUsage.credit（本机 CLI 实际扣费，供按模型/时间窗分析）
+//   - 不做推理探活（额度有真值通道，探活烧真钱）
 
 import (
 	"fmt"
@@ -110,6 +112,45 @@ func (r *CodebuddyRepo) Catalog(apiKey, uid string) (models.CodebuddyCatalog, er
 		return models.CodebuddyCatalog{}, err
 	}
 	return parsers.ParseCodebuddyCatalog(body)
+}
+
+// codebuddyBillingBody 积分额度查询请求体（2026-11-08 实测最小可用形状）。
+// Status [0,3] = 同时取生效包与已过期/耗尽包；解析层只汇总 Status==0。
+// 不传 PackageCodes：避免平台新增积分包类型时被白名单漏掉。
+const codebuddyBillingBody = `{"PageNumber":1,"PageSize":200,"ProductCode":"p_tcaca","Status":[0,3]}`
+
+// Quota 拉取服务端积分额度（POST /v2/billing/meter/get-user-resource）。
+// 认证用 Authorization: Bearer <API key>（实测与 X-API-Key 均可，Bearer 是官方
+// 网页端的回退路径）。401/403 归一为 ErrCodebuddyAuth。
+func (r *CodebuddyRepo) Quota(apiKey string) (models.CodebuddyQuota, error) {
+	req, err := http.NewRequest(http.MethodPost,
+		r.baseURL()+"/v2/billing/meter/get-user-resource", strings.NewReader(codebuddyBillingBody))
+	if err != nil {
+		return models.CodebuddyQuota{}, fmt.Errorf("网络请求失败: %w", err)
+	}
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("User-Agent", codebuddyUA)
+	resp, err := r.client().Do(req)
+	if err != nil {
+		return models.CodebuddyQuota{}, fmt.Errorf("网络请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return models.CodebuddyQuota{}, fmt.Errorf("网络请求失败: %w", err)
+	}
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return models.CodebuddyQuota{}, parsers.ErrCodebuddyAuth
+	case resp.StatusCode < 200 || resp.StatusCode > 299:
+		return models.CodebuddyQuota{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate200(string(body)))
+	default:
+		return parsers.ParseCodebuddyQuota(string(body))
+	}
 }
 
 // Ledger 扫描本地台账（纯文件 IO，不联网）。

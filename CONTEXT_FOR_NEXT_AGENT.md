@@ -1,8 +1,36 @@
 # CONTEXT_FOR_NEXT_AGENT.md
 
-## 最后一次完成的工作（2026-11-05：provider=codebuddy —— 无额度接口 → 本地台账计算）
+## 最后一次完成的工作（2026-11-08：commandai / codebuddy 额度可见性修复 + 同类 provider 排查）
+- **用户报障**：`commandai` 与 `codebuddy` 只能看到模型清单，看不到剩余额度本身。两者根因不同：
+  - **commandai**：代码没问题，是配置里的 `commandai_accounts[0].api_key`（user_W…，2026-10-25 创建）已过期。本机 Command Code CLI 的 `~/.commandcode/auth.json` 里有 `cmd login` 刷新的有效 key（user_YCd…，2026-11-01），用它打 `/alpha/*` 全部 200。
+  - **codebuddy**：旧结论「服务端没有额度接口」**错误**。2026-11-05 的穷举漏了带 `/v2` 前缀的计量路径：`POST https://www.codebuddy.ai/v2/billing/meter/get-user-resource` 用现有 `ck_…` API key（`Authorization: Bearer` 或 `X-API-Key`）直接返回积分包剩余额度。
+- **修复 1：Commandai 自动回退 CLI 登录凭据**
+  - `repo.CommandaiRepo` 新增 `CLIAuthPath` + `CLIAuthKey()`（默认 `~/.commandcode/auth.json`，只读 `apiKey` 字段；文件缺失/非法 JSON → 空串，不报错）。
+  - `app.refreshCommandai` 的额度 key 解析顺序：配置 key → CLI key。配置 key 认证失败（`ErrCommandaiAuth`）或配置无 key 时回退；成功后 `CommandaiResult.QuotaKeySource="cli"`，渲染层明示「配置 API Key 已失效，已回退 Command Code CLI 登录凭据」；`--json` 输出 `quotaKeySource`。
+  - `ErrCommandaiAuth` 文案补「或运行 cmd login 后重试」。
+  - ⚠️ **测试隔离新增宿主机状态**：`internal/app/commandai_test.go` 的 `newCommandaiApp` 必须把 `CLIAuthPath` 指向 t.TempDir() 下的不存在文件——否则开发机 CLI 已登录时，「配置 key 认证失败」用例会静默走回退成功（同 `hostCredentialEnv` 教训）。新增回退用例：坏配置 key + CLI key → 成功；无配置 key + CLI key → 成功。
+- **修复 2：CodeBuddy 接入服务端积分额度**
+  - `repo.CodebuddyRepo.Quota()`：`POST /v2/billing/meter/get-user-resource`，body `{"PageNumber":1,"PageSize":200,"ProductCode":"p_tcaca","Status":[0,3]}`；401/403 → `ErrCodebuddyAuth`。
+  - `parsers.ParseCodebuddyQuota()`：只汇总 `Status==0` 的包；`CycleCapacity*` 优先于 `Capacity*`，`*Precise` 字符串（8 位小数）优先于整数；仅 `remain>0` 的包计入 `Remaining/Total/Used` 分母（与官方用量页同口径）；`HasActive` 区分「无包」与「已用尽」；`Accounts` 缺席显式失败，空数组合法。
+  - `app.refreshCodebuddy` 改为「身份 →（目录 ∥ 额度 ∥ 台账）」三路并发；额度失败不拖垮身份/台账；认证失败仍单行化。
+  - `render`：详情新增「额度」行「剩余 570.06 / 1000.00 积分 [bar] 43% 已用 · 到期时间（N天后到期）」+「积分包」明细；总览新增「剩余 554.58 积分」；台账段保留并明确标注「本地台账」（本机 CLI 扣费明细，不是账户余额）。
+  - 旧文案「服务端不提供额度接口」在所有代码/README/CONTEXT 中清除；计划文档新增 §1.4b 并标注 §1.4 为历史取证。
+- **真实冒烟（2026-11-08，真 key）**：
+  - `llm-api-check commandai`：回退 CLI 凭据 → Go 套餐 $2.89 可用 / 总池 $10.00 · 71% 已用 · 5小时 $0.20/$3.00 · 每周 $1.09/$6.00 · 本期已花 $7.81 · 4,946 次 · 模型 96 个；exit 0。
+  - `llm-api-check codebuddy`：剩余 554.81 → 554.58 / 1000.00 积分 · 45% 已用 · 2026-12-04 21:10:06 到期 · 本地台账 57.48 积分 / 692 次；exit 0。
+  - `status` 总览：Commandai 显示 Go 用量条 + CLI 凭据注记；CodeBuddy 显示「剩余 554.58 积分」。
+  - `--json`：codebuddy 含 `quota{remaining,total,used,hasActive,packages[]}`；commandai 含 `quotaKeySource:"cli"`。
+- **同类 provider 排查结论（主动审计全量 9 类）**：
+  - ✅ 已能看额度：DeepSeek 余额、OpenCode Go 三窗口、白B.AI 积分、Galaxy 余额、GPTZero 月度词数、Commandai（本次修）、CodeBuddy（本次修）。
+  - ⚠️ **Qwen**：仍只有模型清单（21 个）。额度只能走 Bailian CLI 控制台会话或控制台 Cookie；本机 `~/.local/share/bailian-cli/bin/bailian` 不存在，配置也无 `consoleCookie`。已探测 `token-plan.<region>.maas.aliyuncs.com` 的 `/usage`、`/quota` 等路径——该网关把未知路径都当推理请求（400 `Required parameter "model"`），**没有 API-key 额度端点**。要恢复：`npm install -g --prefix ~/.local/share/bailian-cli bailian-cli` + 浏览器 `auth login --console`，或 `accounts add --type qwen --console-cookie …`。
+  - ⚠️ **LongCat**：只有「余额充足」探活 + 3 个模型；精确剩余 Token 需控制台 Cookie `passport_token_key`。实测用 `ak_…` key 打 `/api/pay/quota/metering/token-packs/summary` 与 `api-usage/summary` 均 401「用户未登录」——**无 API-key 额度端点**。要精确额度：`accounts add --type longcat --console-cookie 'passport_token_key=…'`。
+  - ℹ️ OpenCode 的 `xieguaiwu` / `songjieshi` 两个账号 Go key 失效（主号正常）；GPTZero key 失效——都是**凭据数据问题**，不是额度通道缺失。DeepSeek 未配 platformToken（只显示余额，不显示消费明细）；OpenCode Zen 未配 workspace/cookie（Go 套餐额度仍可见）——都是可选增强通道。
+- **质量门**：gofmt 0 / `go vet` 0 / 7 包 `go test ./... -race` 全绿；用例 **531 → 548**。新增：codebuddy quota parser 5 / repo 2 / app 2 / render 3 / models 1 / main 2；commandai CLI auth repo 1 / app 2 / render 1。
+- **文档**：README.md / README_zh.md（命令描述、凭据表、数据源表、安全说明）、docs/plans/2026-11-05-codebuddy-provider.md（§1.4b + 更正声明）、main.go `--help` 额度说明。
+
+## 最后一次完成的工作（2026-11-05：provider=codebuddy —— 无额度接口 → 本地台账计算）【结论已于 2026-11-08 推翻，见上】
 - **provider=codebuddy（腾讯 CodeBuddy 国际版，codebuddy.ai）全链路可用并落配置**：`llm-api-check codebuddy` 看身份 + 28 模型目录（含 credits 倍率）+ **本地用量台账**（累计积分/时间窗/按模型/会话数）。照 longcat/commandai 模板同构，但额度来源完全不同。
-  - 🔑 **核心发现：服务端没有额度接口**（穷举实测，60+ 路径组合）：`/billing/meter/*` 全部 401 APISIX（需网页 Cookie）、`/v2/userinfo` 400「only temporary api keys are supported」、`/v2|/v3` × {usage,quota,credit(s),billing,plan,subscription,member,entitlement,balance,wallet,limits,resource} × {GET,POST} 全 404、`/console/*` 302 登录页。npm 包 `@tencent-ai/codebuddy-code@2.179.3` 的 `dist/codebuddy.js` 里也没有任何额度查询调用（`fetchQuota`/`creditBalance`/`usageSummary` 零命中）。→ **额度只能从本地台账算**。
+  - 🔑 **核心发现（❌ 2026-11-08 已推翻）：服务端没有额度接口**（当时的穷举实测，60+ 路径组合）：`/billing/meter/*` 全部 401 APISIX（需网页 Cookie）、`/v2/userinfo` 400「only temporary api keys are supported」、`/v2|/v3` × {usage,quota,credit(s),billing,plan,subscription,member,entitlement,balance,wallet,limits,resource} × {GET,POST} 全 404、`/console/*` 302 登录页。npm 包 `@tencent-ai/codebuddy-code@2.179.3` 的 `dist/codebuddy.js` 里也没有任何额度查询调用（`fetchQuota`/`creditBalance`/`usageSummary` 零命中）。→ 当时以为「额度只能从本地台账算」。**实际漏了 `/v2/billing/meter/get-user-resource`（API key 可用），见顶部 2026-11-08 记录与计划文档 §1.4b。**
   - 🔑 **台账 = 唯一用量真值源**：`~/.codebuddy/projects/<slug>/<sessionId>.jsonl`，CLI 每次模型调用追加一行，`providerData.rawUsage.credit` 是该次**实际扣除的积分**（服务端真值，非本地估算）。实测 663 条记录 → 52.85 积分；最小二乘拟合 R²=0.9981（留出集误差 −1.0%），确认 `credit` 与 token 用量线性一致。
   - **认证头是 `X-API-Key`**（不是 Bearer；来自 `dist/codebuddy.js` 的 `API_KEY_HEADER`）。`/v3/config` 另需 **`X-User-Id`**（任意非空值即可，缺失则 `data.models=null`）——uid 从 `/v2/accounts` 取。
   - **401 两种形状**（都要归一为 `ErrCodebuddyAuth`）：无 key → APISIX HTML；坏 key → `{"message":"not_found"}`。
@@ -15,7 +43,7 @@
   - **真实台账快照回归**：`TestParseCodebuddyLedgerRealSnapshot`（设 `LLM_API_CHECK_CB_LEDGER_ROOT` 启用）断言 663 次 / 52.85 积分 / 0 坏行——解析规则漂移会立即失败。
   - 契约：docs/plans/2026-11-05-codebuddy-provider.md（§1.4 穷举证据 / §1.5 台账 7 规则 / §十一 已知未知）。
   - ✅ **测试环境坑已修根因（2026-11-05 追加）**：本机导出 `COMMAND_CODE_API_KEY` 曾让 `TestCommandaiAddAndDetail` 失败（期望缺 key exit 2，实际 exit 0）。根因不是用例错，而是 `withConfigDir` 只隔离了 `XDG_CONFIG_HOME`，没隔离**厂商官方**凭据变量——宿主 shell 导出过官方名，所有「缺凭据 → 应报错」用例就静默通过。修法：`main_test.go` 新增 `hostCredentialEnv` 表 + `isolateHostEnv(t)`，由 `withConfigDir` 统一调用；需要验证官方变量优先级的用例在调用后自行 `t.Setenv` 覆盖（后者生效）。**新增接受官方环境变量名的 provider 必须把该名字加进 `hostCredentialEnv`**，否则开发机上测试结果取决于该开发者 shell 里恰好导出了什么。反向验证：拆掉 `isolateHostEnv` 调用 → `TestCommandaiAddAndDetail` 与 `TestCodebuddyAddMissingKey` 同时 FAIL。现在 `go test ./...` 无需任何 `env -u`。
-  - ⚠️ **渲染铁律**：不得把台账求和写成「余额/剩余额度」。详情页固定输出「服务端不提供额度接口」+「本地台账 …（数据源：<路径>）」，用户可自行复核。
+  - ⚠️ **渲染铁律（❌ 2026-11-08 已更新）**：当日禁止把台账求和写成「余额/剩余额度」，详情页固定输出「服务端不提供额度接口」+「本地台账 …（数据源：<路径>）」。**现在服务端额度可用**：详情页「额度」段显示服务端积分包剩余/总量/已用，台账段继续标「本地台账」（本机 CLI 扣费明细，仍不得冒充账户余额）。
 
 ## 最后一次完成的工作（2026-10-25：provider=commandai —— 真 key 冒烟 + 真实形状修正）
 - **provider=commandai（Command Code 平台，commandcode.ai）已全链路可用并落配置**：`llm-api-check commandai` 看积分三池（月度/充值/免费，单位=美元）+ 5小时/每周滚动窗口（重置倒计时）+ 套餐周期 + 本期消耗 + 模型清单（93 个含 supported_endpoints）。照 longcat 模板同构。
@@ -259,7 +287,7 @@
 `~/Desktop/go-projects/pocket-llm-api-checker` 的同名 provider 正在并行施工（GalaxyRepo/GalaxyCard/GalaxyDetailScreen/SettingsScreen 录入 + 单测），契约以 Go 侧 plan 文档为准。真机冒烟与凭据录入由用户完成。
 
 ## 项目当前状态
-llm-api-check v1.3.0+（commandai 未发版） — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）**、**白B.AI（积分额度 + 免费 flash 通道模型清单）**、**GPTZero（AI 检测月度词数额度，2026-09-07 新增）**、**LongCat（余额探活 + 控制台配额）** 与 **Commandai（Command Code 积分额度 + 模型清单，2026-10-25 新增）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。**BAI 积分额度已通（2026-09-06）：走 `chat.b.ai` 控制台 tRPC，同一把 sk- key 作 Bearer，无需 Cookie；`api.b.ai` 本身仍只开放推理路径（其余 403）——不要再拿 api.b.ai 的 403 当「bai 无额度数据」的依据。**GPTZero 已通（2026-09-07）：`GET /v2/users/me` x-api-key 认证，计费单位是词。****
+llm-api-check v1.3.0+（commandai 未发版） — Go CLI，复刻 Android app「API Checkers」（现名 pocket-llm-api-checker）的数据层逻辑：查看 DeepSeek（余额 + 消费）、OpenCode（Go 三窗口 + Zen billing）、**Qwen Token Plan（套餐模型 + 5 小时/7 天 配额窗口）**、**智星云 AI Galaxy（算力云余额 + 云主机实例状态）**、**白B.AI（积分额度 + 免费 flash 通道模型清单）**、**GPTZero（AI 检测月度词数额度，2026-09-07 新增）**、**LongCat（余额探活 + 控制台配额）**、**Commandai（Command Code 积分额度 + 模型清单，2026-10-25 新增；2026-11-08 起配置 key 失效自动回退 CLI 登录态）** 与 **CodeBuddy（服务端积分额度 + 模型目录 + 本地台账，2026-11-08 补齐额度接口）** 用量，多账号。**Qwen 配额已通：官方 Bailian CLI 通道（浏览器 OAuth 一次登录）已落地并实跑成功——最近一次验证 2026-09-04（7天 96% · 8小时1分后重置）；CLI 优先、控制台 Cookie 兜底。**BAI 积分额度已通（2026-09-06）：走 `chat.b.ai` 控制台 tRPC，同一把 sk- key 作 Bearer，无需 Cookie；`api.b.ai` 本身仍只开放推理路径（其余 403）——不要再拿 api.b.ai 的 403 当「bai 无额度数据」的依据。**GPTZero 已通（2026-09-07）：`GET /v2/users/me` x-api-key 认证，计费单位是词。****
 
 🔴 **Android 侧唯一权威 clone（2026-08-29 取证）= `~/Desktop/go-projects/pocket-llm-api-checker/`**（HEAD e1c1568，含 fastlane 元数据 + tag v1.0.0 + scripts/ 可复现构建 + docs/fdroid 草稿）。`~/Desktop/android-projects/api-checkers/` 是落后一提交的旧副本（HEAD cec6ef7，无 fastlane、无 tag），只做历史参考，**勿在其上开发**。
 
@@ -294,7 +322,7 @@ llm-api-check v1.3.0+（commandai 未发版） — Go CLI，复刻 Android app�
 ## 技术要点（下一位 Agent 必读）
 - **白B.AI 铁律**：① 两个域名两套网关——`api.b.ai` 只开放推理路径（`/v1/chat/completions|/v1/messages|/v1/responses|/v1/models|/v1/images/*`，其余 403），积分/额度在 `chat.b.ai` 控制台 tRPC；② 同一把 `sk-` key 两处通用（Bearer），无需浏览器 Cookie；③ `chat.b.ai` 本机直连超时、必须走代理（`api.b.ai` 直连可通）；④ tRPC 错误信封优先于状态码，`UNAUTHORIZED` 归一到 `parsers.ErrBaiAuth`，其他 code 带原文上抛；⑤ `points_balance` 缺席必须显式失败（显示 0 = 误報额度用尽）；⑥ 1 积分 = 1e-6 USD（`creditsPerDollar`），渲染用 `≈ $` 标记提醒是名义换算；⑦ `usage.records` 对未知过滤键与非法 `page` 一律忽略不报错，不能拿它做参数校验（同智星云 `status_type`）。详见 docs/plans/2026-09-04-bai-provider.md §二-b
 - **智星云 OpenAPI 铁律**：① 签名 = 非空参数字典序拼 `k=v&…` + 末尾 `&secret=<SecretKey>` → MD5 小写 hex，`sign` 进 body（**不入串**）；② HTTP 恒 200，错误在信封 `{success,code:"2000"}` 里，`code` 是**字符串**；③ `page_size` 上限 100（超限报 `page_size参数超限!`）；④ `status_type` 传非法值不报错、按不过滤处理，不能拿它做参数校验；⑤ 实例响应含明文口令（见上）；⑥ 到期时刻用 `Due_time-ServerTime` 折算；⑦ 平台错误码只有 "2000"（成功）/"4000"（客户端错误，message 说明原因）。详见 docs/plans/2026-08-29-ai-galaxy-provider.md
-- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）；BAI 模型 = `GET https://api.b.ai/v1/models`（API key，one-api 系信封 `{data:[{id,owned_by,supported_endpoint_types}],success}`）**；**BAI 积分 = `GET https://chat.b.ai/trpc/lambda/usage.points`（余额/即将过期）+ `…/usage.summary`（本月消耗），同一把 sk- key 作 Bearer，tRPC v11 信封 `{result:{data:{json:…}}}`，错误走 `{error:{json:{data:{code:"UNAUTHORIZED"}}}}`；只读 query，不接任何 mutate；**GPTZero = `GET https://api.gptzero.me/v2/users/me`（x-api-key 头，信封 `{data:{…}}` 含明文 api_key 字段必须白名单丢弃；计费单位词；坏 key 403 回显 key）**
+- **数据源**：Go usage = `GET https://opencode.ai/zen/go/v1/usage`（API key）；Zen billing = `GET https://opencode.ai/workspace/{id}/billing`（cookie，SolidJS SSR HTML，锚点 `customerID:"cus_`，balance 单位 1e-8 USD）；DeepSeek 余额 = `api.deepseek.com/user/balance`（API key，金额为字符串）；消费 = `platform.deepseek.com/api/v0/usage/cost?month=&year=`（浏览器 token，code 40003 = 失效，拉本月+上月聚合 30 天）；**智星云 = `POST https://app.ai-galaxy.cn/openapi/v2/{account/get_main_account_info,instance/get_instance_status_count,instance/get_instance_list,billing/get_balance_change_list}`（AccessKey+SecretKey 签名，表单编码）；**Qwen 模型 = `https://token-plan.<region>.maas.aliyuncs.com/compatible-mode/v1/models`（API key）；Qwen 配额 = Bailian CLI `bailian usage token-plan --output json`（Console 认证，首选）或 `POST https://bailian-cs.console.aliyun.com/data/api.json`（Cookie + sec_token，信封 `data.DataV2.data.data` 或内嵌 JSON 字符串）；BAI 模型 = `GET https://api.b.ai/v1/models`（API key，one-api 系信封 `{data:[{id,owned_by,supported_endpoint_types}],success}`）**；**BAI 积分 = `GET https://chat.b.ai/trpc/lambda/usage.points`（余额/即将过期）+ `…/usage.summary`（本月消耗），同一把 sk- key 作 Bearer，tRPC v11 信封 `{result:{data:{json:…}}}`，错误走 `{error:{json:{data:{code:"UNAUTHORIZED"}}}}`；只读 query，不接任何 mutate；**GPTZero = `GET https://api.gptzero.me/v2/users/me`（x-api-key 头，信封 `{data:{…}}` 含明文 api_key 字段必须白名单丢弃；计费单位词；坏 key 403 回显 key）**；**Commandai 额度 key 回退 = 配置 key 失效时读 `~/.commandcode/auth.json` 的 `apiKey`（`cmd login` 写入），`QuotaKeySource="cli"`；CodeBuddy 额度 = `POST https://www.codebuddy.ai/v2/billing/meter/get-user-resource`（Bearer/X-API-Key，body `{PageNumber:1,PageSize:200,ProductCode:"p_tcaca",Status:[0,3]}`，`data.Response.Data.Accounts[].CycleCapacity*` 汇总 Status==0 且 remain>0 的包）**
 - **Bailian CLI 通道铁律**：① 本机 `bl` 是用户自研翻译 CLI——探测与文档一律用 `bailian` 名/绝对路径，`exec.LookPath("bl")` 是被禁止的（会误调）；② `usage token-plan` 认证模式 Console，API key 无效；③ Node 的 UNDICI 警告在 stderr，必须过滤；④ exit 非零时 JSON 错误信封在 stderr（实测 exit 3）；⑤ CLI 会话存 `~/.bailian/config.json`（敏感文件）；⑥ 会话短寿命（几小时），过期重跑 `bailian auth login --console`；⑦ 实现文件 `internal/repo/qwen_cli.go`（QwenCLI.runJSON 共用 Usage/Summary 通道）
 - **Qwen 三个不能踩的坑**（详见 docs/plans/2026-08-29-qwen-provider.md）：① `cornerstoneParam` 绝不得硬编码 `switchAgent`（网关会绑死该工作区 → 他人账号全部 NotAuthorised）② 抓 `SEC_TOKEN` 必须带 `Sec-Fetch-*` 浏览器导航头 + 桌面 UA，否则 OneConsole shell 不渲染该 token ③ 登录失效仍回 HTTP 200，错误在信封 `data.errorCode` 里，不能只看状态码
 - **关键移植点**：ZenBilling 字符串字面量感知括号匹配（inStr/esc 状态机）、`(?:^|,)balance:` 正则、microcents÷1e8、cost 两月都无数据显式失败（不返回误导零数据）；QwenUsage 信封 BFS + 内嵌 JSON 字符串展开（深度上限 12）、`qwenPercent` 比例/百分数双域判定（>2 才当百分数）、空窗口重试 3 次而认证类错误不重试、CLI 单窗口响应独立判有（5 小时限时取消期间字段缺席）
@@ -314,8 +342,8 @@ llm-api-check v1.3.0+（commandai 未发版） — Go CLI，复刻 Android app�
 
 ## 知识图谱
 - graphify-out/: 存在（每次代码变更后 `graphify update .` 重建，no-LLM 零成本）
-- 683 节点 / 1914 边 / 23 社区（2026-08-30 bugfix 后重建；旧记录「319/736/24」为跳仓残留数字，与 GRAPH_REPORT 不一致，已以图谱为准）
+- 1549 节点 / 4352 边 / 63 社区（2026-11-08 额度修复后 `graphify update .` 重建；旧记录「683/1914/23」「319/736/24」均为历史快照，以 GRAPH_REPORT 为准）
 - 图谱以最新 commit 为准；若 `graphify-out/needs_update` 存在说明已陈旧，先 update 再依赖它回答
 
 ## 最后更新时间
-2026-10-25 13:4x
+2026-11-08 09:5x

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/xieguiawu/llm-api-check/internal/app"
 	"github.com/xieguiawu/llm-api-check/internal/models"
 )
 
@@ -26,8 +27,8 @@ func TestCodebuddyAddAndDetail(t *testing.T) {
 	if !strings.Contains(out, "腾讯CB (CodeBuddy)") {
 		t.Errorf("应显示账号标题: %s", out)
 	}
-	if !strings.Contains(out, "服务端不提供额度接口") {
-		t.Errorf("应声明额度数据源: %s", out)
+	if !strings.Contains(out, "积分额度 + 模型目录 + 本地台账") {
+		t.Errorf("应声明额度与台账数据源: %s", out)
 	}
 	// 未知名称 → exit 1
 	if code, _, _ := runCLI(t, "", "codebuddy", "查无此人"); code != 1 {
@@ -129,4 +130,39 @@ func TestPublicCodebuddyAccountMasksKey(t *testing.T) {
 
 func codebuddyTestAccount() models.CodebuddyAccount {
 	return models.CodebuddyAccount{ID: "id1", Name: "cb", ApiKey: "ck_test1234567890"}
+}
+
+func TestPublicCodebuddyQuotaJSON(t *testing.T) {
+	r := app.CodebuddyResult{
+		Account: codebuddyTestAccount(),
+		Quota: &models.CodebuddyQuota{
+			Remaining: 570.06, Total: 1000, Used: 429.94, HasActive: true,
+			Packages: []models.CodebuddyQuotaPackage{{
+				PackageName: "Plan Bonus Quota", Status: 0, Remain: 570.06, Size: 1000,
+			}},
+		},
+	}
+	m := publicCodebuddyResult(r)
+	quota, ok := m["quota"].(*models.CodebuddyQuota)
+	if !ok || quota == nil || quota.Remaining != 570.06 {
+		t.Fatalf("public JSON 应含 quota: %+v", m["quota"])
+	}
+	if _, ok := m["account"].(map[string]any); !ok {
+		t.Error("account 应保持掩码投影")
+	}
+}
+
+func TestPublicCommandaiQuotaKeySource(t *testing.T) {
+	r := app.CommandaiResult{
+		Account:        models.CommandaiAccount{ID: "id1", Name: "cm", ApiKey: "user_test"},
+		QuotaKeySource: "cli",
+	}
+	m := publicCommandaiResult(r)
+	if got := m["quotaKeySource"]; got != "cli" {
+		t.Errorf("quotaKeySource=%v, want cli", got)
+	}
+	// 未回退时不输出该键
+	if _, ok := publicCommandaiResult(app.CommandaiResult{})["quotaKeySource"]; ok {
+		t.Error("无回退时不应输出 quotaKeySource")
+	}
 }

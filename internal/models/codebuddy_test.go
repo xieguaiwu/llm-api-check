@@ -6,6 +6,26 @@ import (
 	"testing"
 )
 
+func TestCodebuddyQuotaPercentUsed(t *testing.T) {
+	cases := []struct {
+		desc string
+		q    *CodebuddyQuota
+		want int
+	}{
+		{"nil", nil, -1},
+		{"无总量", &CodebuddyQuota{Remaining: 0, Total: 0}, -1},
+		{"半额", &CodebuddyQuota{Remaining: 500, Total: 1000}, 50},
+		{"四舍五入", &CodebuddyQuota{Remaining: 570.06, Total: 1000}, 43},
+		{"只剩一点", &CodebuddyQuota{Remaining: 0.001, Total: 1000}, 100},
+		{"负数钳制", &CodebuddyQuota{Remaining: 1200, Total: 1000}, 0},
+	}
+	for _, c := range cases {
+		if got := CodebuddyQuotaPercentUsed(c.q); got != c.want {
+			t.Errorf("%s: got %d, want %d", c.desc, got, c.want)
+		}
+	}
+}
+
 func TestParseCodebuddyMultiplier(t *testing.T) {
 	cases := []struct {
 		raw    string

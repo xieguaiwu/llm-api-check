@@ -32,6 +32,15 @@ func cbAppServer(t *testing.T, accountsCode int, accountsBody, configBody string
 		}
 		_, _ = w.Write([]byte(configBody))
 	})
+	mux.HandleFunc("/v2/billing/meter/get-user-resource", func(w http.ResponseWriter, r *http.Request) {
+		// 认证失败场景同步让额度路失败（真实服务端同一把 key 的鉴权一致）
+		if accountsCode == http.StatusUnauthorized {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"not_found"}`))
+			return
+		}
+		_, _ = w.Write([]byte(cbAppQuotaOK))
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv
@@ -45,6 +54,11 @@ const (
 		`"credits":"","isDefault":true},` +
 		`{"id":"fast-model","name":"Fast","maxInputTokens":200000,"maxOutputTokens":32000,` +
 		`"credits":"x0.34 credits"}]}}`
+	cbAppQuotaOK = `{"code":0,"msg":"OK","data":{"Response":{"Data":{"Accounts":[` +
+		`{"PackageName":"Plan Bonus Quota","Status":0,"CycleCapacityRemain":570,` +
+		`"CycleCapacitySize":1000,"CycleCapacityUsed":429,` +
+		`"CycleCapacityRemainPrecise":"570.06000063","CycleCapacitySizePrecise":"1000",` +
+		`"CycleCapacityUsedPrecise":"429.93999937","CycleEndTime":"2026-12-04 21:10:06"}]}}}}`
 )
 
 // cbWriteLedger 写一条台账记录到临时根目录。
@@ -107,6 +121,9 @@ func TestRefreshCodebuddyHappy(t *testing.T) {
 	if res.Ledger == nil || res.Ledger.Total.Calls != 1 || res.Ledger.Total.Credits != 1.25 {
 		t.Errorf("台账解析错: %+v", res.Ledger)
 	}
+	if res.Quota == nil || res.Quota.Remaining != 570.06000063 || res.Quota.Total != 1000 {
+		t.Errorf("服务端额度解析错: %+v", res.Quota)
+	}
 }
 
 func TestRefreshCodebuddyAuthFailureKeepsLedger(t *testing.T) {
@@ -134,6 +151,9 @@ func TestRefreshCodebuddyAuthFailureKeepsLedger(t *testing.T) {
 	}
 	if res.Ledger == nil || res.Ledger.Total.Credits != 0.75 {
 		t.Errorf("台账应不受认证失败影响: %+v", res.Ledger)
+	}
+	if res.Quota != nil {
+		t.Errorf("认证失败不应有服务端额度: %+v", res.Quota)
 	}
 }
 

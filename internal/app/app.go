@@ -89,7 +89,10 @@ type CommandaiResult struct {
 	Credits      *models.CommandaiCredits      `json:"credits,omitempty"`
 	Subscription *models.CommandaiSubscription `json:"subscription,omitempty"`
 	Summary      *models.CommandaiUsageSummary `json:"summary,omitempty"`
-	Error        string                        `json:"error,omitempty"`
+	// QuotaKeySource 额度面实际使用的凭据来源：空 = 配置 key；"cli" = 配置 key
+	// 认证失败后回退 Command Code CLI 登录凭据（~/.commandcode/auth.json）。
+	QuotaKeySource string `json:"quotaKeySource,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // AuthFailed 是否为凭据认证失败（exit code 判据：认证失败即使清单成功也判失败）。
@@ -100,12 +103,14 @@ func (r CommandaiResult) AuthFailed() bool {
 
 // CodebuddyResult 单个 CodeBuddy 账号的刷新结果。
 // Identity = 身份（/v2/accounts）；Catalog = 模型目录（/v3/config，需 uid）；
-// Ledger = 本机台账聚合——**本 provider 唯一的额度来源**，服务端不提供余额接口。
+// Quota = 服务端积分额度（/v2/billing/meter/get-user-resource，剩余额度真值）；
+// Ledger = 本机台账聚合（本机 CLI 扣费记录，供按模型/时间窗分析，不等于账户余额）。
 // Ledger 与账号无关（同一台机器一份），但按账号携带以便渲染层单点取值。
 type CodebuddyResult struct {
 	Account  models.CodebuddyAccount   `json:"account"`
 	Identity *models.CodebuddyIdentity `json:"identity,omitempty"`
 	Catalog  *models.CodebuddyCatalog  `json:"catalog,omitempty"`
+	Quota    *models.CodebuddyQuota    `json:"quota,omitempty"`
 	Ledger   *models.CodebuddyLedger   `json:"ledger,omitempty"`
 	Error    string                    `json:"error,omitempty"`
 }
@@ -746,7 +751,10 @@ func (a *App) RefreshCommandai(id string) (CommandaiResult, error) {
 }
 
 // refreshCommandai 并发拉两路：模型清单（/provider/v1/models）+ 额度四元组（/alpha/*）。
-// 模型面免认证，额度面失败不抖掉清单。无 key 时不发额度请求（提示「额度信息不可用」）。
+// 模型面免认证，额度面失败不抖掉清单。
+// 额度 key 解析顺序：配置 key → Command Code CLI 登录凭据（~/.commandcode/auth.json）。
+// 配置 key 认证失败（expired/401）时自动回退 CLI 凭据，并标记 QuotaKeySource="cli"；
+// 两者都没有/都失败才提示「额度信息不可用」。
 // 认证失败时 Error 单行化（不叠 models 错误），其余按 额度→模型 顺序合并。
 func (a *App) refreshCommandai(acc models.CommandaiAccount) CommandaiResult {
 	res := CommandaiResult{Account: acc}
@@ -755,14 +763,15 @@ func (a *App) refreshCommandai(acc models.CommandaiAccount) CommandaiResult {
 		return res
 	}
 	var (
-		wg       sync.WaitGroup
-		plan     models.CommandaiPlan
-		planErr  error
-		who      *models.CommandaiWhoami
-		cred     *models.CommandaiCredits
-		sub      *models.CommandaiSubscription
-		sum      *models.CommandaiUsageSummary
-		quotaErr error
+		wg        sync.WaitGroup
+		plan      models.CommandaiPlan
+		planErr   error
+		who       *models.CommandaiWhoami
+		cred      *models.CommandaiCredits
+		sub       *models.CommandaiSubscription
+		sum       *models.CommandaiUsageSummary
+		quotaErr  error
+		keySource string
 	)
 	wg.Add(2)
 	go func() {
@@ -771,13 +780,36 @@ func (a *App) refreshCommandai(acc models.CommandaiAccount) CommandaiResult {
 	}()
 	go func() {
 		defer wg.Done()
-		if strings.TrimSpace(acc.ApiKey) == "" {
-			quotaErr = errors.New("未配置 API Key（额度信息不可用）")
+		cfgKey := strings.TrimSpace(acc.ApiKey)
+		if cfgKey == "" {
+			// 配置无 key：尝试 CLI 登录凭据（用户可能只用 cmd login，没有单独建 key）。
+			if cliKey := a.Repos.Commandai.CLIAuthKey(); cliKey != "" {
+				who, cred, sub, sum, quotaErr = a.Repos.Commandai.Quota(cliKey)
+				if quotaErr == nil {
+					keySource = "cli"
+				}
+			} else {
+				quotaErr = errors.New("未配置 API Key（额度信息不可用；可运行 cmd login 后重试）")
+			}
 			return
 		}
-		who, cred, sub, sum, quotaErr = a.Repos.Commandai.Quota(acc.ApiKey)
+		who, cred, sub, sum, quotaErr = a.Repos.Commandai.Quota(cfgKey)
+		if !errors.Is(quotaErr, parsers.ErrCommandaiAuth) {
+			return
+		}
+		// 配置 key 已过期：CLI 登录态通常已由 cmd login 刷新，回退一次。
+		cliKey := a.Repos.Commandai.CLIAuthKey()
+		if cliKey == "" || cliKey == cfgKey {
+			return
+		}
+		w2, c2, s2, su2, e2 := a.Repos.Commandai.Quota(cliKey)
+		if e2 == nil {
+			who, cred, sub, sum, quotaErr = w2, c2, s2, su2, nil
+			keySource = "cli"
+		}
 	}()
 	wg.Wait()
+	res.QuotaKeySource = keySource
 	if planErr == nil {
 		res.Plan = &plan
 	}
@@ -836,7 +868,7 @@ func errMsg(e error) string {
 	return e.Error()
 }
 
-// RefreshCodebuddy 按 id 刷新单个 CodeBuddy 账号（身份 + 模型目录 + 本地台账）。
+// RefreshCodebuddy 按 id 刷新单个 CodeBuddy 账号（身份 + 模型目录 + 服务端额度 + 本地台账）。
 func (a *App) RefreshCodebuddy(id string) (CodebuddyResult, error) {
 	var acc models.CodebuddyAccount
 	found := false
@@ -853,11 +885,11 @@ func (a *App) RefreshCodebuddy(id string) (CodebuddyResult, error) {
 	return a.refreshCodebuddy(acc), nil
 }
 
-// refreshCodebuddy 三路取数：身份 → （目录 ∥ 台账）。
+// refreshCodebuddy 先取身份，再并发取三路：模型目录 ∥ 服务端积分额度 ∥ 本地台账。
 //
 // 身份必须先完成：uid 是目录面 X-User-Id 的唯一来源（缺失时服务端 data.models=null）。
-// 台账不依赖 key，所以身份失败时它照跑——未登录也能看本机用量。
-// 认证失败时 Error 单行化为 ErrCodebuddyAuth 原文（不叠目录/台账错误）。
+// 额度与台账不依赖 uid，所以身份失败时它们照跑——未登录也能看本机用量。
+// 认证失败时 Error 单行化为 ErrCodebuddyAuth 原文（不叠目录/额度/台账错误）。
 func (a *App) refreshCodebuddy(acc models.CodebuddyAccount) CodebuddyResult {
 	res := CodebuddyResult{Account: acc}
 	if a.Repos == nil || a.Repos.Codebuddy == nil {
@@ -881,13 +913,15 @@ func (a *App) refreshCodebuddy(acc models.CodebuddyAccount) CodebuddyResult {
 	}
 
 	var (
-		wg      sync.WaitGroup
-		catalog models.CodebuddyCatalog
-		catErr  error
-		ledger  models.CodebuddyLedger
-		ledErr  error
+		wg       sync.WaitGroup
+		catalog  models.CodebuddyCatalog
+		catErr   error
+		quota    models.CodebuddyQuota
+		quotaErr error
+		ledger   models.CodebuddyLedger
+		ledErr   error
 	)
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		uid := ""
@@ -902,12 +936,22 @@ func (a *App) refreshCodebuddy(acc models.CodebuddyAccount) CodebuddyResult {
 	}()
 	go func() {
 		defer wg.Done()
+		if strings.TrimSpace(acc.ApiKey) == "" {
+			return // 身份路已给出「未配置 API Key」提示，不重复报错
+		}
+		quota, quotaErr = a.Repos.Codebuddy.Quota(acc.ApiKey)
+	}()
+	go func() {
+		defer wg.Done()
 		ledger, ledErr = a.Repos.Codebuddy.Ledger(time.Now())
 	}()
 	wg.Wait()
 
 	if catErr == nil {
 		res.Catalog = &catalog
+	}
+	if quotaErr == nil && strings.TrimSpace(acc.ApiKey) != "" {
+		res.Quota = &quota
 	}
 	if ledErr == nil {
 		res.Ledger = &ledger
@@ -916,7 +960,7 @@ func (a *App) refreshCodebuddy(acc models.CodebuddyAccount) CodebuddyResult {
 	if errors.Is(idErr, parsers.ErrCodebuddyAuth) {
 		res.Error = idErr.Error()
 	} else {
-		res.Error = joinErrors(idErr, catErr, ledErr)
+		res.Error = joinErrors(idErr, catErr, quotaErr, ledErr)
 	}
 	return res
 }

@@ -822,10 +822,13 @@ func CommandaiBillingOf(c *CommandaiCredits, s *CommandaiSubscription, u *Comman
 
 // ── Codebuddy（腾讯 CodeBuddy，codebuddy.ai） ─────────────────
 //
-// 与其它 provider 的根本差异：**服务端没有额度查询接口**（2026-11-05 穷举实测，
-// 见 docs/plans/2026-11-05-codebuddy-provider.md §1.4）。余额/剩余额度一律不可得，
-// 额度只能从本机台账（~/.codebuddy/projects/*/*.jsonl 的 providerData.rawUsage.credit）
-// 聚合得出。渲染层必须标注「本地台账」，禁止呈现为账户余额。
+// 额度有两条通道：
+//   - 服务端积分包：POST /v2/billing/meter/get-user-resource（API key 可用，
+//     2026-11-08 实测定稿；见 docs/plans/2026-11-05-codebuddy-provider.md §1.4b）。
+//     返回每个积分包的 CapacityRemain/CycleCapacityRemain，是「剩余额度」真值。
+//   - 本地台账：~/.codebuddy/projects/*/*.jsonl 的 providerData.rawUsage.credit，
+//     记录本机 CLI 每次调用的实际扣费，供按模型/时间窗分析；它不等于账户余额。
+// 渲染层必须区分两者：服务端额度标「额度」，台账标「本地台账」。
 
 // CodebuddyAccount 单账号。key 于 codebuddy.ai/profile/keys 创建（X-API-Key 头认证）。
 type CodebuddyAccount struct {
@@ -863,6 +866,50 @@ type CodebuddyModel struct {
 // CodebuddyCatalog 模型目录（GET /v3/config）。
 type CodebuddyCatalog struct {
 	Models []CodebuddyModel `json:"models"`
+}
+
+// CodebuddyQuotaPackage 单个积分包（POST /v2/billing/meter/get-user-resource 的
+// data.Response.Data.Accounts[] 白名单子集）。数值优先取 *Precise 字符串
+// （服务端给 8 位小数），缺失时回退整数字段。
+type CodebuddyQuotaPackage struct {
+	PackageName string  `json:"packageName"`
+	PackageCode string  `json:"packageCode,omitempty"`
+	Status      int     `json:"status"` // 0=生效；3=已过期/已耗尽（请求体 Status=[0,3]）
+	Remain      float64 `json:"remain"`
+	Size        float64 `json:"size"`
+	Used        float64 `json:"used"`
+	CycleStart  string  `json:"cycleStart,omitempty"`
+	CycleEnd    string  `json:"cycleEnd,omitempty"`
+	ExpiredTime string  `json:"expiredTime,omitempty"`
+}
+
+// CodebuddyQuota 服务端积分额度（2026-11-08 实测通道）。
+// Remaining/Total/Used 只汇总「生效且本周期仍有余额」的积分包——已耗尽的包
+// 不计入分母，避免剩余百分比被已用完的历史包拉低（官方用量页同口径）。
+// Packages 保留全部生效包（含已耗尽）供明细展示；HasActive 用于区分
+// 「服务端没有任何生效积分包」与「生效包余额为 0（已用尽）」。
+type CodebuddyQuota struct {
+	Remaining float64                 `json:"remaining"`
+	Total     float64                 `json:"total"`
+	Used      float64                 `json:"used"`
+	HasActive bool                    `json:"hasActive"`
+	Packages  []CodebuddyQuotaPackage `json:"packages,omitempty"`
+}
+
+// CodebuddyQuotaPercentUsed 已用百分比（四舍五入，0..100）。
+// Total<=0（无生效包或全部耗尽）→ -1，渲染层据此不画条。
+func CodebuddyQuotaPercentUsed(q *CodebuddyQuota) int {
+	if q == nil || q.Total <= 0 {
+		return -1
+	}
+	pct := int(math.Round((q.Total - q.Remaining) / q.Total * 100))
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	return pct
 }
 
 // CodebuddyModelUsage 单模型台账聚合。

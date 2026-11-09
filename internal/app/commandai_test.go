@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -79,6 +81,9 @@ func newCommandaiApp(t *testing.T, quotaState string) (*App, *httptest.Server, *
 	a := New(&config.Config{})
 	a.Repos.Commandai.BaseURL = srv.URL
 	a.Repos.Commandai.Client = srv.Client()
+	// 隔离宿主机 ~/.commandcode/auth.json：否则开发机 CLI 已登录时，
+	// 「配置 key 认证失败」用例会静默走回退成功（同 hostCredentialEnv 教训）。
+	a.Repos.Commandai.CLIAuthPath = filepath.Join(t.TempDir(), "auth.json")
 	return a, srv, &hits
 }
 
@@ -135,6 +140,103 @@ func TestRefreshCommandaiAuthSingleLine(t *testing.T) {
 	// 模型路不受额度路影响（models 免认证）
 	if res.Plan == nil || len(res.Plan.Models) != 1 {
 		t.Errorf("Plan should still be fetched: %+v", res.Plan)
+	}
+}
+
+// newCommandaiKeyAwareServer 只接受 validKey 的额度请求；其它 key 回 401 信封。
+func newCommandaiKeyAwareServer(t *testing.T, validKey string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/provider/v1/models" {
+			json.NewEncoder(w).Encode(map[string]any{"object": "list",
+				"data": []map[string]any{{"id": "m1", "name": "M1"}}})
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+validKey {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"success":false,"error":{"code":"UNAUTHORIZED","status":401,` +
+				`"message":"Your API key has expired."}}`))
+			return
+		}
+		switch r.URL.Path {
+		case "/alpha/whoami":
+			json.NewEncoder(w).Encode(map[string]any{
+				"org": nil, "user": map[string]any{"userName": "cli-user"},
+			})
+		case "/alpha/billing/credits":
+			json.NewEncoder(w).Encode(map[string]any{"credits": map[string]any{
+				"monthlyCredits": 3.05, "purchasedCredits": 0, "freeCredits": 0,
+			}})
+		case "/alpha/billing/subscriptions":
+			json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+				"planId": "individual-go-v1", "status": "active",
+				"currentPeriodEnd": "2026-11-25T04:15:41.000Z",
+			}})
+		case "/alpha/usage/summary":
+			json.NewEncoder(w).Encode(map[string]any{"totalCost": 7.65, "totalCount": 4835})
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestRefreshCommandaiFallsBackToCLIAuth(t *testing.T) {
+	srv := newCommandaiKeyAwareServer(t, "cli-key")
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"apiKey":"cli-key","userId":"u1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(&config.Config{CommandaiAccounts: []models.CommandaiAccount{
+		{ID: "cm1", Name: "测试号", ApiKey: "expired-key"}}})
+	a.Repos.Commandai.BaseURL = srv.URL
+	a.Repos.Commandai.Client = srv.Client()
+	a.Repos.Commandai.CLIAuthPath = authPath
+
+	res, err := a.RefreshCommandai("cm1")
+	if err != nil {
+		t.Fatalf("RefreshCommandai: %v", err)
+	}
+	if res.Error != "" {
+		t.Fatalf("回退成功后不应有错误: %s", res.Error)
+	}
+	if res.QuotaKeySource != "cli" {
+		t.Errorf("QuotaKeySource=%q, want cli", res.QuotaKeySource)
+	}
+	if res.Credits == nil || res.Credits.MonthlyCredits != 3.05 {
+		t.Errorf("应拿到 CLI 凭据的额度: %+v", res.Credits)
+	}
+	if res.Summary == nil || res.Summary.TotalCost != 7.65 {
+		t.Errorf("应拿到 CLI 凭据的本期消耗: %+v", res.Summary)
+	}
+	if res.Plan == nil || len(res.Plan.Models) != 1 {
+		t.Errorf("模型清单不受影响: %+v", res.Plan)
+	}
+}
+
+func TestRefreshCommandaiNoKeyUsesCLIAuth(t *testing.T) {
+	srv := newCommandaiKeyAwareServer(t, "cli-key")
+	authPath := filepath.Join(t.TempDir(), "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"apiKey":"cli-key"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := New(&config.Config{CommandaiAccounts: []models.CommandaiAccount{
+		{ID: "cm1", Name: "测试号"}}})
+	a.Repos.Commandai.BaseURL = srv.URL
+	a.Repos.Commandai.Client = srv.Client()
+	a.Repos.Commandai.CLIAuthPath = authPath
+
+	res, err := a.RefreshCommandai("cm1")
+	if err != nil {
+		t.Fatalf("RefreshCommandai: %v", err)
+	}
+	if res.Error != "" {
+		t.Fatalf("CLI 登录态可用时不应报错: %s", res.Error)
+	}
+	if res.QuotaKeySource != "cli" || res.Credits == nil {
+		t.Errorf("应使用 CLI 凭据: source=%q credits=%+v", res.QuotaKeySource, res.Credits)
 	}
 }
 

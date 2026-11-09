@@ -25,6 +25,14 @@ func cbRenderFixture() (app.CodebuddyResult, time.Time) {
 			{ID: "gpt-6-astra", Name: "GPT-6-Astra", MaxInputTokens: 1000000, MaxOutputTokens: 128000,
 				CreditsRaw: "x6.67", CreditsMultiplier: 6.67, HasMultiplier: true},
 		}},
+		Quota: &models.CodebuddyQuota{
+			Remaining: 570.06000063, Total: 1000, Used: 429.93999937, HasActive: true,
+			Packages: []models.CodebuddyQuotaPackage{{
+				PackageName: "Plan Bonus Quota", PackageCode: "TCACA_code_037", Status: 0,
+				Remain: 570.06000063, Size: 1000, Used: 429.93999937,
+				CycleStart: "2026-11-04 21:10:07", CycleEnd: "2026-12-04 21:10:06",
+			}},
+		},
 		Ledger: &models.CodebuddyLedger{
 			Root: "/home/u/.codebuddy/projects", Files: 27, Sessions: 27, Lines: 2264, UnbilledLines: 1601,
 			Total: models.CodebuddyWindow{Label: "全部", Calls: 663, Credits: 52.85,
@@ -48,11 +56,12 @@ func TestRenderCodebuddyDetailHappy(t *testing.T) {
 	r, now := cbRenderFixture()
 	out := RenderCodebuddyDetail(r, now, Colorizer{Disabled: true})
 
-	// 标题与数据源声明（后者是防止把台账误读成账户余额的关键文案）
+	// 服务端额度段是「剩余额度」真值；本地台账段必须标明来源。
 	for _, want := range []string{
 		"腾讯CB (CodeBuddy)",
-		"服务端不提供额度接口",
+		"积分额度",
 		"账号", "xieguaiwu", "e54c80ec-06fe-4be5-bac3-b74020337e7b", "个人",
+		"剩余 570.06 / 1000.00 积分", "43% 已用", "Plan Bonus Quota", "2026-12-04 21:10:06",
 		"模型", "3 个", "默认 Auto", "倍率 x0.34–x6.67",
 		"本地台账", "52.85", "663",
 		"今日", "近7天", "近30天",
@@ -63,11 +72,32 @@ func TestRenderCodebuddyDetailHappy(t *testing.T) {
 			t.Errorf("详情缺少 %q:\n%s", want, out)
 		}
 	}
-	// 不得出现伪造的余额口径
-	for _, banned := range []string{"余额", "剩余额度", "已用"} {
-		if strings.Contains(out, banned) {
-			t.Errorf("详情不得出现 %q（服务端无此数据）:\n%s", banned, out)
-		}
+	// 不得把本地台账求和冒充账户余额
+	if strings.Contains(out, "账户余额") {
+		t.Errorf("详情不得出现「账户余额」:\n%s", out)
+	}
+}
+
+func TestRenderCodebuddyQuotaExhausted(t *testing.T) {
+	r, now := cbRenderFixture()
+	r.Quota = &models.CodebuddyQuota{
+		Remaining: 0, Total: 0, HasActive: true,
+		Packages: []models.CodebuddyQuotaPackage{{
+			PackageName: "Pro", Status: 0, Remain: 0, Size: 1000, Used: 1000,
+		}},
+	}
+	out := RenderCodebuddyDetail(r, now, Colorizer{Disabled: true})
+	if !strings.Contains(out, "积分已用尽") {
+		t.Errorf("余额为 0 应显式提示已用尽:\n%s", out)
+	}
+}
+
+func TestRenderCodebuddyQuotaNoActivePackages(t *testing.T) {
+	r, now := cbRenderFixture()
+	r.Quota = &models.CodebuddyQuota{}
+	out := RenderCodebuddyDetail(r, now, Colorizer{Disabled: true})
+	if !strings.Contains(out, "无活跃积分包") {
+		t.Errorf("无生效包应显式提示:\n%s", out)
 	}
 }
 
@@ -75,11 +105,11 @@ func TestRenderCodebuddyDetailEmptyLedger(t *testing.T) {
 	r, now := cbRenderFixture()
 	r.Ledger = &models.CodebuddyLedger{Root: "/tmp/x"}
 	out := RenderCodebuddyDetail(r, now, Colorizer{Disabled: true})
-	if !strings.Contains(out, "暂无记录") {
+	if !strings.Contains(out, "本地台账 暂无记录") {
 		t.Errorf("空台账应显式提示（不显示 0）:\n%s", out)
 	}
-	if strings.Contains(out, "0.00 积分") {
-		t.Errorf("空台账不应显示 0.00:\n%s", out)
+	if strings.Contains(out, "本地台账 累计") {
+		t.Errorf("空台账不应显示累计值:\n%s", out)
 	}
 }
 
@@ -91,7 +121,7 @@ func TestRenderCodebuddyDetailNilLedger(t *testing.T) {
 	if !strings.Contains(out, "腾讯CB (CodeBuddy)") {
 		t.Errorf("标题应在:\n%s", out)
 	}
-	if strings.Contains(out, "本地台账") {
+	if strings.Contains(out, "本地台账 累计") || strings.Contains(out, "本地台账 暂无记录") {
 		t.Errorf("nil 台账不应渲染台账段:\n%s", out)
 	}
 }
@@ -157,7 +187,7 @@ func TestRenderCodebuddyOverview(t *testing.T) {
 	r, _ := cbRenderFixture()
 	res := app.Result{Codebuddy: []app.CodebuddyResult{r}}
 	out := RenderOverview(res, time.Now(), Colorizer{Disabled: true})
-	for _, want := range []string{"CodeBuddy (腾讯CB)", "xieguaiwu", "模型 3 个", "台账累计 52.85 积分 / 663 次"} {
+	for _, want := range []string{"CodeBuddy (腾讯CB)", "xieguaiwu", "剩余 570.06 积分", "模型 3 个", "台账累计 52.85 积分 / 663 次"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("总览缺少 %q:\n%s", want, out)
 		}

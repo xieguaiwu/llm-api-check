@@ -2,9 +2,11 @@
 
 > **For agentic workers:** 按本计划任务逐项实施。步骤用 checkbox（`- [ ]`）跟踪。
 
-**Goal:** 新增 `provider=codebuddy`（腾讯 CodeBuddy 国际版，codebuddy.ai）——身份 + 模型目录（含 credits 倍率）+ **本地用量台账额度计算**（按模型聚合积分、时间窗、缓存命中）。照 longcat/commandai 模板全链接入 Go CLI。
+**Goal:** 新增 `provider=codebuddy`（腾讯 CodeBuddy 国际版，codebuddy.ai）——身份 + 模型目录（含 credits 倍率）+ **服务端积分包额度** + 本地用量台账（按模型聚合积分、时间窗、缓存命中）。照 longcat/commandai 模板全链接入 Go CLI。
 
-**Architecture:** 三路并行——① 身份面 `GET /v2/accounts`（`X-API-Key`，取 uid/nickname/uin）② 目录面 `GET /v3/config`（需 `X-User-Id`，返回 28 模型与每模型 `credits` 倍率）③ 台账面：读 `~/.codebuddy/projects/*/*.jsonl`，聚合 `providerData.rawUsage.credit`。**服务端无额度接口**（见 §1.4 穷举证据），额度只能由本地台账算出——这是本 provider 与 longcat/commandai 的根本差异，渲染层必须显式标注数据来源。
+**Architecture:** 四路并行——① 身份面 `GET /v2/accounts`（`X-API-Key`，取 uid/nickname/uin）② 目录面 `GET /v3/config`（需 `X-User-Id`，返回 28 模型与每模型 `credits` 倍率）③ 额度面 `POST /v2/billing/meter/get-user-resource`（API key 可用，返回积分包剩余/总量/已用）④ 台账面：读 `~/.codebuddy/projects/*/*.jsonl`，聚合 `providerData.rawUsage.credit`。服务端额度是「剩余额度」真值；本地台账只作按模型/时间窗用量明细。
+
+> **2026-11-08 更正（已实测）**：§1.4 的「服务端无额度接口」结论**已被推翻**。`POST https://www.codebuddy.ai/v2/billing/meter/get-user-resource` 用现有 `ck_` API key（`Authorization: Bearer`，`X-API-Key` 也可）可直接返回积分包额度。§1.4 保留为历史取证记录，新定稿见 §1.4b。旧结论错在只穷举了需要网页 Cookie 的 `/billing/meter/*` 与 `/v2|/v3` 下的常规资源名，未覆盖 `/v2/billing/meter/*` 这条带 `/v2` 前缀的计量路径。
 
 **Tech Stack:** Go 标准库（net/http + httptest + encoding/json + bufio 流式扫描），零第三方依赖。
 
@@ -91,9 +93,56 @@
 
 `dist/codebuddy.js` 里也没有任何额度查询调用：`credit` 只在 SSE `usage.credit` 与 `model.credits`（倍率）出现；`fetchQuota`/`creditBalance`/`usageSummary` 等符号零命中。上游 CLI 自身也只显示「本轮消耗积分」（来自 SSE）与 `/cost`（会话级），从不显示账户余额。
 
-**结论（写进代码注释与渲染文案）：额度只能从本地台账计算。**
+**历史结论（2026-11-05，已被 2026-11-08 实测推翻）：额度只能从本地台账计算。**
 
-### 1.5 台账面（本地用量真值源）
+### 1.4b 额度面（2026-11-08 实测定稿）
+
+**端点**：`POST https://www.codebuddy.ai/v2/billing/meter/get-user-resource`
+
+**认证**：`Authorization: Bearer <ck_… API key>`（实测 `X-API-Key` 也能 200；网页端 Cookie 路径是 `/billing/meter/get-user-resource`，API key 不适用）。`Content-Type: application/json`。
+
+**请求体（最小可用形状）**：
+
+```json
+{"PageNumber":1,"PageSize":200,"ProductCode":"p_tcaca","Status":[0,3]}
+```
+
+- `Status: [0,3]`：同时取生效包（0）与已过期/耗尽包（3）；解析层只汇总 0。
+- 刻意不传 `PackageCodes` 白名单：平台新增积分包类型时不会被漏掉。
+
+**响应（实测原样，截断）**：
+
+```json
+{"code":0,"msg":"OK","data":{"Response":{"Data":{
+  "TotalCount":3,"TotalDosage":670,"Accounts":[
+    {"PackageName":"Bonus Pack","PackageCode":"TCACA_code_006_DbXS0lrypC",
+     "Status":3,"CapacityRemain":0,"CapacitySize":250,"CapacityUsed":250,
+     "CapacityRemainPrecise":"0","CapacitySizePrecise":"250","CapacityUsedPrecise":"250",
+     "CycleEndTime":"2026-11-18 21:08:45"},
+    {"PackageName":"Pro Plan Monthly Subscription","PackageCode":"TCACA_code_002_AkiJS3ZHF5",
+     "Status":3,"CapacityRemain":0,"CapacitySize":1000,"CapacityUsed":1000,
+     "CycleEndTime":"2026-12-04 21:10:06"},
+    {"PackageName":"Plan Bonus Quota","PackageCode":"TCACA_code_037_WxOD3MpI2o",
+     "Status":0,"CapacityRemain":570,"CapacitySize":1000,"CapacityUsed":429,
+     "CapacityRemainPrecise":"570.06000063","CapacitySizePrecise":"1000",
+     "CapacityUsedPrecise":"429.93999937",
+     "CycleCapacityRemain":570,"CycleCapacitySize":1000,"CycleCapacityUsed":429,
+     "CycleCapacityRemainPrecise":"570.06000063","CycleCapacitySizePrecise":"1000",
+     "CycleCapacityUsedPrecise":"429.93999937",
+     "CycleStartTime":"2026-11-04 21:10:07","CycleEndTime":"2026-12-04 21:10:06"}
+  ]}}}}
+```
+
+**口径**：
+
+- 剩余/总量/已用优先取 `CycleCapacity*`（本周期口径；一次性发放包与 `Capacity*` 相等），三项全缺失才回退 `Capacity*`。
+- `*Precise` 是 8 位小数字符串，优先于整数字段；解析层用 `codebuddyPreciseValue`。
+- **只有 `Status==0` 且 `remain>0` 的包计入 `Remaining/Total/Used` 分母**——已用尽/过期包不计入分母，避免剩余百分比被历史包拉低（官方用量页同口径；参考实现 `CodeBuddy-Usage` 的 `fetchUsage`）。
+- `HasActive` 区分「服务端没有任何生效包」与「生效包余额为 0（已用尽）」。
+- 当前实测账户：`Plan Bonus Quota` 570.06 / 1000（已用 43%），周期至 `2026-12-04 21:10:06`；两个历史包 Status=3 不计入。
+- 401/403 → `ErrCodebuddyAuth`；`code!=0` → `CodebuddyEnvelopeError`；`Accounts` 缺席 → 显式失败，空数组 → 合法无包。
+
+### 1.5 台账面（本地用量明细，非账户余额）
 
 CodeBuddy CLI 每次模型调用都往 `~/.codebuddy/projects/<cwd-slug>/<sessionId>.jsonl` 追加一行，其中 `providerData.rawUsage` 与服务端 SSE 的 `usage` 对象同构，含 **`credit`（该次调用扣的积分，2 位小数）**。
 

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -81,6 +83,28 @@ func newCMQuotaServer() *cmQuotaServer {
 		}
 	}))
 	return s
+}
+
+func TestCommandaiCLIAuthKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.json")
+	if err := os.WriteFile(path, []byte(`{"apiKey":"  user_cli_key  ","userId":"u1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &CommandaiRepo{CLIAuthPath: path}
+	if got := r.CLIAuthKey(); got != "user_cli_key" {
+		t.Errorf("CLIAuthKey=%q, want trimmed user_cli_key", got)
+	}
+	// 文件缺失 / 非法 JSON / 空 apiKey → 空串（额度降级不是致命错误）
+	if got := (&CommandaiRepo{CLIAuthPath: filepath.Join(dir, "nope.json")}).CLIAuthKey(); got != "" {
+		t.Errorf("缺失文件应返回空串, got %q", got)
+	}
+	if err := os.WriteFile(path, []byte(`{bad json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := (&CommandaiRepo{CLIAuthPath: path}).CLIAuthKey(); got != "" {
+		t.Errorf("非法 JSON 应返回空串, got %q", got)
+	}
 }
 
 func TestCommandaiModelsHappy(t *testing.T) {

@@ -12,10 +12,13 @@ package repo
 //   - 不做推理探活（额度有真值通道，探活烧真钱）
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -27,9 +30,11 @@ import (
 const commandaiBaseURL = "https://api.commandcode.ai"
 
 // CommandaiRepo Commandai 数据仓库。BaseURL/Client 测试可注入（httptest）。
+// CLIAuthPath 为空时使用 ~/.commandcode/auth.json（Command Code CLI 登录态）。
 type CommandaiRepo struct {
-	BaseURL string
-	Client  *http.Client
+	BaseURL     string
+	Client      *http.Client
+	CLIAuthPath string
 }
 
 // NewCommandaiRepo 默认端点 + 15s 超时 client。
@@ -49,6 +54,39 @@ func (r *CommandaiRepo) baseURL() string {
 		return strings.TrimRight(s, "/")
 	}
 	return commandaiBaseURL
+}
+
+// commandaiDefaultCLIAuthPath Command Code CLI 登录态文件默认路径。
+func commandaiDefaultCLIAuthPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".commandcode", "auth.json")
+}
+
+// CLIAuthKey 读取 Command Code CLI 登录凭据（auth.json 的 apiKey）。
+// 返回空串表示未登录/文件缺失/格式不符——额度降级不是致命错误，不向用户报错。
+// 只读 apiKey 字段；绝不读取或输出其它字段。
+func (r *CommandaiRepo) CLIAuthKey() string {
+	path := strings.TrimSpace(r.CLIAuthPath)
+	if path == "" {
+		path = commandaiDefaultCLIAuthPath()
+	}
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var auth struct {
+		APIKey string `json:"apiKey"`
+	}
+	if err := json.Unmarshal(data, &auth); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(auth.APIKey)
 }
 
 // get 执行 GET：Bearer 认证 + 浏览器 UA。

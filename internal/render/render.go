@@ -1606,6 +1606,9 @@ func writeCommandaiOverview(b *strings.Builder, r app.CommandaiResult, now time.
 	if len(parts) > 0 {
 		b.WriteString("  " + strings.Join(parts, " · ") + "\n")
 	}
+	if r.QuotaKeySource == "cli" {
+		b.WriteString(c.Gray("  额度凭据：Command Code CLI 登录态（配置 API Key 已失效）") + "\n")
+	}
 	if r.Error != "" {
 		b.WriteString(c.Red("  "+r.Error) + "\n")
 	} else if r.Credits == nil && r.Plan == nil {
@@ -1626,6 +1629,17 @@ func RenderCommandaiDetail(r app.CommandaiResult, now time.Time, c Colorizer) st
 		return b.String()
 	}
 	b.WriteString("Command Code · 积分额度（美元）\n")
+	if r.QuotaKeySource == "cli" {
+		b.WriteString(c.Gray("  配置 API Key 已失效，已回退 Command Code CLI 登录凭据（~/.commandcode/auth.json）") + "\n")
+	}
+	// 显示额度所属身份：回退 CLI 凭据时，用户要能确认这不是另一个账号的额度。
+	if r.Whoami != nil && strings.TrimSpace(r.Whoami.UserName) != "" {
+		line := "  " + commandaiLabel("账号").pad() + r.Whoami.UserName
+		if r.Whoami.OrgLogin != "" {
+			line += " · org " + r.Whoami.OrgLogin
+		}
+		b.WriteString(line + "\n")
+	}
 	if r.Credits != nil {
 		billing := models.CommandaiBillingOf(r.Credits, r.Subscription, r.Summary, now)
 		// 套餐行：显示名（状态）· 本期剩 N 天后重置；无周期 → 「周期未知」
@@ -1826,10 +1840,114 @@ func codebuddyModelText(m models.CodebuddyModel) string {
 	return name + "（" + strings.Join(parts, " · ") + "）"
 }
 
+// codebuddyQuotaExpiry 取最早到期的有效积分包周期结束时间（原文）。
+// 只看仍有余额的包——已耗尽包的到期时间对「剩余额度何时失效」无意义。
+func codebuddyQuotaExpiry(pkgs []models.CodebuddyQuotaPackage) string {
+	best := ""
+	for _, p := range pkgs {
+		if p.Remain <= 0 || strings.TrimSpace(p.CycleEnd) == "" {
+			continue
+		}
+		if best == "" || p.CycleEnd < best {
+			best = p.CycleEnd
+		}
+	}
+	return best
+}
+
+// codebuddyQuotaCountdown 周期结束时间 → 「N天后到期」文案（解析失败 → 空串）。
+// cycleEnd 实测形状 "2006-01-02 15:04:05"（本地时区）；RFC3339 兼容。
+func codebuddyQuotaCountdown(s string, now time.Time) string {
+	var t time.Time
+	var err error
+	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
+		t, err = time.ParseInLocation(layout, s, time.Local)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return ""
+	}
+	d := t.Sub(now)
+	switch {
+	case d <= 0:
+		return "已到期"
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%d天后到期", int(d.Hours()/24))
+	case d >= time.Hour:
+		return fmt.Sprintf("%d小时后到期", int(d.Hours()))
+	case d >= time.Minute:
+		return fmt.Sprintf("%d分钟后到期", int(d.Minutes()))
+	default:
+		return "即将到期"
+	}
+}
+
+// writeCodebuddyQuota 服务端积分额度段：剩余/总量/已用百分比 + 到期倒计时 +
+// 积分包明细。这是「剩余额度」的唯一真值来源（/v2/billing/meter/get-user-resource）。
+func writeCodebuddyQuota(b *strings.Builder, q *models.CodebuddyQuota, now time.Time, c Colorizer) {
+	if q == nil {
+		return
+	}
+	if !q.HasActive {
+		b.WriteString("  " + codebuddyLabel("额度").pad() + c.Gray("无活跃积分包（服务端未返回可用额度）") + "\n")
+		return
+	}
+	if q.Remaining <= 0 {
+		b.WriteString("  " + c.Red(codebuddyLabel("额度").pad()+"积分已用尽") + "\n")
+	} else {
+		pct := models.CodebuddyQuotaPercentUsed(q)
+		if pct < 0 {
+			pct = 0
+		}
+		col := ColorForPercent(pct, false)
+		line := fmt.Sprintf("  %s 剩余 %s / %s 积分 %s %s 已用",
+			codebuddyLabel("额度").pad(), Fmt(q.Remaining), Fmt(q.Total),
+			UsageBar(pct, 10), c.apply(col, fmt.Sprintf("%d%%", pct)))
+		if exp := codebuddyQuotaExpiry(q.Packages); exp != "" {
+			line += " · " + exp
+			if cd := codebuddyQuotaCountdown(exp, now); cd != "" {
+				line += "（" + cd + "）"
+			}
+		}
+		b.WriteString(line + "\n")
+	}
+	// 积分包明细：前 5 个（按到期时间升序，解析层已排序），超出折叠。
+	const limit = 5
+	n := len(q.Packages)
+	if n > limit {
+		n = limit
+	}
+	if n > 0 {
+		parts := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			p := q.Packages[i]
+			name := p.PackageName
+			if name == "" {
+				name = p.PackageCode
+			}
+			if name == "" {
+				name = "积分包"
+			}
+			seg := name + " " + Fmt(p.Remain) + "/" + Fmt(p.Size)
+			if p.CycleEnd != "" {
+				seg += " · " + p.CycleEnd
+			}
+			parts = append(parts, seg)
+		}
+		line := "  " + codebuddyLabel("积分包").pad() + strings.Join(parts, " · ")
+		if len(q.Packages) > limit {
+			line += fmt.Sprintf(" …等 %d 个", len(q.Packages)-limit)
+		}
+		b.WriteString(line + "\n")
+	}
+}
+
 // writeCodebuddyLedger 台账段：累计积分 + 时间窗 + 按模型明细。
 //
-// **文案铁律**：必须写明「本地台账」与目录来源。服务端无额度接口（见计划 §1.4），
-// 把台账求和呈现为「余额/剩余额度」是虚构数据。
+// **文案铁律**：必须写明「本地台账」与目录来源。台账是本机 CLI 的实际扣费记录，
+// 不是账户余额（余额请看上面的「额度」段）。
 func writeCodebuddyLedger(b *strings.Builder, l *models.CodebuddyLedger, c Colorizer) {
 	if !models.CodebuddyHasUsage(l) {
 		b.WriteString("  " + c.Gray("本地台账 暂无记录（未在 ~/.codebuddy 下运行过 CodeBuddy CLI）") + "\n")
@@ -1874,7 +1992,7 @@ func writeCodebuddyLedger(b *strings.Builder, l *models.CodebuddyLedger, c Color
 	}
 }
 
-// writeCodebuddyOverview 总览页单账号段：身份 + 模型数 + 台账累计积分 + 错误。
+// writeCodebuddyOverview 总览页单账号段：身份 + 剩余额度 + 模型数 + 台账累计积分 + 错误。
 func writeCodebuddyOverview(b *strings.Builder, r app.CodebuddyResult, c Colorizer) {
 	if strings.TrimSpace(r.Account.ApiKey) == "" {
 		b.WriteString(c.Gray("  未配置 API Key，运行 llm-api-check accounts add --type codebuddy --help 添加") + "\n")
@@ -1890,6 +2008,16 @@ func writeCodebuddyOverview(b *strings.Builder, r app.CodebuddyResult, c Coloriz
 			who = r.Identity.UID
 		}
 		parts = append(parts, who)
+	}
+	if r.Quota != nil {
+		switch {
+		case !r.Quota.HasActive:
+			parts = append(parts, c.Gray("无活跃积分包"))
+		case r.Quota.Remaining > 0:
+			parts = append(parts, fmt.Sprintf("剩余 %s 积分", Fmt(r.Quota.Remaining)))
+		default:
+			parts = append(parts, c.Red("积分已用尽"))
+		}
 	}
 	if r.Catalog != nil {
 		parts = append(parts, fmt.Sprintf("模型 %d 个", len(r.Catalog.Models)))
@@ -1912,10 +2040,9 @@ func writeCodebuddyOverview(b *strings.Builder, r app.CodebuddyResult, c Coloriz
 	}
 }
 
-// RenderCodebuddyDetail CodeBuddy 账号详情：身份 + 模型目录 + 本地台账用量。
-// 额度无服务端通道——「本地台账」段是唯一用量数据，渲染必须标注来源。
+// RenderCodebuddyDetail CodeBuddy 账号详情：身份 + 服务端积分额度 + 模型目录 +
+// 本地台账用量。额度段是「剩余额度」真值；台账段是本机 CLI 扣费记录，渲染必须标注来源。
 func RenderCodebuddyDetail(r app.CodebuddyResult, now time.Time, c Colorizer) string {
-	_ = now // 时间窗在解析层已按 now 切好，渲染不再重算
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (CodeBuddy)\n", r.Account.Name)
 	if strings.TrimSpace(r.Account.ApiKey) == "" {
@@ -1925,7 +2052,7 @@ func RenderCodebuddyDetail(r app.CodebuddyResult, now time.Time, c Colorizer) st
 		}
 		return b.String()
 	}
-	b.WriteString("CodeBuddy · 模型目录 + 本地用量台账（服务端不提供额度接口）\n")
+	b.WriteString("CodeBuddy · 积分额度 + 模型目录 + 本地台账\n")
 	if r.Identity != nil {
 		kind := "个人"
 		if strings.TrimSpace(r.Identity.AccountType) != "" {
@@ -1941,6 +2068,7 @@ func RenderCodebuddyDetail(r app.CodebuddyResult, now time.Time, c Colorizer) st
 		line += " · " + kind
 		b.WriteString(line + "\n")
 	}
+	writeCodebuddyQuota(&b, r.Quota, now, c)
 	if r.Catalog != nil && len(r.Catalog.Models) > 0 {
 		writeCodebuddyModels(&b, r.Catalog)
 	}
